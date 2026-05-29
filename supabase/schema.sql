@@ -1,0 +1,256 @@
+-- =============================================================
+-- Skupy POS — Supabase schema (v3 — Enterprise edition)
+-- Run in Supabase Dashboard → SQL Editor → New query → Run
+-- =============================================================
+
+-- ---------- CORE TABLES ----------
+
+CREATE TABLE IF NOT EXISTS public.settings (
+  id            integer PRIMARY KEY DEFAULT 1,
+  name          text DEFAULT 'Skupy Printing',
+  tagline       text DEFAULT 'Cetak Impian, Wujudkan Karya',
+  address       text DEFAULT '',
+  phone         text DEFAULT '',
+  email         text DEFAULT '',
+  bank_name     text DEFAULT '',
+  bank_number   text DEFAULT '',
+  bank_holder   text DEFAULT '',
+  front_logo    text DEFAULT '',
+  invoice_logo  text DEFAULT '',
+  tax_rate      integer DEFAULT 0,
+  updated_at    timestamptz DEFAULT now(),
+  CONSTRAINT settings_single_row CHECK (id = 1)
+);
+
+CREATE TABLE IF NOT EXISTS public.admins (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  username    text UNIQUE NOT NULL,
+  password    text NOT NULL,
+  name        text DEFAULT '',
+  role        text DEFAULT 'staff',
+  created_at  timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.customers (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name                text NOT NULL,
+  phone               text DEFAULT '',
+  whatsapp            text DEFAULT '',
+  address             text DEFAULT '',
+  email               text DEFAULT '',
+  notes               text DEFAULT '',
+  total_transactions  integer DEFAULT 0,
+  total_spent         numeric DEFAULT 0,
+  total_debt          numeric DEFAULT 0,
+  created_at          timestamptz DEFAULT now(),
+  updated_at          timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_customers_name ON public.customers (name);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON public.customers (phone);
+
+CREATE TABLE IF NOT EXISTS public.products (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         text NOT NULL,
+  category     text DEFAULT '',
+  price        numeric DEFAULT 0,
+  modal        numeric DEFAULT 0,
+  stock        integer DEFAULT 0,
+  description  text DEFAULT '',
+  image        text DEFAULT '',
+  created_at   timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_category ON public.products (category);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_no      text UNIQUE NOT NULL,
+  customer_id     uuid REFERENCES public.customers(id) ON DELETE SET NULL,
+  customer        text DEFAULT 'Umum',           -- snapshot for fast display
+  items           jsonb NOT NULL DEFAULT '[]'::jsonb,
+  subtotal        numeric DEFAULT 0,
+  discount        numeric DEFAULT 0,
+  tax             numeric DEFAULT 0,
+  total           numeric DEFAULT 0,
+  paid            numeric DEFAULT 0,
+  dp              numeric DEFAULT 0,
+  remaining       numeric DEFAULT 0,
+  payment_method  text DEFAULT 'cash',           -- cash | transfer | qris | hutang
+  status          text DEFAULT 'pending',        -- pending | proses | selesai | lunas
+  cashier         text DEFAULT '',               -- admin who created
+  cashier_id      uuid REFERENCES public.admins(id) ON DELETE SET NULL,
+  created_at      timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON public.transactions (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_status     ON public.transactions (status);
+CREATE INDEX IF NOT EXISTS idx_transactions_customer   ON public.transactions (customer_id);
+
+CREATE TABLE IF NOT EXISTS public.debts (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id     uuid NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
+  transaction_id  uuid REFERENCES public.transactions(id) ON DELETE SET NULL,
+  invoice_no      text,
+  total_debt      numeric NOT NULL DEFAULT 0,
+  paid            numeric DEFAULT 0,
+  remaining       numeric DEFAULT 0,
+  due_date        date,
+  status          text DEFAULT 'aktif',          -- aktif | lunas
+  notes           text DEFAULT '',
+  created_at      timestamptz DEFAULT now(),
+  updated_at      timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_debts_customer ON public.debts (customer_id);
+CREATE INDEX IF NOT EXISTS idx_debts_status   ON public.debts (status);
+CREATE INDEX IF NOT EXISTS idx_debts_due_date ON public.debts (due_date);
+
+CREATE TABLE IF NOT EXISTS public.debt_payments (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  debt_id      uuid NOT NULL REFERENCES public.debts(id) ON DELETE CASCADE,
+  amount       numeric NOT NULL,
+  payment_method text DEFAULT 'cash',
+  notes        text DEFAULT '',
+  paid_at      timestamptz DEFAULT now(),
+  cashier      text DEFAULT '',
+  cashier_id   uuid REFERENCES public.admins(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_debt_payments_debt ON public.debt_payments (debt_id);
+
+-- ---------- TRIGGERS ----------
+
+-- Auto-update updated_at on customers + debts + settings
+CREATE OR REPLACE FUNCTION public.tg_set_updated_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS customers_updated_at ON public.customers;
+CREATE TRIGGER customers_updated_at
+  BEFORE UPDATE ON public.customers
+  FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+DROP TRIGGER IF EXISTS debts_updated_at ON public.debts;
+CREATE TRIGGER debts_updated_at
+  BEFORE UPDATE ON public.debts
+  FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+DROP TRIGGER IF EXISTS settings_updated_at ON public.settings;
+CREATE TRIGGER settings_updated_at
+  BEFORE UPDATE ON public.settings
+  FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+-- After insert on debt_payments → update debts.paid, remaining, status
+CREATE OR REPLACE FUNCTION public.tg_apply_debt_payment()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  d_total numeric;
+  d_paid_new numeric;
+BEGIN
+  UPDATE public.debts
+    SET paid = paid + NEW.amount,
+        remaining = GREATEST(0, total_debt - (paid + NEW.amount)),
+        status = CASE WHEN total_debt - (paid + NEW.amount) <= 0 THEN 'lunas' ELSE 'aktif' END
+    WHERE id = NEW.debt_id;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS debt_payments_apply ON public.debt_payments;
+CREATE TRIGGER debt_payments_apply
+  AFTER INSERT ON public.debt_payments
+  FOR EACH ROW EXECUTE FUNCTION public.tg_apply_debt_payment();
+
+-- After insert on transactions → bump customer stats
+CREATE OR REPLACE FUNCTION public.tg_bump_customer_stats()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.customer_id IS NOT NULL THEN
+    UPDATE public.customers
+      SET total_transactions = total_transactions + 1,
+          total_spent = total_spent + NEW.total,
+          total_debt  = total_debt + NEW.remaining
+      WHERE id = NEW.customer_id;
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS transactions_bump_customer ON public.transactions;
+CREATE TRIGGER transactions_bump_customer
+  AFTER INSERT ON public.transactions
+  FOR EACH ROW EXECUTE FUNCTION public.tg_bump_customer_stats();
+
+-- ---------- ROW LEVEL SECURITY ----------
+-- Demo: anon (anon key) has full access. Tighten in production.
+
+ALTER TABLE public.settings       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admins         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.transactions   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.debts          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.debt_payments  ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN CREATE POLICY "anon all settings"      ON public.settings      FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all admins"        ON public.admins        FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all customers"     ON public.customers     FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all products"      ON public.products      FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all transactions"  ON public.transactions  FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all debts"         ON public.debts         FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "anon all debt_payments" ON public.debt_payments FOR ALL USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ---------- STORAGE: logos bucket ----------
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('logos', 'logos', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$ BEGIN CREATE POLICY "Public read logos"   ON storage.objects FOR SELECT USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public upload logos" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public update logos" ON storage.objects FOR UPDATE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public delete logos" ON storage.objects FOR DELETE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ---------- REALTIME ----------
+ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.customers;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.debts;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.debt_payments;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.products;
+
+-- ---------- DEFAULT SEED ----------
+
+INSERT INTO public.settings (id, name, tagline, address, phone, email, bank_name, bank_number, bank_holder, tax_rate)
+VALUES (
+  1,
+  'Skupy Printing',
+  'Cetak Impian, Wujudkan Karya',
+  'Jl. Lontar Atas No.111 RT.03 RW.12 Kel. Kebon Melati, Kec. Tanah Abang, Jakarta Pusat 10230',
+  '081255577705',
+  'hello@skupyprinting.com',
+  'Bank BCA',
+  '2065033222',
+  'Hardha Perdana',
+  0
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.admins (username, password, name, role)
+VALUES ('admin', 'admin', 'Admin Utama', 'owner')
+ON CONFLICT (username) DO NOTHING;
+
+INSERT INTO public.products (name, category, price, modal, stock, description, image)
+SELECT * FROM (VALUES
+  ('Jersey Sublimasi Full Print', 'jersey',      185000,  95000,  24, 'Jersey olahraga sublimasi full print.',          'https://images.unsplash.com/photo-1620188467120-5042ed1eb5da?w=600&q=80'),
+  ('Jersey Bola Custom Logo',     'jersey',      210000, 110000,  18, 'Jersey bola custom dengan logo tim.',            'https://images.unsplash.com/photo-1606107557195-0e29a4b5b4aa?w=600&q=80'),
+  ('Sticker Vinyl Custom',        'sticker',      15000,   5000, 500, 'Sticker vinyl glossy/matte, ukuran custom.',     'https://images.unsplash.com/photo-1611162616305-c69b3fa7fbe0?w=600&q=80'),
+  ('Print A4 Foto',               'printing',      5000,   1500, 999, 'Print A4 foto glossy/matte.',                    'https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=600&q=80'),
+  ('Topi Custom Logo',            'accessories',  85000,  35000,  40, 'Topi distro / trucker custom logo.',             'https://images.unsplash.com/photo-1521369909029-2afed882baee?w=600&q=80'),
+  ('Kaos Polos Cotton Combed 30s','kaos',         75000,  38000,  60, 'Kaos polos cotton combed 30s.',                  'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=600&q=80'),
+  ('Banner Spanduk 1x2m',         'banner',       90000,  45000,  40, 'Banner spanduk outdoor 1x2 m.',                  'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=600&q=80')
+) AS v(name, category, price, modal, stock, description, image)
+WHERE NOT EXISTS (SELECT 1 FROM public.products LIMIT 1);
+
+-- ---------- DONE ----------
