@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 import Settings from './components/Settings'
 import BottomNav from './components/BottomNav'
+import ErrorBoundary from './components/ErrorBoundary'
 import Dashboard from './pages/Dashboard'
 import Kasir from './pages/Kasir'
 import Produk from './pages/Produk'
@@ -172,7 +173,12 @@ function AppShell() {
             paddingBottom: 0,
           }}
         >
-          {pages[activePage]}
+          <ErrorBoundary
+            key={activePage}
+            title={`Halaman ${activePage} gagal dimuat`}
+          >
+            {pages[activePage]}
+          </ErrorBoundary>
         </div>
       </main>
 
@@ -202,8 +208,10 @@ function AppShell() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <AppShell />
-    </ToastProvider>
+    <ErrorBoundary title="Aplikasi gagal dimuat">
+      <ToastProvider>
+        <AppShell />
+      </ToastProvider>
+    </ErrorBoundary>
   )
 }

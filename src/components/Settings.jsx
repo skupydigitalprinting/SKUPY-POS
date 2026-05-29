@@ -357,7 +357,7 @@ export default function Settings({
                             : 'linear-gradient(135deg, var(--accent), #6366f1)',
                           color: '#fff', fontFamily: 'Syne',
                         }}>
-                        {a.username[0].toUpperCase()}
+                        {(a.username || '?')[0].toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">

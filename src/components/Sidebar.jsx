@@ -105,7 +105,7 @@ export default function Sidebar({
                   : 'linear-gradient(135deg, var(--accent), #6366f1)',
                 color: '#fff', fontFamily: 'Syne',
               }}>
-              {currentUser.username[0].toUpperCase()}
+              {(currentUser.username || '?')[0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1">

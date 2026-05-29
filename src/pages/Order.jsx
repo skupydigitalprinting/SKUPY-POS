@@ -17,19 +17,43 @@ import { ORDER_STATUS } from '../data/dummyData'
 const ORDER_WORKFLOW = [
   'menunggu', 'diproses', 'produksi', 'selesai', 'diambil', 'dikirim', 'dibatalkan',
 ]
-const WORKFLOW_LABEL = {
-  menunggu: 'Menunggu', diproses: 'Diproses', produksi: 'Produksi',
-  selesai: 'Selesai', diambil: 'Diambil', dikirim: 'Dikirim', dibatalkan: 'Dibatalkan',
+
+// ─── SAFE GETTERS ───────────────────────────────────────────────────
+// Plain functions only. No Proxy. No object spread. Every getter
+// ALWAYS returns a real config object, never undefined.
+
+const WORKFLOW_CONFIG = {
+  menunggu:   { label: 'Menunggu',   color: '#8888a8' },
+  baru:       { label: 'Baru',       color: '#8888a8' },
+  diproses:   { label: 'Diproses',   color: '#3b82f6' },
+  produksi:   { label: 'Produksi',   color: '#a78bfa' },
+  selesai:    { label: 'Selesai',    color: '#10d98a' },
+  diambil:    { label: 'Diambil',    color: '#06d6f5' },
+  dikirim:    { label: 'Dikirim',    color: '#f59e0b' },
+  dibatalkan: { label: 'Dibatalkan', color: '#ff4d6a' },
 }
-const WORKFLOW_COLOR = {
-  menunggu: '#8888a8', diproses: '#3b82f6', produksi: '#a78bfa',
-  selesai: '#10d98a', diambil: '#06d6f5', dikirim: '#f59e0b', dibatalkan: '#ff4d6a',
+const WORKFLOW_FALLBACK = { label: 'Menunggu', color: '#8888a8' }
+function getWorkflow(key) {
+  if (key == null) return WORKFLOW_FALLBACK
+  return WORKFLOW_CONFIG[key] || WORKFLOW_FALLBACK
 }
 
-const PAYMENT_LABEL = {
-  cash: { label: 'Cash', icon: '💵' },
-  transfer: { label: 'Transfer', icon: '🏦' },
-  qris: { label: 'QRIS', icon: '📱' },
+const PAYMENT_CONFIG = {
+  cash:     { label: 'Cash',         icon: '💵' },
+  transfer: { label: 'Transfer',     icon: '🏦' },
+  qris:     { label: 'QRIS',         icon: '📱' },
+  hutang:   { label: 'Hutang/Tempo', icon: '📒' },
+}
+const PAYMENT_FALLBACK = { label: '—', icon: '💳' }
+function getPayment(key) {
+  if (key == null) return PAYMENT_FALLBACK
+  return PAYMENT_CONFIG[key] || PAYMENT_FALLBACK
+}
+
+const STATUS_FALLBACK = { label: 'Pending', color: 'amber', hex: '#f59e0b' }
+function getStatus(key) {
+  if (key == null) return STATUS_FALLBACK
+  return STATUS_MAP[key] || STATUS_FALLBACK
 }
 
 export default function Order({
@@ -112,13 +136,14 @@ export default function Order({
   }
 
   const filtered = useMemo(() => {
-    return transactions.filter((t) => {
+    return (transactions || []).filter((t) => {
+      if (!t) return false
       const matchStatus = filterStatus === 'all' || t.status === filterStatus
       const matchWorkflow = filterWorkflow === 'all' || (t.orderStatus || 'menunggu') === filterWorkflow
-      const q = search.toLowerCase()
+      const q = (search || '').toLowerCase()
       const matchSearch =
-        t.customer.toLowerCase().includes(q) ||
-        t.invoiceNo.toLowerCase().includes(q) ||
+        (t.customer || '').toLowerCase().includes(q) ||
+        (t.invoiceNo || '').toLowerCase().includes(q) ||
         (t.orderNo || '').toLowerCase().includes(q)
       return matchStatus && matchWorkflow && matchSearch
     })
@@ -226,7 +251,7 @@ export default function Order({
           </div>
           <div className="flex gap-2 flex-wrap">
             {['all', ...ORDER_STATUS].map((s) => {
-              const m = STATUS_MAP[s]
+              const m = getStatus(s)
               const active = filterStatus === s
               return (
                 <button
@@ -258,8 +283,9 @@ export default function Order({
           </span>
           {['all', ...ORDER_WORKFLOW].map((w) => {
             const active = filterWorkflow === w
-            const color = w === 'all' ? '#a78bfa' : WORKFLOW_COLOR[w]
-            const label = w === 'all' ? 'Semua' : WORKFLOW_LABEL[w]
+            const wf = w === 'all' ? null : getWorkflow(w)
+            const color = w === 'all' ? '#a78bfa' : wf.color
+            const label = w === 'all' ? 'Semua' : wf.label
             return (
               <button key={w} onClick={() => setFilterWorkflow(w)}
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
@@ -302,8 +328,10 @@ export default function Order({
             </div>
           ) : (
             filtered.map((t) => {
-              const s = STATUS_MAP[t.status]
-              const pm = PAYMENT_LABEL[t.paymentMethod]
+              if (!t) return null
+              const s = getStatus(t.status)
+              const pm = getPayment(t.paymentMethod)
+              const wf = getWorkflow(t.orderStatus || 'menunggu')
               return (
                 <div
                   key={t.id}
@@ -333,7 +361,7 @@ export default function Order({
                       {t.customer}
                     </p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {t.items.length} item
+                      {(t.items || []).length} item
                     </p>
                   </div>
                   <p className="text-xs font-bold"
@@ -362,7 +390,7 @@ export default function Order({
                       {ORDER_STATUS.map((st) => (
                         <option key={st} value={st}
                           style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                          {STATUS_MAP[st].label}
+                          {getStatus(st).label}
                         </option>
                       ))}
                     </select>
@@ -375,7 +403,7 @@ export default function Order({
                         className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer"
                         style={{
                           background: 'transparent',
-                          color: WORKFLOW_COLOR[t.orderStatus || 'menunggu'],
+                          color: wf.color,
                           fontWeight: 700,
                           fontFamily: 'Syne',
                         }}
@@ -383,14 +411,14 @@ export default function Order({
                         {ORDER_WORKFLOW.map((st) => (
                           <option key={st} value={st}
                             style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                            {WORKFLOW_LABEL[st]}
+                            {getWorkflow(st).label}
                           </option>
                         ))}
                       </select>
                     ) : (
                       <span className="text-xs font-semibold"
-                        style={{ color: WORKFLOW_COLOR[t.orderStatus || 'menunggu'], fontFamily: 'Syne' }}>
-                        {WORKFLOW_LABEL[t.orderStatus || 'menunggu']}
+                        style={{ color: wf.color, fontFamily: 'Syne' }}>
+                        {wf.label}
                       </span>
                     )}
                   </div>
@@ -424,7 +452,8 @@ export default function Order({
                     {(() => {
                       const cust = customers.find(c => c.id === t.customerId)
                       const phone = cust?.whatsapp || cust?.phone || ''
-                      const text = `Halo ${t.customer},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo}*\nTotal: *${formatRupiah(t.total)}*\nStatus: *${(STATUS_MAP[t.status]?.label || t.status).toUpperCase()}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
+                      const statusLabel = (getStatus(t.status).label || 'Pending').toString().toUpperCase()
+                      const text = `Halo ${t.customer || 'Customer'},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo || '-'}*\nTotal: *${formatRupiah(t.total || 0)}*\nStatus: *${statusLabel}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
                       return (
                         <button
                           onClick={(e) => {
@@ -483,8 +512,9 @@ export default function Order({
             </div>
           ) : (
             filtered.map((t) => {
-              const s = STATUS_MAP[t.status]
-              const pm = PAYMENT_LABEL[t.paymentMethod]
+              if (!t) return null
+              const s = getStatus(t.status)
+              const pm = getPayment(t.paymentMethod)
               return (
                 <div
                   key={t.id}
@@ -602,10 +632,10 @@ export default function Order({
             )}
             <div className="grid grid-cols-2 gap-3">
               {[
-                { label: 'Customer', value: viewTrx.customer },
-                { label: 'Pembayaran', value: `${PAYMENT_LABEL[viewTrx.paymentMethod].icon} ${PAYMENT_LABEL[viewTrx.paymentMethod].label}` },
-                { label: 'Status Bayar', value: STATUS_MAP[viewTrx.status].label },
-                { label: 'Workflow', value: WORKFLOW_LABEL[viewTrx.orderStatus || 'menunggu'] },
+                { label: 'Customer', value: viewTrx.customer || 'Umum' },
+                { label: 'Pembayaran', value: `${getPayment(viewTrx.paymentMethod).icon} ${getPayment(viewTrx.paymentMethod).label}` },
+                { label: 'Status Bayar', value: getStatus(viewTrx.status).label },
+                { label: 'Workflow', value: getWorkflow(viewTrx.orderStatus).label },
               ].map((r, i) => (
                 <div key={i} className="p-3 rounded-xl"
                   style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -618,7 +648,7 @@ export default function Order({
             </div>
 
             {/* Workflow status history */}
-            {viewTrx.statusHistory?.length > 0 && (
+            {Array.isArray(viewTrx.statusHistory) && viewTrx.statusHistory.length > 0 && (
               <div className="rounded-xl p-4"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="text-xs font-semibold mb-3"
@@ -626,24 +656,29 @@ export default function Order({
                   📋 Riwayat Perubahan Status
                 </div>
                 <div className="space-y-2">
-                  {viewTrx.statusHistory.map((h, i) => (
-                    <div key={i} className="flex items-center gap-3 text-xs">
-                      <div className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ background: WORKFLOW_COLOR[h.order_status] || '#a78bfa' }} />
-                      <span className="font-semibold"
-                        style={{ color: WORKFLOW_COLOR[h.order_status] || 'var(--accent-light)', fontFamily: 'Syne' }}>
-                        {WORKFLOW_LABEL[h.order_status] || h.order_status}
-                      </span>
-                      {h.from && (
-                        <span style={{ color: 'var(--text-muted)' }}>
-                          ← {WORKFLOW_LABEL[h.from] || h.from}
+                  {viewTrx.statusHistory.map((h, i) => {
+                    if (!h) return null
+                    const cfg = getWorkflow(h.order_status)
+                    const fromCfg = h.from ? getWorkflow(h.from) : null
+                    return (
+                      <div key={i} className="flex items-center gap-3 text-xs">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ background: cfg.color }} />
+                        <span className="font-semibold"
+                          style={{ color: cfg.color, fontFamily: 'Syne' }}>
+                          {cfg.label}
                         </span>
-                      )}
-                      <span className="ml-auto" style={{ color: 'var(--text-muted)' }}>
-                        {timeAgo(h.changed_at)} {h.changed_by && <>· {h.changed_by}</>}
-                      </span>
-                    </div>
-                  ))}
+                        {fromCfg && (
+                          <span style={{ color: 'var(--text-muted)' }}>
+                            ← {fromCfg.label}
+                          </span>
+                        )}
+                        <span className="ml-auto" style={{ color: 'var(--text-muted)' }}>
+                          {h.changed_at ? timeAgo(h.changed_at) : '-'} {h.changed_by ? <>· {h.changed_by}</> : null}
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}
@@ -655,7 +690,7 @@ export default function Order({
                 <span className="col-span-2 text-center">Qty</span>
                 <span className="col-span-3 text-right">Subtotal</span>
               </div>
-              {viewTrx.items.map((item, i) => (
+              {(viewTrx.items || []).map((item, i) => (
                 <div key={i}
                   className="grid grid-cols-12 px-4 py-3 text-sm items-center gap-2"
                   style={{ borderTop: '1px solid var(--border)' }}>

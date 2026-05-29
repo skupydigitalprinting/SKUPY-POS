@@ -21,7 +21,7 @@ function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, dela
     amber: { bg: 'rgba(245,158,11,0.12)', icon: '#f59e0b', glow: 'rgba(245,158,11,0.3)' },
     blue: { bg: 'rgba(59,130,246,0.12)', icon: '#3b82f6', glow: 'rgba(59,130,246,0.3)' },
   }
-  const c = colors[color]
+  const c = colors[color] || colors.accent
   return (
     <div
       className="animate-slideUp rounded-2xl p-5 relative overflow-hidden"
@@ -40,7 +40,7 @@ function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, dela
           className="flex items-center justify-center rounded-xl"
           style={{ width: 44, height: 44, background: c.bg, border: `1px solid ${c.glow}` }}
         >
-          <Icon size={20} style={{ color: c.icon }} />
+          {Icon ? <Icon size={20} style={{ color: c.icon }} /> : null}
         </div>
         {trend && (
           <div
@@ -264,7 +264,7 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
                         : 'linear-gradient(135deg, var(--accent), #6366f1)',
                       color: '#fff', fontFamily: 'Syne',
                     }}>
-                    {c.name[0]?.toUpperCase()}
+                    {(c.name || '?')[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold truncate"
@@ -489,7 +489,8 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
             </div>
             <div className="space-y-2">
               {recentTrx.slice(0, 4).map((t) => {
-                const s = STATUS_MAP[t.status]
+                if (!t) return null
+                const s = STATUS_MAP[t.status] || { label: t.status || 'Pending', color: 'gray', hex: '#8888a8' }
                 return (
                   <div
                     key={t.id}
@@ -505,7 +506,7 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
                         border: '1px solid rgba(139,92,246,0.15)',
                       }}
                     >
-                      {t.customer[0]}
+                      {(t.customer || '?')[0]}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
