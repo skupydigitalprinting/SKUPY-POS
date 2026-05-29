@@ -1,6 +1,26 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
 
+// Session persistence — keep user logged in across browser refresh.
+// Uses localStorage to remember the admin id; on init, we re-fetch from
+// Supabase to validate the session is still valid (admin still exists).
+const SESSION_KEY = 'skupy_session_v2'
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function saveSession(user) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(user)) } catch {}
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY) } catch {}
+}
+
 // ---------- mappers ----------
 
 const settingsFromDB = (r) => r ? ({
@@ -65,28 +85,55 @@ const productToDB = (p) => ({
 })
 
 const trxFromDB = (r) => ({
-  id: r.id, invoiceNo: r.invoice_no,
-  customer: r.customer, customerId: r.customer_id,
+  id: r.id,
+  invoiceNo: r.invoice_no,
+  orderNo: r.order_no || '',
+  customer: r.customer,
+  customerId: r.customer_id,
+  customerPhone: r.customer_phone || '',
+  customerAddress: r.customer_address || '',
   items: r.items || [],
   subtotal: +r.subtotal || 0, discount: +r.discount || 0, tax: +r.tax || 0,
   total: +r.total || 0, paid: +r.paid || 0, dp: +r.dp || 0, remaining: +r.remaining || 0,
-  paymentMethod: r.payment_method, status: r.status,
-  cashier: r.cashier || '', cashierId: r.cashier_id,
+  paymentMethod: r.payment_method,
+  status: r.status,
+  orderStatus: r.order_status || 'menunggu',
+  notes: r.notes || '',
+  statusHistory: r.status_history || [],
+  cashier: r.cashier || '',
+  cashierId: r.cashier_id,
   date: r.created_at,
 })
 
 const trxToDB = (t) => ({
   invoice_no: t.invoiceNo,
+  order_no: t.orderNo || null,
   customer: t.customer || 'Umum',
   customer_id: t.customerId || null,
+  customer_phone: t.customerPhone || '',
+  customer_address: t.customerAddress || '',
   items: t.items || [],
   subtotal: +t.subtotal || 0, discount: +t.discount || 0, tax: +t.tax || 0,
   total: +t.total || 0, paid: +t.paid || 0, dp: +t.dp || 0, remaining: +t.remaining || 0,
   payment_method: t.paymentMethod || 'cash',
   status: t.status || 'pending',
+  order_status: t.orderStatus || 'menunggu',
+  notes: t.notes || '',
+  status_history: t.statusHistory || [],
   cashier: t.cashier || '',
   cashier_id: t.cashierId || null,
 })
+
+// Order workflow statuses (separate from payment status)
+export const ORDER_WORKFLOW = [
+  'menunggu',     // Just placed
+  'diproses',     // Being processed
+  'produksi',     // In production
+  'selesai',      // Production complete
+  'diambil',      // Picked up by customer
+  'dikirim',      // Shipped
+  'dibatalkan',   // Cancelled
+]
 
 const debtFromDB = (r) => ({
   id: r.id,
@@ -115,7 +162,7 @@ export function useStore() {
   const [admins, setAdmins] = useState([])
   const [customers, setCustomers] = useState([])
   const [debts, setDebts] = useState([])
-  const [currentUser, setCurrentUser] = useState(null)
+  const [currentUser, setCurrentUser] = useState(() => loadSession())
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -138,7 +185,14 @@ export function useStore() {
         bank: { name: '', number: '', holder: '' },
         frontLogo: '', invoiceLogo: '', taxRate: 0,
       })
-      setAdmins((a.data || []).map(adminFromDB))
+      const allAdmins = (a.data || []).map(adminFromDB)
+      setAdmins(allAdmins)
+      // Validate restored session: if user no longer exists, clear it
+      const restored = loadSession()
+      if (restored?.id && !allAdmins.find(x => x.id === restored.id)) {
+        clearSession()
+        if (mounted.current) setCurrentUser(null)
+      }
       setProducts((p.data || []).map(productFromDB))
       setTransactions((t.data || []).map(trxFromDB))
       setCustomers((c.data || []).map(customerFromDB))
@@ -191,11 +245,16 @@ export function useStore() {
       .from('admins').select('*').eq('username', u).eq('password', password).maybeSingle()
     if (e) return { ok: false, error: e.message }
     if (!data) return { ok: false, error: 'Username atau password salah' }
-    setCurrentUser({ id: data.id, username: data.username, name: data.name || data.username, role: data.role })
+    const user = { id: data.id, username: data.username, name: data.name || data.username, role: data.role }
+    setCurrentUser(user)
+    saveSession(user)
     return { ok: true }
   }), [wrap])
 
-  const logout = useCallback(() => setCurrentUser(null), [])
+  const logout = useCallback(() => {
+    setCurrentUser(null)
+    clearSession()
+  }, [])
 
   // ---------- SETTINGS ----------
   const updateStoreInfo = useCallback(async (partial) => wrap(async () => {
@@ -317,12 +376,35 @@ export function useStore() {
     return `INV-${year}-${String((count || 0) + 1).padStart(4, '0')}`
   }, [])
 
+  const nextOrderNumber = useCallback(async () => {
+    const year = new Date().getFullYear()
+    const { count } = await supabase
+      .from('transactions').select('*', { count: 'exact', head: true })
+      .like('order_no', `ORD-${year}-%`)
+    return `ORD-${year}-${String((count || 0) + 1).padStart(4, '0')}`
+  }, [])
+
   const addTransaction = useCallback(async (trx) => wrap(async () => {
     try {
-      const invoiceNo = await nextInvoiceNumber()
+      const [invoiceNo, orderNo] = await Promise.all([
+        nextInvoiceNumber(),
+        nextOrderNumber(),
+      ])
       const cashier = currentUser?.name || currentUser?.username || ''
       const cashierId = currentUser?.id || null
-      const payload = trxToDB({ ...trx, invoiceNo, cashier, cashierId })
+      const nowIso = new Date().toISOString()
+      const statusHistory = [{
+        order_status: trx.orderStatus || 'menunggu',
+        changed_at: nowIso,
+        changed_by: cashier || 'system',
+      }]
+      const payload = trxToDB({
+        ...trx,
+        invoiceNo, orderNo,
+        cashier, cashierId,
+        statusHistory,
+        orderStatus: trx.orderStatus || 'menunggu',
+      })
       const { data: row, error: e } = await supabase.from('transactions').insert(payload).select().single()
       if (e) return { ok: false, error: e.message }
 
@@ -362,7 +444,29 @@ export function useStore() {
       if (trx.customerId) await refreshCustomers()
       return { ok: true, data: newTrx }
     } catch (err) { return { ok: false, error: err.message || String(err) } }
-  }), [products, currentUser, wrap, nextInvoiceNumber, refreshCustomers, refreshDebts])
+  }), [products, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts])
+
+  const updateOrderStatus = useCallback(async (id, newStatus) => wrap(async () => {
+    const current = transactions.find(t => t.id === id)
+    if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
+    const cashier = currentUser?.name || currentUser?.username || 'system'
+    const newHistory = [
+      ...(current.statusHistory || []),
+      {
+        order_status: newStatus,
+        changed_at: new Date().toISOString(),
+        changed_by: cashier,
+        from: current.orderStatus || 'menunggu',
+      },
+    ]
+    const { data: row, error: e } = await supabase
+      .from('transactions')
+      .update({ order_status: newStatus, status_history: newHistory })
+      .eq('id', id).select().single()
+    if (e) return { ok: false, error: e.message }
+    if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
+    return { ok: true }
+  }), [transactions, currentUser, wrap])
 
   const updateTransactionStatus = useCallback(async (id, status) => wrap(async () => {
     const current = transactions.find(t => t.id === id)
@@ -428,11 +532,19 @@ export function useStore() {
   // ---------- STATS ----------
   const stats = useMemo(() => {
     const today = new Date().toDateString()
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+
     const todayTrx = transactions.filter(t => new Date(t.date).toDateString() === today)
+    const monthTrx = transactions.filter(t => new Date(t.date) >= monthStart)
+
     const totalOmzet = transactions.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
     const todayOmzet = todayTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
+    const monthOmzet = monthTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
     const pendingCount = transactions.filter(t => t.status === 'pending').length
     const procesCount = transactions.filter(t => t.status === 'proses').length
+    const todayOrders = todayTrx.length
+    const monthOrders = monthTrx.length
 
     const productSales = {}
     transactions.forEach(t => t.items.forEach(i => {
@@ -479,13 +591,30 @@ export function useStore() {
       return [...map.values()].sort((a, b) => b.totalRemaining - a.totalRemaining).slice(0, 5)
     })()
 
+    // Top customer (most active)
+    const topCustomers = (() => {
+      const map = new Map()
+      transactions.forEach(t => {
+        if (!t.customerId) return
+        const c = customers.find(x => x.id === t.customerId)
+        if (!c) return
+        const cur = map.get(c.id) || { ...c, orderCount: 0, totalSpent: 0 }
+        cur.orderCount += 1
+        cur.totalSpent += +t.total || 0
+        map.set(c.id, cur)
+      })
+      return [...map.values()].sort((a, b) => b.totalSpent - a.totalSpent).slice(0, 5)
+    })()
+
     return {
-      totalOmzet, todayOmzet, pendingCount, procesCount,
+      totalOmzet, todayOmzet, monthOmzet,
+      todayOrders, monthOrders,
+      pendingCount, procesCount,
       customers: customers.length, totalCustomers: customers.length,
-      topProducts, chartData, todayTrx, categoryData,
+      topProducts, chartData, todayTrx, monthTrx, categoryData,
       totalTransactions: transactions.length,
       totalActiveDebt, totalPaidDebt, activeDebtsCount: activeDebts.length,
-      topDebtors,
+      topDebtors, topCustomers,
     }
   }, [transactions, products, customers, debts])
 
@@ -496,6 +625,7 @@ export function useStore() {
     refreshAll, refreshCustomers, refreshDebts,
     addProduct, updateProduct, deleteProduct,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction,
+    updateOrderStatus,
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, deleteAdmin, changePassword,
     addCustomer, updateCustomer, deleteCustomer,

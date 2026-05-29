@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
-  Download, FileSpreadsheet, Calendar, X,
+  Download, FileSpreadsheet, Calendar, X, MessageCircle,
 } from 'lucide-react'
+import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
   formatRupiah, formatDateTime, timeAgo, STATUS_MAP,
   toDateInputValue, monthRange, monthLabel,
@@ -13,6 +14,18 @@ import Modal from '../components/Modal'
 import Invoice from '../components/Invoice'
 import { ORDER_STATUS } from '../data/dummyData'
 
+const ORDER_WORKFLOW = [
+  'menunggu', 'diproses', 'produksi', 'selesai', 'diambil', 'dikirim', 'dibatalkan',
+]
+const WORKFLOW_LABEL = {
+  menunggu: 'Menunggu', diproses: 'Diproses', produksi: 'Produksi',
+  selesai: 'Selesai', diambil: 'Diambil', dikirim: 'Dikirim', dibatalkan: 'Dibatalkan',
+}
+const WORKFLOW_COLOR = {
+  menunggu: '#8888a8', diproses: '#3b82f6', produksi: '#a78bfa',
+  selesai: '#10d98a', diambil: '#06d6f5', dikirim: '#f59e0b', dibatalkan: '#ff4d6a',
+}
+
 const PAYMENT_LABEL = {
   cash: { label: 'Cash', icon: '💵' },
   transfer: { label: 'Transfer', icon: '🏦' },
@@ -22,9 +35,11 @@ const PAYMENT_LABEL = {
 export default function Order({
   transactions, storeInfo, busy, products = [], customers = [],
   updateTransactionStatus, updateTransactionPayment, deleteTransaction,
+  updateOrderStatus,
 }) {
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
+  const [filterWorkflow, setFilterWorkflow] = useState('all')
   const [viewTrx, setViewTrx] = useState(null)
   const [printTrx, setPrintTrx] = useState(null)
   const [payTrx, setPayTrx] = useState(null)
@@ -88,9 +103,10 @@ export default function Order({
     const customerLabel = exportCustomerId !== 'all'
       ? `_${(customers.find(c => c.id === exportCustomerId)?.name || 'cust').replace(/\s/g, '_')}`
       : ''
-    const fname = `Laporan_${(storeInfo?.name || 'Skupy').replace(/\s+/g, '_')}_${label}${customerLabel}.xlsx`
+    const datePart = new Date().toISOString().slice(0, 10)
+    const fname = `Rekap-Order-${datePart}${customerLabel ? customerLabel : '_' + label}.xlsx`
     exportTransactionsXLSX(exportData, storeInfo, {
-      products, periodLabel, filename: fname,
+      products, customers, periodLabel, filename: fname,
     })
     setExportOpen(false)
   }
@@ -98,13 +114,15 @@ export default function Order({
   const filtered = useMemo(() => {
     return transactions.filter((t) => {
       const matchStatus = filterStatus === 'all' || t.status === filterStatus
+      const matchWorkflow = filterWorkflow === 'all' || (t.orderStatus || 'menunggu') === filterWorkflow
       const q = search.toLowerCase()
       const matchSearch =
         t.customer.toLowerCase().includes(q) ||
-        t.invoiceNo.toLowerCase().includes(q)
-      return matchStatus && matchSearch
+        t.invoiceNo.toLowerCase().includes(q) ||
+        (t.orderNo || '').toLowerCase().includes(q)
+      return matchStatus && matchWorkflow && matchSearch
     })
-  }, [transactions, search, filterStatus])
+  }, [transactions, search, filterStatus, filterWorkflow])
 
   const totalFiltered = filtered.reduce((s, t) => s + t.total, 0)
   const totalLunas = filtered
@@ -232,12 +250,37 @@ export default function Order({
           </div>
         </div>
 
+        {/* Workflow filter */}
+        <div className="flex gap-2 mb-5 flex-wrap items-center">
+          <span className="text-xs font-semibold pr-2"
+            style={{ color: 'var(--text-muted)', fontFamily: 'Syne', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Workflow:
+          </span>
+          {['all', ...ORDER_WORKFLOW].map((w) => {
+            const active = filterWorkflow === w
+            const color = w === 'all' ? '#a78bfa' : WORKFLOW_COLOR[w]
+            const label = w === 'all' ? 'Semua' : WORKFLOW_LABEL[w]
+            return (
+              <button key={w} onClick={() => setFilterWorkflow(w)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: active ? `${color}25` : 'var(--bg-card)',
+                  color: active ? color : 'var(--text-secondary)',
+                  border: `1px solid ${active ? color + '50' : 'var(--border)'}`,
+                  fontFamily: 'Syne',
+                }}>
+                {label}
+              </button>
+            )
+          })}
+        </div>
+
         {/* Desktop Table */}
         <div className="hidden md:block rounded-2xl overflow-hidden"
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
           <div className="grid gap-2 px-4 py-3 text-xs font-semibold uppercase tracking-wider"
             style={{
-              gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 1fr auto',
+              gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 0.9fr 0.9fr auto',
               color: 'var(--text-muted)',
               fontFamily: 'Syne',
               borderBottom: '1px solid var(--border)',
@@ -248,7 +291,8 @@ export default function Order({
             <span>Total</span>
             <span>Sisa</span>
             <span>Bayar</span>
-            <span>Status</span>
+            <span>Pembayaran</span>
+            <span>Workflow</span>
             <span className="text-right">Aksi</span>
           </div>
 
@@ -265,7 +309,7 @@ export default function Order({
                   key={t.id}
                   className="grid gap-2 px-4 py-3 items-center hover:bg-white/[0.02] transition-all"
                   style={{
-                    gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 1fr auto',
+                    gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 0.9fr 0.9fr auto',
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
@@ -274,6 +318,11 @@ export default function Order({
                       style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
                       {t.invoiceNo}
                     </p>
+                    {t.orderNo && (
+                      <p className="text-xs" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                        {t.orderNo}
+                      </p>
+                    )}
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                       {timeAgo(t.date)}
                     </p>
@@ -311,18 +360,39 @@ export default function Order({
                       }}
                     >
                       {ORDER_STATUS.map((st) => (
-                        <option
-                          key={st}
-                          value={st}
-                          style={{
-                            background: 'var(--bg-elevated)',
-                            color: 'var(--text-primary)',
-                          }}
-                        >
+                        <option key={st} value={st}
+                          style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
                           {STATUS_MAP[st].label}
                         </option>
                       ))}
                     </select>
+                  </div>
+                  <div>
+                    {updateOrderStatus ? (
+                      <select
+                        value={t.orderStatus || 'menunggu'}
+                        onChange={(e) => updateOrderStatus(t.id, e.target.value)}
+                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer"
+                        style={{
+                          background: 'transparent',
+                          color: WORKFLOW_COLOR[t.orderStatus || 'menunggu'],
+                          fontWeight: 700,
+                          fontFamily: 'Syne',
+                        }}
+                      >
+                        {ORDER_WORKFLOW.map((st) => (
+                          <option key={st} value={st}
+                            style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                            {WORKFLOW_LABEL[st]}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-xs font-semibold"
+                        style={{ color: WORKFLOW_COLOR[t.orderStatus || 'menunggu'], fontFamily: 'Syne' }}>
+                        {WORKFLOW_LABEL[t.orderStatus || 'menunggu']}
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-1.5 justify-end">
                     {t.remaining > 0 && (
@@ -351,6 +421,28 @@ export default function Order({
                     >
                       <Eye size={13} />
                     </button>
+                    {(() => {
+                      const cust = customers.find(c => c.id === t.customerId)
+                      const phone = cust?.whatsapp || cust?.phone || ''
+                      const text = `Halo ${t.customer},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo}*\nTotal: *${formatRupiah(t.total)}*\nStatus: *${(STATUS_MAP[t.status]?.label || t.status).toUpperCase()}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
+                      return (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            window.open(buildWaLink(phone, text), '_blank', 'noopener,noreferrer')
+                          }}
+                          className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
+                          style={{
+                            background: 'rgba(37,211,102,0.12)',
+                            color: '#25d366',
+                            border: '1px solid rgba(37,211,102,0.3)',
+                          }}
+                          title={isValidWA(phone) ? `Chat ${cust?.name || t.customer}` : 'Buka WhatsApp (pilih kontak)'}
+                        >
+                          <MessageCircle size={12} />
+                        </button>
+                      )
+                    })()}
                     <button
                       onClick={() => setPrintTrx(t)}
                       className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
@@ -490,12 +582,30 @@ export default function Order({
       >
         {viewTrx && (
           <div className="space-y-4">
+            {viewTrx.orderNo && (
+              <div className="flex flex-wrap gap-2 items-center text-xs">
+                <span className="px-2.5 py-1 rounded-md font-semibold"
+                  style={{
+                    background: 'rgba(139,92,246,0.12)',
+                    color: 'var(--accent-light)',
+                    border: '1px solid rgba(139,92,246,0.25)',
+                    fontFamily: 'Syne',
+                  }}>
+                  ORDER {viewTrx.orderNo}
+                </span>
+                {viewTrx.cashier && (
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    Kasir: <strong style={{ color: 'var(--text-secondary)' }}>{viewTrx.cashier}</strong>
+                  </span>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: 'Customer', value: viewTrx.customer },
                 { label: 'Pembayaran', value: `${PAYMENT_LABEL[viewTrx.paymentMethod].icon} ${PAYMENT_LABEL[viewTrx.paymentMethod].label}` },
-                { label: 'Status', value: STATUS_MAP[viewTrx.status].label },
-                { label: 'Items', value: `${viewTrx.items.length} produk` },
+                { label: 'Status Bayar', value: STATUS_MAP[viewTrx.status].label },
+                { label: 'Workflow', value: WORKFLOW_LABEL[viewTrx.orderStatus || 'menunggu'] },
               ].map((r, i) => (
                 <div key={i} className="p-3 rounded-xl"
                   style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -506,6 +616,37 @@ export default function Order({
                 </div>
               ))}
             </div>
+
+            {/* Workflow status history */}
+            {viewTrx.statusHistory?.length > 0 && (
+              <div className="rounded-xl p-4"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="text-xs font-semibold mb-3"
+                  style={{ color: 'var(--accent-light)', fontFamily: 'Syne', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  📋 Riwayat Perubahan Status
+                </div>
+                <div className="space-y-2">
+                  {viewTrx.statusHistory.map((h, i) => (
+                    <div key={i} className="flex items-center gap-3 text-xs">
+                      <div className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ background: WORKFLOW_COLOR[h.order_status] || '#a78bfa' }} />
+                      <span className="font-semibold"
+                        style={{ color: WORKFLOW_COLOR[h.order_status] || 'var(--accent-light)', fontFamily: 'Syne' }}>
+                        {WORKFLOW_LABEL[h.order_status] || h.order_status}
+                      </span>
+                      {h.from && (
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          ← {WORKFLOW_LABEL[h.from] || h.from}
+                        </span>
+                      )}
+                      <span className="ml-auto" style={{ color: 'var(--text-muted)' }}>
+                        {timeAgo(h.changed_at)} {h.changed_by && <>· {h.changed_by}</>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
               <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wider grid grid-cols-12"

@@ -124,6 +124,7 @@ function AppShell() {
       storeInfo={store.storeInfo}
       updateTransactionStatus={store.updateTransactionStatus}
       updateTransactionPayment={store.updateTransactionPayment}
+      updateOrderStatus={store.updateOrderStatus}
       deleteTransaction={store.deleteTransaction}
       busy={store.busy}
     />,

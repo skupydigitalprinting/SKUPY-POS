@@ -9,197 +9,275 @@ const STATUS_LABEL = {
 }
 const catLabel = (id) => CATEGORIES.find(c => c.id === id)?.label || id || '-'
 
+const RP_FORMAT = '"Rp"#,##0;[Red]"-Rp"#,##0;"Rp"0'
+
+// ---------- helpers ----------
+
+function autoWidth(aoa, headerRowIdx) {
+  if (!aoa.length) return []
+  const colCount = aoa[headerRowIdx]?.length || 0
+  return Array.from({ length: colCount }, (_, ci) => {
+    let max = 8
+    for (let ri = 0; ri < aoa.length; ri++) {
+      const v = aoa[ri]?.[ci]
+      if (v == null) continue
+      const len = String(v).length
+      if (len > max) max = len
+    }
+    return { wch: Math.min(45, Math.max(8, max + 2)) }
+  })
+}
+
+function applyCurrencyFormat(ws, rows, cols, fromRow) {
+  for (let ri = fromRow; ri <= fromRow + rows - 1; ri++) {
+    cols.forEach(ci => {
+      const addr = XLSX.utils.encode_cell({ r: ri, c: ci })
+      if (ws[addr] && typeof ws[addr].v === 'number') ws[addr].z = RP_FORMAT
+    })
+  }
+}
+
+function freeze(ws, rows = 1) {
+  ws['!freeze'] = { xSplit: 0, ySplit: rows }
+}
+
+// ---------- main export ----------
+
 /**
- * Professional Excel export of transactions.
+ * Export transaksi ke Excel (xlsx) — multi-sheet rekap profesional.
  *
- * @param {Array} transactions  list of trx (already filtered)
- * @param {Object} storeInfo    store info for header
- * @param {Object} options      { products, periodLabel, filename }
+ * @param {Array} transactions  already filtered
+ * @param {Object} storeInfo
+ * @param {Object} options { products, customers, periodLabel, filename }
  */
 export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {}) {
   const products = options.products || []
-  const periodLabel = options.periodLabel || ''
-
-  // Build flat rows (one row per transaction item, for line-level detail)
-  const flatRows = []
-  transactions.forEach(t => {
-    if (!t.items?.length) {
-      flatRows.push({ t, item: null })
-      return
-    }
-    t.items.forEach((it) => flatRows.push({ t, item: it }))
-  })
-
-  // Resolve category from product list
-  const catFor = (productId) => {
-    if (!productId) return '-'
-    const p = products.find(x => x.id === productId)
-    return catLabel(p?.category)
-  }
-
-  // ====== Build AOA (Array of Arrays) with header rows ======
-  const aoa = []
-
-  // Title rows
-  aoa.push([`${storeInfo.name || 'Skupy Printing'} — LAPORAN TRANSAKSI`])
-  if (storeInfo.tagline) aoa.push([storeInfo.tagline])
-  if (storeInfo.address) aoa.push([storeInfo.address])
-  if (storeInfo.phone) aoa.push([`Telp: ${storeInfo.phone}`])
-  aoa.push([])
-  if (periodLabel) aoa.push([`Periode: ${periodLabel}`])
-  aoa.push([`Total Transaksi: ${transactions.length}`])
-  const totalOmzet = transactions.reduce((s, t) => s + (Number(t.total) || 0), 0)
-  aoa.push([`Total Omzet: Rp ${totalOmzet.toLocaleString('id-ID')}`])
-  aoa.push([])
-
-  // Column headers (row index ~ header)
-  const HEADERS = [
-    'No', 'No Invoice', 'Tanggal', 'Jam', 'Customer',
-    'Produk', 'Kategori', 'Qty', 'Harga',
-    'Subtotal Item', 'Subtotal Trx', 'Diskon', 'Pajak', 'Total',
-    'Metode', 'Status', 'Kasir',
-  ]
-  const headerRowIdx = aoa.length
-  aoa.push(HEADERS)
-
-  // Data rows
-  let no = 0
-  flatRows.forEach(({ t, item }) => {
-    no += 1
-    const dt = new Date(t.date)
-    aoa.push([
-      no,
-      t.invoiceNo || '',
-      dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-      t.customer || 'Umum',
-      item?.name || '-',
-      catFor(item?.productId),
-      item?.qty || 0,
-      Number(item?.price) || 0,
-      (Number(item?.qty || 0) * Number(item?.price || 0)),
-      Number(t.subtotal) || 0,
-      Number(t.discount) || 0,
-      Number(t.tax) || 0,
-      Number(t.total) || 0,
-      PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '',
-      STATUS_LABEL[t.status] || t.status || '',
-      t.cashier || '-',
-    ])
-  })
-
-  // Totals row
-  const totalsRowIdx = aoa.length
-  aoa.push([
-    '', '', '', '', '', '', 'TOTAL',
-    '', '',
-    flatRows.reduce((s, r) => s + (Number(r.item?.qty || 0) * Number(r.item?.price || 0)), 0),
-    transactions.reduce((s, t) => s + (Number(t.subtotal) || 0), 0),
-    transactions.reduce((s, t) => s + (Number(t.discount) || 0), 0),
-    transactions.reduce((s, t) => s + (Number(t.tax) || 0), 0),
-    totalOmzet,
-    '', '', '',
-  ])
-
-  // ====== Convert to worksheet ======
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-
-  // ----- Merges for title rows -----
-  const merges = []
-  // Merge title rows across all columns
-  for (let r = 0; r < headerRowIdx; r++) {
-    if (aoa[r].length === 1) {
-      merges.push({ s: { r, c: 0 }, e: { r, c: HEADERS.length - 1 } })
-    }
-  }
-  ws['!merges'] = merges
-
-  // ----- Column widths (auto-ish based on header + max content length) -----
-  const widths = HEADERS.map((h, ci) => {
-    let max = String(h).length
-    for (let ri = headerRowIdx + 1; ri < aoa.length; ri++) {
-      const cell = aoa[ri]?.[ci]
-      if (cell == null) continue
-      const len = String(cell).length
-      if (len > max) max = len
-    }
-    return { wch: Math.min(40, Math.max(8, max + 2)) }
-  })
-  ws['!cols'] = widths
-
-  // ----- Cell styling -----
-  // Note: SheetJS community edition doesn't support full styles. To keep cross-version compatibility,
-  // we apply number formats only (which xlsx-style would handle, but here xlsx does support number formats).
-  const colA = (ci) => XLSX.utils.encode_col(ci)
-
-  // Apply currency / number formats to relevant columns (Harga..Total)
-  const currencyCols = [8, 9, 10, 11, 12, 13] // Harga..Total in HEADERS
-  const qtyCol = 7
-
-  const fmtRupiah = '"Rp" #,##0;[Red]-"Rp" #,##0'
-  for (let ri = headerRowIdx + 1; ri <= totalsRowIdx; ri++) {
-    currencyCols.forEach(ci => {
-      const addr = `${colA(ci)}${ri + 1}`
-      if (ws[addr] && ws[addr].t === 'n') ws[addr].z = fmtRupiah
-    })
-    const addrQty = `${colA(qtyCol)}${ri + 1}`
-    if (ws[addrQty] && ws[addrQty].t === 'n') ws[addrQty].z = '#,##0'
-  }
-
-  // Mark header & totals rows bold (best effort; SheetJS community may strip but harmless)
-  const boldStyle = { font: { bold: true } }
-  HEADERS.forEach((_, ci) => {
-    const addr = `${colA(ci)}${headerRowIdx + 1}`
-    if (ws[addr]) ws[addr].s = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '6366F1' } }, alignment: { horizontal: 'center', vertical: 'center' } }
-    const totalAddr = `${colA(ci)}${totalsRowIdx + 1}`
-    if (ws[totalAddr]) ws[totalAddr].s = { font: { bold: true }, fill: { fgColor: { rgb: 'F5F5F8' } } }
-  })
-
-  // Title styling
-  const titleAddr = 'A1'
-  if (ws[titleAddr]) ws[titleAddr].s = { font: { bold: true, sz: 14, color: { rgb: '6366F1' } }, alignment: { horizontal: 'center' } }
-
-  // Freeze header
-  ws['!freeze'] = { xSplit: 0, ySplit: headerRowIdx + 1 }
-
-  // ====== Build workbook ======
+  const customers = options.customers || []
+  const periodLabel = options.periodLabel || 'Semua waktu'
   const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, 'Transaksi')
 
-  // Summary by date sheet
-  const dailyMap = new Map()
-  transactions.forEach(t => {
-    const d = new Date(t.date).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
-    const cur = dailyMap.get(d) || { date: d, count: 0, total: 0, lunas: 0, pending: 0 }
-    cur.count += 1
-    cur.total += Number(t.total) || 0
-    if (t.status === 'lunas') cur.lunas += Number(t.total) || 0
-    else cur.pending += Number(t.remaining) || 0
-    dailyMap.set(d, cur)
-  })
-  const daily = [...dailyMap.values()]
-  const dailyAoa = [
-    ['REKAP HARIAN'], [],
-    ['Tanggal', 'Jumlah Trx', 'Omzet Lunas', 'Piutang', 'Total'],
-    ...daily.map(d => [d.date, d.count, d.lunas, d.pending, d.total]),
-  ]
-  if (daily.length === 0) dailyAoa.push(['—', 0, 0, 0, 0])
-  const ws2 = XLSX.utils.aoa_to_sheet(dailyAoa)
-  ws2['!cols'] = [{ wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }]
-  ws2['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }]
-  XLSX.utils.book_append_sheet(wb, ws2, 'Rekap Harian')
+  const totalOrder = transactions.length
+  const totalOmzet = transactions.reduce((s, t) => s + (+t.total || 0), 0)
+  const totalItem = transactions.reduce((s, t) => s + (t.items || []).reduce((q, i) => q + (+i.qty || 0), 0), 0)
+  const totalPaid = transactions.reduce((s, t) => s + (+t.paid || 0), 0)
+  const totalRemaining = transactions.reduce((s, t) => s + (+t.remaining || 0), 0)
+  const totalPending = transactions.filter(t => t.status === 'pending').length
+  const totalSelesai = transactions.filter(t => t.status === 'lunas' || t.status === 'selesai').length
+  const totalBatal = transactions.filter(t => t.status === 'dibatalkan').length
 
-  // ====== Write ======
-  const filename = options.filename || `Laporan_${(storeInfo.name || 'Skupy').replace(/\s+/g, '_')}_${Date.now()}.xlsx`
+  // ===== SHEET 1: DASHBOARD RINGKASAN =====
+  {
+    const aoa = []
+    aoa.push([`${storeInfo.name || 'Skupy Printing'} — REKAP TRANSAKSI`])
+    if (storeInfo.tagline) aoa.push([storeInfo.tagline])
+    if (storeInfo.address) aoa.push([storeInfo.address])
+    if (storeInfo.phone) aoa.push([`Telp: ${storeInfo.phone}`])
+    aoa.push([])
+    aoa.push([`Periode: ${periodLabel}`])
+    aoa.push([`Dibuat: ${new Date().toLocaleString('id-ID')}`])
+    aoa.push([])
+    aoa.push(['STATISTIK', 'NILAI'])
+    aoa.push(['Total Order', totalOrder])
+    aoa.push(['Total Omzet', totalOmzet])
+    aoa.push(['Total Item Terjual', totalItem])
+    aoa.push(['Total Pembayaran Diterima', totalPaid])
+    aoa.push(['Total Piutang (Belum Lunas)', totalRemaining])
+    aoa.push(['Total Status Pending', totalPending])
+    aoa.push(['Total Status Selesai/Lunas', totalSelesai])
+    aoa.push(['Total Status Dibatalkan', totalBatal])
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 1 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 1 } },
+      { s: { r: 3, c: 0 }, e: { r: 3, c: 1 } },
+      { s: { r: 5, c: 0 }, e: { r: 5, c: 1 } },
+      { s: { r: 6, c: 0 }, e: { r: 6, c: 1 } },
+    ]
+    ws['!cols'] = [{ wch: 36 }, { wch: 24 }]
+    // Currency format on omzet/piutang/paid rows
+    const currencyRows = [9, 11, 12] // 0-indexed rows in the values column
+    currencyRows.forEach(r => {
+      const addr = XLSX.utils.encode_cell({ r, c: 1 })
+      if (ws[addr]) ws[addr].z = RP_FORMAT
+    })
+    XLSX.utils.book_append_sheet(wb, ws, 'Dashboard')
+  }
+
+  // ===== SHEET 2: DETAIL ORDER =====
+  {
+    const aoa = []
+    const headers = [
+      'No', 'Tanggal', 'Jam', 'Nomor Order', 'Nomor Invoice', 'Nama Pelanggan', 'No WhatsApp',
+      'Nama Produk', 'Kategori', 'Qty', 'Harga', 'Subtotal Item',
+      'Subtotal Trx', 'Diskon', 'Total', 'Metode Pembayaran', 'Status Pembayaran', 'Status Order',
+      'Catatan', 'Kasir',
+    ]
+    aoa.push(headers)
+
+    let no = 0
+    const findCustomer = (cid) => customers.find(c => c.id === cid)
+    const catFor = (productId) => {
+      if (!productId) return '-'
+      const p = products.find(x => x.id === productId)
+      return catLabel(p?.category)
+    }
+
+    transactions.forEach(t => {
+      const cust = findCustomer(t.customerId)
+      const whatsapp = cust?.whatsapp || cust?.phone || ''
+      const items = t.items?.length ? t.items : [null]
+      items.forEach(item => {
+        no += 1
+        const dt = new Date(t.date)
+        aoa.push([
+          no,
+          dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+          dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+          t.orderNo || t.invoiceNo || '',
+          t.invoiceNo || '',
+          t.customer || 'Umum',
+          whatsapp,
+          item?.name || '-',
+          catFor(item?.productId),
+          item?.qty || 0,
+          +item?.price || 0,
+          (+item?.qty || 0) * (+item?.price || 0),
+          +t.subtotal || 0,
+          +t.discount || 0,
+          +t.total || 0,
+          PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '',
+          STATUS_LABEL[t.status] || t.status || '',
+          t.orderStatus || '-',
+          t.notes || '',
+          t.cashier || '-',
+        ])
+      })
+    })
+
+    // Totals row
+    const totalsRowIdx = aoa.length
+    aoa.push([
+      '', '', '', '', '', '', '', '', 'TOTAL', '', '',
+      transactions.reduce((s, t) =>
+        s + (t.items || []).reduce((q, i) => q + (+i.qty || 0) * (+i.price || 0), 0), 0),
+      transactions.reduce((s, t) => s + (+t.subtotal || 0), 0),
+      transactions.reduce((s, t) => s + (+t.discount || 0), 0),
+      totalOmzet,
+      '', '', '', '', '',
+    ])
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = autoWidth(aoa, 0)
+    // Currency columns: 10 (Harga), 11 (Subtotal Item), 12 (Subtotal Trx), 13 (Diskon), 14 (Total)
+    const currencyCols = [10, 11, 12, 13, 14]
+    applyCurrencyFormat(ws, aoa.length - 1, currencyCols, 1)
+    freeze(ws, 1)
+    XLSX.utils.book_append_sheet(wb, ws, 'Detail Order')
+  }
+
+  // ===== SHEET 3: REKAP PELANGGAN =====
+  {
+    const aoa = [['Nama Pelanggan', 'Nomor WhatsApp', 'Jumlah Order', 'Total Belanja', 'Total Pembayaran', 'Total Piutang', 'Sisa Piutang']]
+    const map = new Map()
+    transactions.forEach(t => {
+      const key = t.customerId || t.customer || 'umum'
+      const cust = customers.find(c => c.id === t.customerId)
+      const wa = cust?.whatsapp || cust?.phone || ''
+      const cur = map.get(key) || {
+        name: cust?.name || t.customer || 'Umum',
+        wa,
+        orders: 0,
+        total: 0,
+        paid: 0,
+        debt: 0,
+      }
+      cur.orders += 1
+      cur.total += +t.total || 0
+      cur.paid += +t.paid || 0
+      cur.debt += +t.remaining || 0
+      map.set(key, cur)
+    })
+    const list = [...map.values()].sort((a, b) => b.total - a.total)
+    list.forEach(r => aoa.push([
+      r.name, r.wa, r.orders, r.total, r.paid, r.total, r.debt,
+    ]))
+    // Totals
+    aoa.push([
+      'TOTAL', '',
+      list.reduce((s, r) => s + r.orders, 0),
+      list.reduce((s, r) => s + r.total, 0),
+      list.reduce((s, r) => s + r.paid, 0),
+      list.reduce((s, r) => s + r.total, 0),
+      list.reduce((s, r) => s + r.debt, 0),
+    ])
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = autoWidth(aoa, 0)
+    applyCurrencyFormat(ws, aoa.length - 1, [3, 4, 5, 6], 1)
+    freeze(ws, 1)
+    XLSX.utils.book_append_sheet(wb, ws, 'Rekap Pelanggan')
+  }
+
+  // ===== SHEET 4: REKAP PRODUK =====
+  {
+    const aoa = [['Nama Produk', 'Kategori', 'Qty Terjual', 'Jumlah Transaksi', 'Omzet', 'Harga Rata-rata']]
+    const map = new Map()
+    transactions.forEach(t => {
+      const seenInTrx = new Set()
+      ;(t.items || []).forEach(item => {
+        if (!item.name) return
+        const key = item.productId || item.name
+        const cur = map.get(key) || {
+          name: item.name,
+          category: catLabel(products.find(p => p.id === item.productId)?.category),
+          qty: 0,
+          trxCount: 0,
+          omzet: 0,
+        }
+        cur.qty += +item.qty || 0
+        cur.omzet += (+item.qty || 0) * (+item.price || 0)
+        if (!seenInTrx.has(key)) { cur.trxCount += 1; seenInTrx.add(key) }
+        map.set(key, cur)
+      })
+    })
+    const list = [...map.values()].sort((a, b) => b.qty - a.qty)
+    list.forEach(r => aoa.push([
+      r.name, r.category, r.qty, r.trxCount, r.omzet,
+      r.qty > 0 ? Math.round(r.omzet / r.qty) : 0,
+    ]))
+    aoa.push([
+      'TOTAL', '',
+      list.reduce((s, r) => s + r.qty, 0),
+      list.reduce((s, r) => s + r.trxCount, 0),
+      list.reduce((s, r) => s + r.omzet, 0),
+      '',
+    ])
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = autoWidth(aoa, 0)
+    applyCurrencyFormat(ws, aoa.length - 1, [4, 5], 1)
+    freeze(ws, 1)
+    XLSX.utils.book_append_sheet(wb, ws, 'Rekap Produk')
+  }
+
+  // ===== WRITE =====
+  const filename = options.filename
+    || `Rekap-Order-${new Date().toISOString().slice(0, 10)}.xlsx`
   XLSX.writeFile(wb, filename)
   return { ok: true, filename, count: transactions.length, total: totalOmzet }
 }
 
 /**
- * Export customer transaction history.
+ * Convenience: export single customer history.
  */
 export function exportCustomerTransactionsXLSX(customer, transactions, storeInfo = {}) {
   const periodLabel = `Customer: ${customer.name}`
-  const filename = `Histori_${customer.name.replace(/\s+/g, '_')}_${Date.now()}.xlsx`
-  return exportTransactionsXLSX(transactions, storeInfo, { periodLabel, filename })
+  const filename = `Histori-${customer.name.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.xlsx`
+  return exportTransactionsXLSX(transactions, storeInfo, {
+    periodLabel,
+    filename,
+    customers: [customer],
+  })
 }

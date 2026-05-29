@@ -199,6 +199,88 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
           />
         </div>
 
+        {/* Secondary stat row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-5">
+          <StatCard
+            icon={TrendingUp}
+            label="Omzet Bulan Ini"
+            value={formatCompact(stats.monthOmzet)}
+            sub={new Date().toLocaleDateString('id-ID', { month: 'long' })}
+            color="accent"
+            delay={0}
+          />
+          <StatCard
+            icon={Receipt}
+            label="Order Hari Ini"
+            value={stats.todayOrders}
+            sub="Transaksi"
+            color="green"
+            delay={60}
+          />
+          <StatCard
+            icon={Receipt}
+            label="Order Bulan Ini"
+            value={stats.monthOrders}
+            sub={new Date().toLocaleDateString('id-ID', { month: 'long' })}
+            color="blue"
+            delay={120}
+          />
+          <StatCard
+            icon={Star}
+            label="Piutang Aktif"
+            value={formatCompact(stats.totalActiveDebt)}
+            sub={`${stats.activeDebtsCount} customer`}
+            color="amber"
+            delay={180}
+          />
+        </div>
+
+        {/* Top customers strip */}
+        {stats.topCustomers?.length > 0 && (
+          <div className="rounded-2xl p-5 mb-5 animate-slideUp"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Users size={14} style={{ color: 'var(--accent-light)' }} />
+                <h2 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                  Pelanggan Teraktif
+                </h2>
+              </div>
+              <button onClick={() => setActivePage('customers')}
+                className="text-xs font-semibold hover:underline"
+                style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
+                Lihat semua →
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              {stats.topCustomers.slice(0, 5).map((c, i) => (
+                <div key={c.id}
+                  className="flex items-center gap-2 p-2.5 rounded-xl"
+                  style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                    style={{
+                      background: i === 0
+                        ? 'linear-gradient(135deg, #f59e0b, #ea580c)'
+                        : 'linear-gradient(135deg, var(--accent), #6366f1)',
+                      color: '#fff', fontFamily: 'Syne',
+                    }}>
+                    {c.name[0]?.toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold truncate"
+                      style={{ color: 'var(--text-primary)' }}>
+                      {c.name}
+                    </p>
+                    <p className="text-xs truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
+                      {formatCompact(c.totalSpent)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Charts row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           {/* Sales chart */}

@@ -32,12 +32,23 @@ export default function WhatsAppButton({
   const valid = isValidWA(phone)
   const link = buildWaLink(phone, text)
   const normalized = normalizePhone(phone)
-  const isDisabled = disabled || !valid
+  // Only disable when explicitly disabled via prop.
+  // When no phone, still open WhatsApp picker (user chooses contact).
+  const isDisabled = disabled
 
   const handleClick = (e) => {
     if (isDisabled) return
     e.stopPropagation()
-    window.open(link, '_blank', 'noopener,noreferrer')
+    e.preventDefault()
+    try {
+      const w = window.open(link, '_blank', 'noopener,noreferrer')
+      // Some popup-blockers return null — fallback to same-tab navigation
+      if (!w || w.closed || typeof w.closed === 'undefined') {
+        window.location.href = link
+      }
+    } catch {
+      window.location.href = link
+    }
   }
 
   const handleCopy = async (e) => {
@@ -57,17 +68,24 @@ export default function WhatsAppButton({
   }
   const sz = sizes[size] || sizes.md
 
+  // Visual softer state if phone is missing — but still clickable
+  const muted = !valid && !disabled
   const iconBase = {
     background: isDisabled
       ? 'rgba(255,255,255,0.04)'
+      : muted
+      ? 'linear-gradient(135deg, rgba(37,211,102,0.6), rgba(18,140,126,0.6))'
       : 'linear-gradient(135deg, #25d366, #128c7e)',
     color: isDisabled ? 'var(--text-muted)' : '#fff',
     border: '1px solid ' + (isDisabled ? 'var(--border)' : 'rgba(37,211,102,0.4)'),
-    boxShadow: isDisabled ? 'none' : '0 2px 12px rgba(37,211,102,0.25)',
+    boxShadow: isDisabled || muted ? 'none' : '0 2px 12px rgba(37,211,102,0.25)',
     fontFamily: 'Syne',
     cursor: isDisabled ? 'not-allowed' : 'pointer',
     opacity: isDisabled ? 0.5 : 1,
   }
+  const effectiveTooltip = isDisabled ? 'Tombol dinonaktifkan'
+    : muted ? 'Tidak ada nomor — buka WhatsApp untuk pilih kontak'
+    : tooltip
 
   const button = variant === 'icon' ? (
     <button
@@ -78,7 +96,7 @@ export default function WhatsAppButton({
       disabled={isDisabled}
       className={`btn-press relative flex items-center justify-center rounded-xl transition-all ${sz.padIcon} ${className}`}
       style={iconBase}
-      title={isDisabled ? 'Nomor WA tidak valid' : tooltip}
+      title={effectiveTooltip}
     >
       <MessageCircle size={sz.icon} />
       {hover && !isDisabled && tooltip && (
@@ -103,7 +121,7 @@ export default function WhatsAppButton({
       disabled={isDisabled}
       className={`btn-press inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all ${sz.padPill} ${className}`}
       style={iconBase}
-      title={isDisabled ? 'Nomor WA tidak valid' : tooltip}
+      title={effectiveTooltip}
     >
       <MessageCircle size={sz.icon} />
       {label}

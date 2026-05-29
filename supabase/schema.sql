@@ -64,28 +64,44 @@ CREATE TABLE IF NOT EXISTS public.products (
 CREATE INDEX IF NOT EXISTS idx_products_category ON public.products (category);
 
 CREATE TABLE IF NOT EXISTS public.transactions (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  invoice_no      text UNIQUE NOT NULL,
-  customer_id     uuid REFERENCES public.customers(id) ON DELETE SET NULL,
-  customer        text DEFAULT 'Umum',           -- snapshot for fast display
-  items           jsonb NOT NULL DEFAULT '[]'::jsonb,
-  subtotal        numeric DEFAULT 0,
-  discount        numeric DEFAULT 0,
-  tax             numeric DEFAULT 0,
-  total           numeric DEFAULT 0,
-  paid            numeric DEFAULT 0,
-  dp              numeric DEFAULT 0,
-  remaining       numeric DEFAULT 0,
-  payment_method  text DEFAULT 'cash',           -- cash | transfer | qris | hutang
-  status          text DEFAULT 'pending',        -- pending | proses | selesai | lunas
-  cashier         text DEFAULT '',               -- admin who created
-  cashier_id      uuid REFERENCES public.admins(id) ON DELETE SET NULL,
-  created_at      timestamptz DEFAULT now()
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_no         text UNIQUE NOT NULL,
+  order_no           text UNIQUE,
+  customer_id        uuid REFERENCES public.customers(id) ON DELETE SET NULL,
+  customer           text DEFAULT 'Umum',
+  customer_phone     text DEFAULT '',
+  customer_address   text DEFAULT '',
+  items              jsonb NOT NULL DEFAULT '[]'::jsonb,
+  subtotal           numeric DEFAULT 0,
+  discount           numeric DEFAULT 0,
+  tax                numeric DEFAULT 0,
+  total              numeric DEFAULT 0,
+  paid               numeric DEFAULT 0,
+  dp                 numeric DEFAULT 0,
+  remaining          numeric DEFAULT 0,
+  payment_method     text DEFAULT 'cash',     -- cash | transfer | qris | hutang
+  status             text DEFAULT 'pending',  -- pending | proses | selesai | lunas (payment)
+  order_status       text DEFAULT 'menunggu', -- menunggu | diproses | produksi | selesai | diambil | dikirim | dibatalkan
+  notes              text DEFAULT '',
+  status_history     jsonb NOT NULL DEFAULT '[]'::jsonb,
+  cashier            text DEFAULT '',
+  cashier_id         uuid REFERENCES public.admins(id) ON DELETE SET NULL,
+  created_at         timestamptz DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON public.transactions (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_transactions_status     ON public.transactions (status);
-CREATE INDEX IF NOT EXISTS idx_transactions_customer   ON public.transactions (customer_id);
+-- Migration for existing installs: add new columns if table already existed
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS order_no         text UNIQUE;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS customer_phone   text DEFAULT '';
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS customer_address text DEFAULT '';
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS order_status     text DEFAULT 'menunggu';
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS notes            text DEFAULT '';
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS status_history   jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_created_at   ON public.transactions (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_status       ON public.transactions (status);
+CREATE INDEX IF NOT EXISTS idx_transactions_order_status ON public.transactions (order_status);
+CREATE INDEX IF NOT EXISTS idx_transactions_customer     ON public.transactions (customer_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_order_no     ON public.transactions (order_no);
 
 CREATE TABLE IF NOT EXISTS public.debts (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

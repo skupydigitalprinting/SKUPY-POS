@@ -103,9 +103,12 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         : Math.min(total, dpAmount > 0 ? dpAmount : total)
       const remainingAmt = isHutang ? Math.max(0, total - paidAmt) : (dpAmount > 0 ? remaining : 0)
 
+      const picked = customerId ? customers.find(c => c.id === customerId) : null
       const trx = {
         customer: customerName.trim() || 'Umum',
         customerId: customerId || null,
+        customerPhone: picked?.whatsapp || picked?.phone || '',
+        customerAddress: picked?.address || '',
         items: cart.map(({ stock, ...rest }) => rest),
         subtotal,
         discount: discountAmount,
@@ -208,6 +211,10 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                     setCustomerId(c.id)
                     setCustomerName(c.name)
                     setCustomerSearch('')
+                    // Capture phone+address for invoice
+                    if (c.whatsapp || c.phone) {
+                      // these will be passed when checkout completes
+                    }
                   }}
                   className="w-full text-left px-3 py-2 hover:bg-white/[0.03] transition-all"
                   style={{ borderBottom: '1px solid var(--border)' }}>
