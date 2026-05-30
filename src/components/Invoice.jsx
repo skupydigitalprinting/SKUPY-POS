@@ -87,18 +87,21 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   }
 
   /**
-   * Send invoice via WhatsApp using Web Share API (file-share).
+   * Send invoice via WhatsApp.
    *
-   * Flow (PRIORITAS — TIDAK ada auto-download):
-   *   1. Render invoice DOM → PNG blob (in-memory, sementara)
-   *   2. Bungkus jadi File object (image/png)
-   *   3. navigator.share({ files: [file], title, text })
-   *      → OS share dialog muncul → user pilih WhatsApp → file langsung terlampir
+   * Flow (final, sesuai spec):
+   *   1. Generate invoice PNG dari DOM (html2canvas).
+   *   2. Upload PNG ke Supabase Storage bucket `invoices`.
+   *   3. Dapatkan public URL.
+   *   4. Buka WhatsApp via https://wa.me/{nomor} dengan pesan auto-fill yang
+   *      berisi URL publik invoice + total.
    *
-   * Fallback (HANYA jika browser tidak support file-share):
-   *   - Tampilkan pesan: "Perangkat tidak mendukung berbagi file langsung ke WhatsApp."
-   *   - Tawarkan tombol download manual + buka WhatsApp Web
-   *   - Auto-download terjadi HANYA di fallback ini, bukan di flow utama.
+   * Yang TIDAK dilakukan:
+   *   - ❌ Download PNG ke perangkat
+   *   - ❌ navigator.share() / Web Share API
+   *   - ❌ Share dialog OS (AirDrop / Mail / Messages)
+   *
+   * Support: Android, iPhone, WhatsApp Desktop, WhatsApp Web.
    */
   const handleWhatsApp = async () => {
     if (sharing) return
@@ -106,102 +109,55 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     setSharing(true)
     setShareInfo({ kind: 'info', text: 'Membuat invoice PNG...' })
 
-    const filename = `Invoice-${t.invoiceNo}.png`
-
-    // Build message body
-    const buildMessage = (invoiceUrl = '') => {
-      const paymentLabel = PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '-'
-      const customerLabel = (!t.customer || /^umum$/i.test(String(t.customer).trim()))
-        ? 'Pelanggan Umum' : t.customer
-      const lines = [
-        `Halo ${customerLabel}`,
-        `Terima kasih telah bertransaksi di ${STORE_INFO.name || 'SKUPY'}.`,
-        ``,
-        `No Invoice:`,
-        t.invoiceNo,
-        ``,
-        `Total:`,
-        formatRupiah(t.total),
-        ``,
-        `Metode Pembayaran:`,
-        paymentLabel,
-      ]
-      if (invoiceUrl) lines.push('', 'Invoice:', invoiceUrl)
-      lines.push('', 'Terima kasih 🙏')
-      return lines.join('\n')
-    }
+    const phone = t.customerPhone || ''
+    const hasValidPhone = !!phone && isValidWA(phone)
 
     try {
-      // 1. Render PNG to in-memory blob (TIDAK ada download di sini)
+      // 1. Generate PNG
       const blob = await renderInvoicePNG()
-      const file = new File([blob], filename, { type: 'image/png' })
-      const text = buildMessage()
 
-      // 2. Cek dukungan Web Share API + file sharing
-      const canShareFile =
-        typeof navigator !== 'undefined' &&
-        typeof navigator.canShare === 'function' &&
-        typeof navigator.share === 'function' &&
-        navigator.canShare({ files: [file] })
-
-      if (canShareFile) {
-        try {
-          setShareInfo({ kind: 'info', text: 'Membuka share dialog...' })
-          await navigator.share({
-            files: [file],
-            title: `Invoice ${t.invoiceNo}`,
-            text,
-          })
-          setShareInfo({
-            kind: 'success',
-            text: 'Invoice berhasil dibagikan. Silakan pilih kontak WhatsApp.',
-          })
-          return
-        } catch (shareErr) {
-          // User cancelled — bukan error, jangan lakukan fallback download
-          if (shareErr?.name === 'AbortError') {
-            setShareInfo(null)
-            return
-          }
-          // Real error → lanjut ke fallback below
-          // eslint-disable-next-line no-console
-          console.error('[Invoice] navigator.share gagal:', shareErr)
-        }
-      }
-
-      // 3. FALLBACK: browser tidak mendukung file sharing → tampilkan notif + opsi download
-      // eslint-disable-next-line no-console
-      console.warn('[Invoice] Web Share API tidak mendukung file — fallback ke download manual')
-      setShareInfo({
-        kind: 'warning',
-        text: 'Perangkat tidak mendukung berbagi file langsung ke WhatsApp. Mengunduh sebagai cadangan...',
-      })
-
-      // Try upload to get a public URL for the WA message (best effort)
-      let invoiceUrl = ''
+      // 2-3. Upload ke Supabase Storage → public URL (BLOCKING — invoice URL wajib)
+      setShareInfo({ kind: 'info', text: 'Mengunggah invoice ke storage...' })
+      let publicUrl = ''
       try {
-        invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
-      } catch {}
+        publicUrl = await uploadInvoiceImage(blob, t.invoiceNo)
+      } catch (uploadErr) {
+        // eslint-disable-next-line no-console
+        console.error('[Invoice] Upload gagal:', uploadErr)
+        setShareInfo({
+          kind: 'error',
+          text: `Gagal upload invoice ke storage: ${uploadErr.message || uploadErr}. Pastikan bucket "invoices" sudah dibuat di Supabase Storage.`,
+        })
+        return
+      }
 
-      // Download as backup so user can attach manually
-      downloadFile(filename, blob, 'image/png')
+      // 4. Build pesan otomatis (sesuai spec)
+      const customerLabel = (!t.customer || /^umum$/i.test(String(t.customer).trim()))
+        ? 'Pelanggan Umum' : t.customer
+      const message = [
+        `Halo ${customerLabel},`,
+        `Berikut invoice Anda:`,
+        publicUrl,
+        `Total: ${formatRupiah(t.total)}`,
+        `Terima kasih.`,
+      ].join('\n')
 
-      // Buka WhatsApp Web (desktop) atau wa.me (umum)
-      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
-      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
-      const encodedMsg = encodeURIComponent(buildMessage(invoiceUrl))
-      const url = isMobile
-        ? `https://wa.me/?text=${encodedMsg}`
-        : `https://web.whatsapp.com/`
+      // 5. Buka WhatsApp via wa.me
+      const phonePart = hasValidPhone ? normalizePhone(phone) : ''
+      const waUrl = `https://wa.me/${phonePart}?text=${encodeURIComponent(message)}`
 
-      const win = window.open(url, '_blank', 'noopener,noreferrer')
+      const win = window.open(waUrl, '_blank', 'noopener,noreferrer')
       if (!win || win.closed || typeof win.closed === 'undefined') {
-        window.location.href = url
+        // Popup-blocker → same-tab navigation (works on all platforms)
+        window.location.href = waUrl
+        return
       }
 
       setShareInfo({
-        kind: 'info',
-        text: 'Perangkat tidak mendukung berbagi file langsung. Invoice diunduh, WhatsApp dibuka — lampirkan PNG yang baru terunduh.',
+        kind: 'success',
+        text: hasValidPhone
+          ? 'WhatsApp telah dibuka untuk customer. Silakan kirim invoice.'
+          : 'WhatsApp telah dibuka. Silakan pilih kontak tujuan.',
       })
     } catch (err) {
       // eslint-disable-next-line no-console
