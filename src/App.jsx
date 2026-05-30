@@ -148,7 +148,16 @@ function AppShell() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+    <div
+      className="flex w-screen overflow-hidden"
+      style={{
+        background: 'var(--bg-primary)',
+        // Use 100dvh (dynamic viewport height) to handle mobile Safari URL bar
+        // Fallback to 100vh for older browsers
+        height: '100dvh',
+        minHeight: '100vh',
+      }}
+    >
       <Sidebar
         activePage={activePage}
         setActivePage={setActivePage}

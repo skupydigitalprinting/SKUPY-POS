@@ -306,75 +306,114 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         ) : (
           cart.map((item) => (
             <div key={item.productId}
-              className="flex items-center gap-2.5 p-2.5 rounded-xl animate-slideInRight"
+              className="p-3 rounded-xl animate-slideInRight"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-              <ProductImage
-                src={item.image}
-                alt={item.name}
-                className="w-10 h-10 rounded-lg object-cover flex-shrink-0"
-                fallbackSize={40}
-              />
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-                  {item.name}
-                </p>
-                <p className="text-xs font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-                  {formatRupiah(item.price * item.qty)}
-                </p>
-              </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                <button
-                  onClick={() => updateQty(item.productId, -1)}
-                  className="w-6 h-6 rounded-lg flex items-center justify-center btn-press"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border)',
-                  }}
-                >
-                  <Minus size={10} />
-                </button>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  value={item.qty}
-                  min={1}
-                  max={item.stock || undefined}
-                  onChange={(e) => setQtyExact(item.productId, e.target.value)}
-                  onBlur={(e) => { if (!e.target.value) setQtyExact(item.productId, 1) }}
-                  onFocus={(e) => e.target.select()}
-                  className="qty-input w-9 text-center text-xs font-bold rounded-md"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-primary)',
-                    fontFamily: 'Syne',
-                    padding: '2px 0',
-                    outline: 'none',
-                  }}
+              {/* Row 1: Image + Name + Delete */}
+              <div className="flex items-start gap-2.5 mb-2">
+                <ProductImage
+                  src={item.image}
+                  alt={item.name}
+                  className="w-11 h-11 rounded-lg object-cover flex-shrink-0"
+                  fallbackSize={44}
                 />
-                <button
-                  onClick={() => updateQty(item.productId, 1)}
-                  className="w-6 h-6 rounded-lg flex items-center justify-center btn-press"
-                  style={{
-                    background: 'rgba(139,92,246,0.15)',
-                    color: 'var(--accent-light)',
-                    border: '1px solid rgba(139,92,246,0.25)',
-                  }}
-                >
-                  <Plus size={10} />
-                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold leading-tight"
+                    style={{ color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                    {item.name}
+                  </p>
+                  <p className="text-xs mt-0.5"
+                    style={{ color: 'var(--text-muted)' }}>
+                    {formatRupiah(item.price)} / pcs
+                  </p>
+                </div>
                 <button
                   onClick={() => removeItem(item.productId)}
-                  className="w-6 h-6 rounded-lg flex items-center justify-center ml-1 btn-press"
+                  aria-label="Hapus item"
+                  className="flex items-center justify-center btn-press flex-shrink-0"
                   style={{
+                    width: 36, height: 36, minWidth: 36,
+                    borderRadius: 10,
                     background: 'rgba(255,77,106,0.1)',
                     color: 'var(--red)',
                     border: '1px solid rgba(255,77,106,0.2)',
                   }}
                 >
-                  <Trash2 size={10} />
+                  <Trash2 size={14} />
                 </button>
+              </div>
+
+              {/* Row 2: Qty controls + Subtotal */}
+              <div className="flex items-center justify-between gap-2">
+                <div
+                  className="flex items-center gap-1 rounded-xl p-1"
+                  style={{
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <button
+                    onClick={() => {
+                      if (item.qty <= 1) {
+                        if (window.confirm(`Hapus "${item.name}" dari keranjang?`)) {
+                          removeItem(item.productId)
+                        }
+                      } else {
+                        updateQty(item.productId, -1)
+                      }
+                    }}
+                    aria-label="Kurangi"
+                    className="flex items-center justify-center btn-press"
+                    style={{
+                      width: 44, height: 44, minWidth: 44, minHeight: 44,
+                      borderRadius: 10,
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    <Minus size={16} />
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={item.qty}
+                    min={1}
+                    max={item.stock || undefined}
+                    onChange={(e) => setQtyExact(item.productId, e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(n) || n < 1) setQtyExact(item.productId, 1)
+                    }}
+                    onFocus={(e) => e.target.select()}
+                    aria-label="Jumlah"
+                    className="qty-input text-center text-base font-bold"
+                    style={{
+                      width: 60, minHeight: 44,
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-primary)',
+                      fontFamily: 'Syne',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    onClick={() => updateQty(item.productId, 1)}
+                    aria-label="Tambah"
+                    className="flex items-center justify-center btn-press"
+                    style={{
+                      width: 44, height: 44, minWidth: 44, minHeight: 44,
+                      borderRadius: 10,
+                      background: 'rgba(139,92,246,0.15)',
+                      color: 'var(--accent-light)',
+                    }}
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+                <p className="text-sm font-bold text-right"
+                  style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
+                  {formatRupiah(item.price * item.qty)}
+                </p>
               </div>
             </div>
           ))
@@ -764,34 +803,61 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         {cartContent}
       </div>
 
-      {/* Mobile Cart FAB */}
+      {/* Mobile Cart FAB — always visible above BottomNav with safe-area */}
       <button
         onClick={() => setCartOpen(true)}
-        className="lg:hidden fixed bottom-5 right-5 z-30 flex items-center gap-2 px-4 py-3 rounded-2xl font-bold text-sm btn-press"
+        aria-label="Buka keranjang"
+        className="lg:hidden fixed right-4 z-30 flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm btn-press"
         style={{
+          // Bottom offset = BottomNav height (64px) + safe-area + 16px gap
+          bottom: 'calc(72px + env(safe-area-inset-bottom) + 16px)',
           background: 'linear-gradient(135deg, var(--accent), #6366f1)',
           color: '#fff',
           boxShadow: '0 8px 24px rgba(139,92,246,0.5)',
           fontFamily: 'Syne',
+          minHeight: 48,
         }}
       >
-        <ShoppingCart size={16} />
+        <ShoppingCart size={18} />
         Keranjang
         {cartCount > 0 && (
-          <span className="bg-white text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold">
+          <span className="bg-white text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold min-w-[22px] text-center">
             {cartCount}
           </span>
         )}
       </button>
 
-      {/* Mobile Cart Drawer */}
+      {/* Mobile Cart Bottom Sheet */}
       {cartOpen && (
         <>
           <div className="lg:hidden fixed inset-0 z-40 drawer-overlay"
             onClick={() => setCartOpen(false)} />
-          <div className="lg:hidden fixed right-0 top-0 bottom-0 z-50 animate-slideInRight"
-            style={{ width: 'min(360px, 90vw)' }}>
-            {cartContent}
+          <div
+            className="lg:hidden fixed left-0 right-0 bottom-0 z-50 animate-slideUp"
+            style={{
+              maxHeight: '85dvh',
+              borderTopLeftRadius: 20,
+              borderTopRightRadius: 20,
+              overflow: 'hidden',
+              boxShadow: '0 -8px 32px rgba(0,0,0,0.45)',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
+          >
+            {/* Drag handle */}
+            <div
+              className="flex justify-center pt-2 pb-1"
+              style={{ background: 'var(--bg-secondary)' }}
+            >
+              <div
+                style={{
+                  width: 40, height: 4, borderRadius: 4,
+                  background: 'rgba(255,255,255,0.15)',
+                }}
+              />
+            </div>
+            <div style={{ height: 'calc(85dvh - 24px)', display: 'flex', flexDirection: 'column' }}>
+              {cartContent}
+            </div>
           </div>
         </>
       )}
