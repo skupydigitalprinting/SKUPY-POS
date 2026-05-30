@@ -87,20 +87,19 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   }
 
   /**
-   * Send invoice via WhatsApp — NEVER blocks on missing customer phone.
+   * Send invoice via WhatsApp — direct open only (NO share sheet, NO Web Share API).
    *
    * Flow:
-   *   1. Render invoice DOM → PNG blob (html2canvas)
-   *   2. Try Web Share API with file → user picks WhatsApp from share sheet
-   *      (best UX on mobile, also works on some desktop browsers)
-   *   3. Fallback path:
-   *      a. Upload PNG → Supabase Storage (best effort) for URL in message
-   *      b. ALWAYS download PNG locally so user can attach it manually
-   *      c. Detect mobile vs desktop:
-   *         - Mobile  → try whatsapp://send protocol, fallback to wa.me
-   *         - Desktop → web.whatsapp.com (with prefilled if phone exists, else open root)
+   *   1. Render invoice DOM → PNG blob
+   *   2. Download PNG file otomatis ke device user
+   *   3. (Best-effort) upload PNG ke Supabase Storage → URL ke pesan
+   *   4. Buka WhatsApp langsung:
+   *      - Mobile  → whatsapp://send (native app), fallback wa.me
+   *      - Desktop → web.whatsapp.com (Web app)
    *
-   * Tidak ada lagi pesan error "Nomor WhatsApp customer belum tersedia".
+   * Tidak menggunakan navigator.share() — Share Sheet (AirDrop / Mail / Messages dll.)
+   * tidak akan muncul. User cukup pilih kontak di WhatsApp lalu attach file PNG
+   * yang baru saja terdownload.
    */
   const handleWhatsApp = async () => {
     if (sharing) return
@@ -112,7 +111,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     const hasValidPhone = !!phone && isValidWA(phone)
     const filename = `Invoice-${t.invoiceNo}.png`
 
-    // Build the message body (used for all share methods)
+    // Build message body
     const buildMessage = (invoiceUrl = '') => {
       const paymentLabel = PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '-'
       const customerLabel = (!t.customer || /^umum$/i.test(String(t.customer).trim()))
@@ -136,42 +135,13 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     }
 
     try {
-      // 1. Render PNG (always needed)
+      // 1. Render PNG
       const blob = await renderInvoicePNG()
-      const file = new File([blob], filename, { type: 'image/png' })
 
-      // 2. Web Share API path (best UX — direct file attachment)
-      if (
-        typeof navigator !== 'undefined' &&
-        navigator.canShare &&
-        navigator.canShare({ files: [file] })
-      ) {
-        try {
-          setShareInfo({ kind: 'info', text: 'Membuka share sheet...' })
-          await navigator.share({
-            files: [file],
-            title: `Invoice ${t.invoiceNo}`,
-            text: buildMessage(),
-          })
-          setShareInfo({
-            kind: 'success',
-            text: 'Invoice berhasil dibagikan. Silakan pilih kontak tujuan di WhatsApp.',
-          })
-          return
-        } catch (shareErr) {
-          if (shareErr?.name === 'AbortError') {
-            setShareInfo(null)
-            return
-          }
-          // Fall through to manual flow
-          // eslint-disable-next-line no-console
-          console.warn('[Invoice] Web Share gagal, fallback ke flow manual:', shareErr)
-        }
-      }
+      // 2. Download PNG otomatis (user akan attach manual di WhatsApp)
+      downloadFile(filename, blob, 'image/png')
 
-      // 3. Manual fallback: upload PNG (best effort), then open WhatsApp
-      setShareInfo({ kind: 'info', text: 'Mengunggah & membuka WhatsApp...' })
-
+      // 3. Best-effort upload → URL untuk pesan
       let invoiceUrl = ''
       try {
         invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
@@ -179,48 +149,46 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
         // eslint-disable-next-line no-console
         console.warn('[Invoice] Upload PNG gagal, lanjut tanpa URL:', uploadErr)
       }
+
       const message = buildMessage(invoiceUrl)
+      const encodedMsg = encodeURIComponent(message)
+      const phonePart = hasValidPhone ? normalizePhone(phone) : ''
 
-      // 3a. Always download PNG so user can attach manually
-      downloadFile(filename, blob, 'image/png')
-
-      // 3b. Detect mobile vs desktop & open appropriate WhatsApp endpoint
+      // 4. Direct open WhatsApp
       const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
       const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
 
-      let waUrl
       if (isMobile) {
-        // Mobile: prefer whatsapp:// protocol → opens native app instantly
-        const phonePart = hasValidPhone ? normalizePhone(phone) : ''
-        const proto = `whatsapp://send?${phonePart ? `phone=${phonePart}&` : ''}text=${encodeURIComponent(message)}`
-        const httpFallback = `https://wa.me/${phonePart}?text=${encodeURIComponent(message)}`
-        // Open protocol; browser will auto-fallback to https if protocol unhandled.
-        try {
-          window.location.href = proto
-          // Safety net: after a moment, force https fallback if protocol failed
-          setTimeout(() => {
+        // Native WhatsApp via custom protocol
+        const proto = `whatsapp://send?${phonePart ? `phone=${phonePart}&` : ''}text=${encodedMsg}`
+        const httpFallback = phonePart
+          ? `https://wa.me/${phonePart}?text=${encodedMsg}`
+          : `https://wa.me/?text=${encodedMsg}`
+        // Try native first
+        window.location.href = proto
+        // Safety net: if protocol not registered, redirect to wa.me after a moment
+        setTimeout(() => {
+          if (document.hasFocus()) {
             try { window.location.href = httpFallback } catch {}
-          }, 1800)
-        } catch {
-          window.location.href = httpFallback
-        }
-        waUrl = proto
+          }
+        }, 1800)
       } else {
-        // Desktop: open WhatsApp Web
-        const phonePart = hasValidPhone ? normalizePhone(phone) : ''
-        waUrl = phonePart
-          ? `https://web.whatsapp.com/send?phone=${phonePart}&text=${encodeURIComponent(message)}`
-          : `https://web.whatsapp.com/`   // user picks contact themselves
-        const win = window.open(waUrl, '_blank', 'noopener,noreferrer')
+        // Desktop → WhatsApp Web
+        const webUrl = phonePart
+          ? `https://web.whatsapp.com/send?phone=${phonePart}&text=${encodedMsg}`
+          : `https://web.whatsapp.com/`
+        const win = window.open(webUrl, '_blank', 'noopener,noreferrer')
         if (!win || win.closed || typeof win.closed === 'undefined') {
-          // Popup-blocker → same-tab navigation
-          window.location.href = waUrl
+          // Popup blocked → fallback wa.me in current tab
+          window.location.href = phonePart
+            ? `https://wa.me/${phonePart}?text=${encodedMsg}`
+            : `https://wa.me/?text=${encodedMsg}`
         }
       }
 
       setShareInfo({
         kind: 'success',
-        text: 'Invoice berhasil dibuat. Silakan pilih kontak tujuan di WhatsApp.',
+        text: 'Invoice berhasil dibuat dan WhatsApp telah dibuka.',
       })
     } catch (err) {
       // Last-resort fallback
