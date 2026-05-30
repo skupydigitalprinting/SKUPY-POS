@@ -194,9 +194,32 @@ export function useStore() {
         if (mounted.current) setCurrentUser(null)
       }
       setProducts((p.data || []).map(productFromDB))
-      setTransactions((t.data || []).map(trxFromDB))
+      const trxList = (t.data || []).map(trxFromDB)
+      setTransactions(trxList)
       setCustomers((c.data || []).map(customerFromDB))
       setDebts((d.data || []).map(debtFromDB))
+
+      // ─── Legacy data sync ────────────────────────────────────
+      // Any transaction where remaining=0 but status!=lunas → auto fix in DB.
+      // Best-effort: don't block initial load.
+      try {
+        const stale = trxList.filter(t => (t.remaining || 0) <= 0 && t.status !== 'lunas')
+        if (stale.length > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[useStore] sinkronisasi ${stale.length} transaksi lama → lunas`)
+          await supabase
+            .from('transactions')
+            .update({ status: 'lunas' })
+            .in('id', stale.map(t => t.id))
+          // Patch local state
+          if (mounted.current) setTransactions(prev => prev.map(t =>
+            (t.remaining || 0) <= 0 ? { ...t, status: 'lunas' } : t
+          ))
+        }
+      } catch (syncErr) {
+        // eslint-disable-next-line no-console
+        console.warn('[useStore] gagal sync legacy data:', syncErr)
+      }
     } catch (e) {
       if (mounted.current) setError(
         isSupabaseConfigured
@@ -229,6 +252,12 @@ export function useStore() {
   const refreshDebts = useCallback(async () => {
     const { data, error: e } = await supabase.from('debts').select('*').order('created_at', { ascending: false })
     if (!e && mounted.current) setDebts((data || []).map(debtFromDB))
+  }, [])
+
+  const refreshTransactions = useCallback(async () => {
+    const { data, error: e } = await supabase
+      .from('transactions').select('*').order('created_at', { ascending: false })
+    if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
   }, [])
 
   const wrap = useCallback(async (fn) => {
@@ -521,10 +550,39 @@ export function useStore() {
       payment_method: paymentMethod, notes,
       cashier, cashier_id: cashierId,
     })
-    if (e) return { ok: false, error: e.message }
-    // Refresh debts (trigger has already updated debts.paid/remaining/status)
-    await refreshDebts()
-    await refreshCustomers()
+    if (e) {
+      // eslint-disable-next-line no-console
+      console.error('[useStore] Gagal insert debt_payment:', e)
+      return { ok: false, error: e.message }
+    }
+
+    // After the SQL trigger has updated debts.remaining/status,
+    // fetch the debt + sync the linked transaction.status if needed.
+    try {
+      const { data: debt } = await supabase
+        .from('debts').select('*').eq('id', debtId).maybeSingle()
+      if (debt) {
+        if (debt.status === 'lunas' && debt.transaction_id) {
+          // Mark transaction as lunas + zero out remaining
+          await supabase
+            .from('transactions')
+            .update({ status: 'lunas', remaining: 0, paid: debt.total_debt, dp: debt.total_debt })
+            .eq('id', debt.transaction_id)
+        } else if (debt.transaction_id) {
+          // Partial payment — keep status pending but sync remaining
+          await supabase
+            .from('transactions')
+            .update({ remaining: debt.remaining, paid: debt.paid, dp: debt.paid })
+            .eq('id', debt.transaction_id)
+        }
+      }
+    } catch (syncErr) {
+      // eslint-disable-next-line no-console
+      console.warn('[useStore] sync transaksi setelah debt payment gagal:', syncErr)
+    }
+
+    // Refresh everything so dashboard / orders are up to date
+    await Promise.all([refreshDebts(), refreshCustomers(), refreshTransactions()])
     return { ok: true }
   }), [currentUser, wrap, refreshDebts, refreshCustomers])
 

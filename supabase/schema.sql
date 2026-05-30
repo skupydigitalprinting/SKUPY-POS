@@ -166,17 +166,48 @@ CREATE TRIGGER settings_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
 
 -- After insert on debt_payments → update debts.paid, remaining, status
+-- AND propagate to the linked transaction (so Order page shows "Lunas").
 CREATE OR REPLACE FUNCTION public.tg_apply_debt_payment()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
-  d_total numeric;
-  d_paid_new numeric;
+  d_total      numeric;
+  d_paid_new   numeric;
+  d_remaining  numeric;
+  d_status     text;
+  d_trx_id     uuid;
 BEGIN
+  SELECT total_debt, paid, transaction_id
+    INTO d_total, d_paid_new, d_trx_id
+    FROM public.debts WHERE id = NEW.debt_id;
+
+  d_paid_new  := COALESCE(d_paid_new, 0) + NEW.amount;
+  d_remaining := GREATEST(0, COALESCE(d_total, 0) - d_paid_new);
+  d_status    := CASE WHEN d_remaining <= 0 THEN 'lunas' ELSE 'aktif' END;
+
   UPDATE public.debts
-    SET paid = paid + NEW.amount,
-        remaining = GREATEST(0, total_debt - (paid + NEW.amount)),
-        status = CASE WHEN total_debt - (paid + NEW.amount) <= 0 THEN 'lunas' ELSE 'aktif' END
+    SET paid = d_paid_new,
+        remaining = d_remaining,
+        status = d_status
     WHERE id = NEW.debt_id;
+
+  -- Propagate to linked transaction
+  IF d_trx_id IS NOT NULL THEN
+    IF d_status = 'lunas' THEN
+      UPDATE public.transactions
+        SET status = 'lunas',
+            remaining = 0,
+            paid = d_total,
+            dp = d_total
+        WHERE id = d_trx_id;
+    ELSE
+      UPDATE public.transactions
+        SET remaining = d_remaining,
+            paid = d_paid_new,
+            dp = d_paid_new
+        WHERE id = d_trx_id;
+    END IF;
+  END IF;
+
   RETURN NEW;
 END $$;
 
@@ -303,5 +334,29 @@ SELECT * FROM (VALUES
   ('Banner Spanduk 1x2m',         'banner',       90000,  45000,  40, 'Banner spanduk outdoor 1x2 m.',                  'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=600&q=80')
 ) AS v(name, category, price, modal, stock, description, image)
 WHERE NOT EXISTS (SELECT 1 FROM public.products LIMIT 1);
+
+-- ---------- SYNC LEGACY DATA ----------
+-- Backfill: any transaction whose remaining is already 0 (e.g. cash/transfer/qris)
+-- but status is still 'pending' should be marked 'lunas'.
+-- Also sync transactions whose debt has already been fully paid.
+
+UPDATE public.transactions
+   SET status = 'lunas'
+ WHERE COALESCE(remaining, 0) <= 0
+   AND status IS DISTINCT FROM 'lunas';
+
+UPDATE public.transactions t
+   SET status = 'lunas', remaining = 0, paid = t.total, dp = t.total
+  FROM public.debts d
+ WHERE d.transaction_id = t.id
+   AND d.status = 'lunas'
+   AND t.status IS DISTINCT FROM 'lunas';
+
+-- Also sync customer.total_debt to reflect actual sum of active debts
+UPDATE public.customers c
+   SET total_debt = COALESCE((
+     SELECT SUM(d.remaining) FROM public.debts d
+      WHERE d.customer_id = c.id AND d.status = 'aktif'
+   ), 0);
 
 -- ---------- DONE ----------

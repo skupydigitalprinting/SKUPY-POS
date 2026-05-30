@@ -316,8 +316,8 @@ export default function Order({
             <span>Customer</span>
             <span>Total</span>
             <span>Sisa</span>
-            <span>Bayar</span>
             <span>Pembayaran</span>
+            <span>Status Bayar</span>
             <span>Workflow</span>
             <span className="text-right">Aksi</span>
           </div>
@@ -376,24 +376,24 @@ export default function Order({
                     {pm.icon} {pm.label}
                   </p>
                   <div>
-                    <select
-                      value={t.status}
-                      onChange={(e) => updateTransactionStatus(t.id, e.target.value)}
-                      className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer"
-                      style={{
-                        background: 'transparent',
-                        color: s.hex,
-                        fontWeight: 700,
-                        fontFamily: 'Syne',
-                      }}
-                    >
-                      {ORDER_STATUS.map((st) => (
-                        <option key={st} value={st}
-                          style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                          {getStatus(st).label}
-                        </option>
-                      ))}
-                    </select>
+                    {(() => {
+                      // Derive Pending/Lunas from remaining (single source of truth)
+                      const isLunas = (t.remaining || 0) <= 0 || t.status === 'lunas'
+                      return (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold"
+                          style={{
+                            background: isLunas ? 'rgba(16,217,138,0.12)' : 'rgba(245,158,11,0.12)',
+                            color: isLunas ? '#10d98a' : '#f59e0b',
+                            border: `1px solid ${isLunas ? 'rgba(16,217,138,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                            fontFamily: 'Syne',
+                            letterSpacing: '0.04em',
+                          }}
+                        >
+                          {isLunas ? 'LUNAS' : 'PENDING'}
+                        </span>
+                      )
+                    })()}
                   </div>
                   <div>
                     {updateOrderStatus ? (
@@ -535,7 +535,14 @@ export default function Order({
                         {formatDateTime(t.date)}
                       </p>
                     </div>
-                    <Badge color={s.color}>{s.label}</Badge>
+                    {(() => {
+                      const isLunas = (t.remaining || 0) <= 0 || t.status === 'lunas'
+                      return (
+                        <Badge color={isLunas ? 'green' : 'amber'}>
+                          {isLunas ? 'LUNAS' : 'PENDING'}
+                        </Badge>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-end justify-between mb-3">
                     <div>

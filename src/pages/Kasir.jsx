@@ -131,7 +131,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
       const picked = customerId ? customers.find(c => c.id === customerId) : null
       const trx = {
-        customer: customerName.trim() || picked?.name || 'Umum',
+        customer: customerName.trim() || picked?.name || 'Pelanggan Umum',
         customerId: customerId || null,
         customerPhone: picked?.whatsapp || picked?.phone || '',
         customerAddress: picked?.address || '',

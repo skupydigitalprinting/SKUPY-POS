@@ -89,26 +89,21 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   /**
    * Send invoice via WhatsApp.
    *
-   * NO native share dialog. NO file download. NO export popup.
-   *
    * Flow:
    *   1. Render invoice DOM → PNG blob (html2canvas)
    *   2. Upload PNG → Supabase Storage `invoices` bucket → get public URL
-   *   3. Build wa.me URL with customer phone + auto-filled message containing the URL
-   *   4. window.open() → WhatsApp opens directly with message ready
+   *   3. Build message containing the URL
+   *   4a. If customer has valid WA phone → open wa.me/<phone>?text=... (chat tujuan langsung)
+   *   4b. If no phone (e.g. Pelanggan Umum) → also download PNG locally, open wa.me/?text=...
+   *       → user picks contact in WhatsApp manually.
+   *
+   * NO blocking error. NO native share dialog.
    */
   const handleWhatsApp = async () => {
     if (sharing) return
 
     const phone = t.customerPhone || ''
-    if (!phone) {
-      setShareInfo({ kind: 'error', text: 'Nomor WhatsApp customer belum tersedia' })
-      return
-    }
-    if (!isValidWA(phone)) {
-      setShareInfo({ kind: 'error', text: `Nomor WhatsApp customer tidak valid: ${phone}` })
-      return
-    }
+    const hasValidPhone = !!phone && isValidWA(phone)
 
     setSharing(true)
     setShareInfo({ kind: 'info', text: 'Memproses invoice & upload ke storage...' })
@@ -116,25 +111,23 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     try {
       // 1. Render PNG
       const blob = await renderInvoicePNG()
+      const filename = `Invoice-${t.invoiceNo}.png`
 
-      // 2. Upload to Supabase Storage → public URL
+      // 2. Upload to Supabase Storage → public URL (best effort — keep flow alive on failure)
       let invoiceUrl = ''
       try {
         invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
       } catch (uploadErr) {
         // eslint-disable-next-line no-console
-        console.error('[Invoice] Upload gagal:', uploadErr)
-        setShareInfo({
-          kind: 'error',
-          text: `Gagal upload invoice: ${uploadErr.message || uploadErr}. Pastikan bucket "invoices" sudah dibuat di Supabase Storage.`,
-        })
-        return
+        console.warn('[Invoice] Upload gagal (lanjut tanpa URL):', uploadErr)
       }
 
-      // 3. Build pesan sesuai format yang diminta
+      // 3. Build pesan
       const paymentLabel = PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '-'
-      const message = [
-        `Halo ${t.customer || 'Customer'}`,
+      const customerLabel = (!t.customer || /^umum$/i.test(t.customer.trim()))
+        ? 'Pelanggan Umum' : t.customer
+      const messageLines = [
+        `Halo ${customerLabel}`,
         `Terima kasih telah bertransaksi di ${STORE_INFO.name || 'SKUPY'}.`,
         ``,
         `No Invoice:`,
@@ -145,25 +138,47 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
         ``,
         `Metode Pembayaran:`,
         paymentLabel,
-        ``,
-        `Invoice:`,
-        invoiceUrl,
-        ``,
-        `Terima kasih 🙏`,
-      ].join('\n')
+      ]
+      if (invoiceUrl) {
+        messageLines.push('', 'Invoice:', invoiceUrl)
+      }
+      messageLines.push('', 'Terima kasih 🙏')
+      const message = messageLines.join('\n')
 
-      // 4. Open WhatsApp DIRECTLY (no navigator.share, no download)
-      const waUrl = buildWaLink(phone, message)
+      // 4. Open WhatsApp — never block, no specific number required
+      const waUrl = buildWaLink(hasValidPhone ? phone : '', message)
+
+      if (!hasValidPhone) {
+        // No phone → download PNG so user can manually attach in chat,
+        // then open WhatsApp with no specific contact (user picks)
+        downloadFile(filename, blob, 'image/png')
+      }
+
       const win = window.open(waUrl, '_blank', 'noopener,noreferrer')
       if (!win || win.closed || typeof win.closed === 'undefined') {
         window.location.href = waUrl
         return
       }
-      setShareInfo({ kind: 'success', text: 'WhatsApp dibuka. Tinggal kirim 🚀' })
+
+      setShareInfo({
+        kind: 'success',
+        text: hasValidPhone
+          ? 'WhatsApp dibuka untuk customer. Tinggal kirim 🚀'
+          : 'Invoice berhasil dibuat. Silakan pilih kontak tujuan di WhatsApp.',
+      })
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[Invoice] WhatsApp flow error:', err)
-      setShareInfo({ kind: 'error', text: err.message || 'Gagal kirim WhatsApp' })
+      // Still graceful — try to download + open WhatsApp Web as last resort
+      try {
+        const blob = await renderInvoicePNG()
+        downloadFile(`Invoice-${t.invoiceNo}.png`, blob, 'image/png')
+      } catch {}
+      window.open('https://web.whatsapp.com/', '_blank', 'noopener,noreferrer')
+      setShareInfo({
+        kind: 'info',
+        text: 'Invoice diunduh. WhatsApp Web dibuka — silakan pilih kontak.',
+      })
     } finally {
       setSharing(false)
     }
@@ -381,7 +396,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Ditagihkan Kepada</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
-                  {t.customer}
+                  {(!t.customer || /^umum$/i.test(String(t.customer).trim())) ? 'Pelanggan Umum' : t.customer}
                 </div>
                 {t.customerPhone && (
                   <div style={{ fontSize: 10.5, color: '#55556a' }}>{t.customerPhone}</div>
