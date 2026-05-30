@@ -12,7 +12,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const [cart, setCart] = useState([])
-  const [discount, setDiscount] = useState(0)
+  // Discount stored as STRING so the input can be truly empty when 0.
+  // All math coerces via Number(discount || 0).
+  const [discount, setDiscount] = useState('')
   const [discountType, setDiscountType] = useState('nominal')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [customerName, setCustomerName] = useState('')
@@ -74,6 +76,18 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
     )
   }
 
+  // Set exact qty (from manual input). Empty/0/invalid → coerce to 1.
+  // Caps at item.stock if known.
+  const setQtyExact = (productId, raw) => {
+    setCart((prev) => prev.map((i) => {
+      if (i.productId !== productId) return i
+      let n = parseInt(raw, 10)
+      if (!Number.isFinite(n) || n < 1) n = 1
+      if (i.stock != null && n > i.stock) n = i.stock
+      return { ...i, qty: n }
+    }))
+  }
+
   const removeItem = (productId) =>
     setCart((prev) => prev.filter((i) => i.productId !== productId))
 
@@ -90,22 +104,33 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
   const handleCheckout = async () => {
     if (cart.length === 0 || checkingOut) return
-    if (paymentMethod === 'hutang' && !customerId) {
-      setCheckoutError('Customer wajib dipilih untuk pembayaran Hutang/Tempo')
-      return
+
+    // Validation — only block on actually-missing requirements
+    const isHutang = paymentMethod === 'hutang'
+    if (isHutang) {
+      if (!customerId) {
+        setCheckoutError('Tolong pilih customer terlebih dahulu')
+        return
+      }
+      if (!dueDate) {
+        setCheckoutError('Tolong pilih tanggal jatuh tempo')
+        return
+      }
     }
+
     setCheckingOut(true)
     setCheckoutError('')
     try {
-      const isHutang = paymentMethod === 'hutang'
       const paidAmt = isHutang
         ? (dpAmount > 0 ? Math.min(total, dpAmount) : 0)
         : Math.min(total, dpAmount > 0 ? dpAmount : total)
-      const remainingAmt = isHutang ? Math.max(0, total - paidAmt) : (dpAmount > 0 ? remaining : 0)
+      const remainingAmt = isHutang
+        ? Math.max(0, total - paidAmt)
+        : (dpAmount > 0 ? remaining : 0)
 
       const picked = customerId ? customers.find(c => c.id === customerId) : null
       const trx = {
-        customer: customerName.trim() || 'Umum',
+        customer: customerName.trim() || picked?.name || 'Umum',
         customerId: customerId || null,
         customerPhone: picked?.whatsapp || picked?.phone || '',
         customerAddress: picked?.address || '',
@@ -120,23 +145,44 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         paymentMethod,
         status: remainingAmt > 0 ? 'pending' : 'lunas',
         dueDate: isHutang ? dueDate : null,
+        // Workflow status — hutang starts as menunggu pembayaran
+        orderStatus: 'menunggu',
       }
-      const result = await addTransaction(trx)
-      if (!result.ok) {
-        setCheckoutError(result.error || 'Gagal memproses transaksi')
+
+      let result
+      try {
+        result = await addTransaction(trx)
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[Kasir] addTransaction crashed:', err)
+        setCheckoutError(`Gagal: ${err?.message || String(err)}`)
         return
       }
+
+      if (!result || !result.ok) {
+        const errMsg = result?.error || 'Gagal memproses transaksi (cek koneksi Supabase)'
+        // eslint-disable-next-line no-console
+        console.error('[Kasir] addTransaction returned error:', errMsg, result)
+        setCheckoutError(errMsg)
+        return
+      }
+
       setSuccessTrx(result.data)
       setCart([])
-      setDiscount(0)
+      setDiscount('')
       setDp('')
       setCustomerName('')
       setCustomerId('')
       setPaymentMethod('cash')
       setCartOpen(false)
-      setShowInvoice(false)
+
+      // For Hutang transactions, auto-open the invoice preview
+      if (isHutang) setShowInvoice(true)
+      else setShowInvoice(false)
     } catch (err) {
-      setCheckoutError(err.message || 'Terjadi kesalahan')
+      // eslint-disable-next-line no-console
+      console.error('[Kasir] checkout outer error:', err)
+      setCheckoutError(err?.message || 'Terjadi kesalahan tak terduga')
     } finally {
       setCheckingOut(false)
     }
@@ -288,10 +334,25 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                 >
                   <Minus size={10} />
                 </button>
-                <span className="w-6 text-center text-xs font-bold"
-                  style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
-                  {item.qty}
-                </span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={item.qty}
+                  min={1}
+                  max={item.stock || undefined}
+                  onChange={(e) => setQtyExact(item.productId, e.target.value)}
+                  onBlur={(e) => { if (!e.target.value) setQtyExact(item.productId, 1) }}
+                  onFocus={(e) => e.target.select()}
+                  className="qty-input w-9 text-center text-xs font-bold rounded-md"
+                  style={{
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'Syne',
+                    padding: '2px 0',
+                    outline: 'none',
+                  }}
+                />
                 <button
                   onClick={() => updateQty(item.productId, 1)}
                   className="w-6 h-6 rounded-lg flex items-center justify-center btn-press"
@@ -353,9 +414,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           </div>
           <input
             type="number"
+            inputMode="decimal"
             value={discount}
-            onChange={(e) => setDiscount(e.target.value)}
-            className="w-20 px-2 py-1 rounded-lg text-xs text-right"
+            onChange={(e) => {
+              // Allow empty / 0 / positive; reject negatives
+              const v = e.target.value
+              if (v === '' || Number(v) >= 0) setDiscount(v)
+            }}
+            onWheel={(e) => e.target.blur()}
+            placeholder={discountType === 'persen' ? 'Masukkan %' : 'Masukkan diskon'}
+            className="discount-input w-28 px-2 py-1 rounded-lg text-xs text-right"
             style={{
               background: 'var(--bg-card)',
               border: '1px solid var(--border)',
@@ -394,10 +462,15 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           </span>
           <input
             type="number"
+            inputMode="decimal"
             value={dp}
-            onChange={(e) => setDp(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value
+              if (v === '' || Number(v) >= 0) setDp(v)
+            }}
+            onWheel={(e) => e.target.blur()}
             placeholder={`Bayar lunas: ${formatRupiah(total)}`}
-            className="flex-1 px-2 py-1 rounded-lg text-xs text-right min-w-0"
+            className="discount-input flex-1 px-2 py-1 rounded-lg text-xs text-right min-w-0"
             style={{
               background: 'var(--bg-card)',
               border: '1px solid var(--border)',

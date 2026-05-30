@@ -405,8 +405,14 @@ export function useStore() {
         statusHistory,
         orderStatus: trx.orderStatus || 'menunggu',
       })
+      // eslint-disable-next-line no-console
+      console.log('[useStore] Inserting transaction:', invoiceNo, 'payload:', payload)
       const { data: row, error: e } = await supabase.from('transactions').insert(payload).select().single()
-      if (e) return { ok: false, error: e.message }
+      if (e) {
+        // eslint-disable-next-line no-console
+        console.error('[useStore] Gagal insert transaksi:', e, payload)
+        return { ok: false, error: `Gagal menyimpan transaksi: ${e.message}` }
+      }
 
       // Decrement stock
       await Promise.all(trx.items.map(async (item) => {
@@ -417,17 +423,24 @@ export function useStore() {
 
       // If "Hutang", create a debt row
       if (trx.paymentMethod === 'hutang' && trx.customerId) {
-        await supabase.from('debts').insert({
+        const totalDebtAmt = +trx.remaining || (+trx.total - (+trx.paid || 0)) || +trx.total || 0
+        const debtPayload = {
           customer_id: trx.customerId,
           transaction_id: row.id,
           invoice_no: invoiceNo,
-          total_debt: +trx.remaining || +trx.total || 0,
+          total_debt: totalDebtAmt,
           paid: 0,
-          remaining: +trx.remaining || +trx.total || 0,
+          remaining: totalDebtAmt,
           due_date: trx.dueDate || null,
           status: 'aktif',
           notes: trx.notes || '',
-        })
+        }
+        const { error: debtErr } = await supabase.from('debts').insert(debtPayload)
+        if (debtErr) {
+          // eslint-disable-next-line no-console
+          console.error('[useStore] Gagal membuat hutang:', debtErr, debtPayload)
+          return { ok: false, error: `Transaksi tersimpan, tapi data hutang gagal disimpan: ${debtErr.message}` }
+        }
         await refreshDebts()
       }
 
