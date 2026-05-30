@@ -87,19 +87,18 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   }
 
   /**
-   * Send invoice via WhatsApp — direct open only (NO share sheet, NO Web Share API).
+   * Send invoice via WhatsApp using Web Share API (file-share).
    *
-   * Flow:
-   *   1. Render invoice DOM → PNG blob
-   *   2. Download PNG file otomatis ke device user
-   *   3. (Best-effort) upload PNG ke Supabase Storage → URL ke pesan
-   *   4. Buka WhatsApp langsung:
-   *      - Mobile  → whatsapp://send (native app), fallback wa.me
-   *      - Desktop → web.whatsapp.com (Web app)
+   * Flow (PRIORITAS — TIDAK ada auto-download):
+   *   1. Render invoice DOM → PNG blob (in-memory, sementara)
+   *   2. Bungkus jadi File object (image/png)
+   *   3. navigator.share({ files: [file], title, text })
+   *      → OS share dialog muncul → user pilih WhatsApp → file langsung terlampir
    *
-   * Tidak menggunakan navigator.share() — Share Sheet (AirDrop / Mail / Messages dll.)
-   * tidak akan muncul. User cukup pilih kontak di WhatsApp lalu attach file PNG
-   * yang baru saja terdownload.
+   * Fallback (HANYA jika browser tidak support file-share):
+   *   - Tampilkan pesan: "Perangkat tidak mendukung berbagi file langsung ke WhatsApp."
+   *   - Tawarkan tombol download manual + buka WhatsApp Web
+   *   - Auto-download terjadi HANYA di fallback ini, bukan di flow utama.
    */
   const handleWhatsApp = async () => {
     if (sharing) return
@@ -107,8 +106,6 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     setSharing(true)
     setShareInfo({ kind: 'info', text: 'Membuat invoice PNG...' })
 
-    const phone = t.customerPhone || ''
-    const hasValidPhone = !!phone && isValidWA(phone)
     const filename = `Invoice-${t.invoiceNo}.png`
 
     // Build message body
@@ -135,73 +132,83 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     }
 
     try {
-      // 1. Render PNG
+      // 1. Render PNG to in-memory blob (TIDAK ada download di sini)
       const blob = await renderInvoicePNG()
+      const file = new File([blob], filename, { type: 'image/png' })
+      const text = buildMessage()
 
-      // 2. Download PNG otomatis (user akan attach manual di WhatsApp)
-      downloadFile(filename, blob, 'image/png')
+      // 2. Cek dukungan Web Share API + file sharing
+      const canShareFile =
+        typeof navigator !== 'undefined' &&
+        typeof navigator.canShare === 'function' &&
+        typeof navigator.share === 'function' &&
+        navigator.canShare({ files: [file] })
 
-      // 3. Best-effort upload → URL untuk pesan
-      let invoiceUrl = ''
-      try {
-        invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
-      } catch (uploadErr) {
-        // eslint-disable-next-line no-console
-        console.warn('[Invoice] Upload PNG gagal, lanjut tanpa URL:', uploadErr)
-      }
-
-      const message = buildMessage(invoiceUrl)
-      const encodedMsg = encodeURIComponent(message)
-      const phonePart = hasValidPhone ? normalizePhone(phone) : ''
-
-      // 4. Direct open WhatsApp
-      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
-      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
-
-      if (isMobile) {
-        // Native WhatsApp via custom protocol
-        const proto = `whatsapp://send?${phonePart ? `phone=${phonePart}&` : ''}text=${encodedMsg}`
-        const httpFallback = phonePart
-          ? `https://wa.me/${phonePart}?text=${encodedMsg}`
-          : `https://wa.me/?text=${encodedMsg}`
-        // Try native first
-        window.location.href = proto
-        // Safety net: if protocol not registered, redirect to wa.me after a moment
-        setTimeout(() => {
-          if (document.hasFocus()) {
-            try { window.location.href = httpFallback } catch {}
+      if (canShareFile) {
+        try {
+          setShareInfo({ kind: 'info', text: 'Membuka share dialog...' })
+          await navigator.share({
+            files: [file],
+            title: `Invoice ${t.invoiceNo}`,
+            text,
+          })
+          setShareInfo({
+            kind: 'success',
+            text: 'Invoice berhasil dibagikan. Silakan pilih kontak WhatsApp.',
+          })
+          return
+        } catch (shareErr) {
+          // User cancelled — bukan error, jangan lakukan fallback download
+          if (shareErr?.name === 'AbortError') {
+            setShareInfo(null)
+            return
           }
-        }, 1800)
-      } else {
-        // Desktop → WhatsApp Web
-        const webUrl = phonePart
-          ? `https://web.whatsapp.com/send?phone=${phonePart}&text=${encodedMsg}`
-          : `https://web.whatsapp.com/`
-        const win = window.open(webUrl, '_blank', 'noopener,noreferrer')
-        if (!win || win.closed || typeof win.closed === 'undefined') {
-          // Popup blocked → fallback wa.me in current tab
-          window.location.href = phonePart
-            ? `https://wa.me/${phonePart}?text=${encodedMsg}`
-            : `https://wa.me/?text=${encodedMsg}`
+          // Real error → lanjut ke fallback below
+          // eslint-disable-next-line no-console
+          console.error('[Invoice] navigator.share gagal:', shareErr)
         }
       }
 
-      setShareInfo({
-        kind: 'success',
-        text: 'Invoice berhasil dibuat dan WhatsApp telah dibuka.',
-      })
-    } catch (err) {
-      // Last-resort fallback
+      // 3. FALLBACK: browser tidak mendukung file sharing → tampilkan notif + opsi download
       // eslint-disable-next-line no-console
-      console.error('[Invoice] WA flow error:', err)
+      console.warn('[Invoice] Web Share API tidak mendukung file — fallback ke download manual')
+      setShareInfo({
+        kind: 'warning',
+        text: 'Perangkat tidak mendukung berbagi file langsung ke WhatsApp. Mengunduh sebagai cadangan...',
+      })
+
+      // Try upload to get a public URL for the WA message (best effort)
+      let invoiceUrl = ''
       try {
-        const blob = await renderInvoicePNG()
-        downloadFile(filename, blob, 'image/png')
+        invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
       } catch {}
-      window.open('https://web.whatsapp.com/', '_blank', 'noopener,noreferrer')
+
+      // Download as backup so user can attach manually
+      downloadFile(filename, blob, 'image/png')
+
+      // Buka WhatsApp Web (desktop) atau wa.me (umum)
+      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
+      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
+      const encodedMsg = encodeURIComponent(buildMessage(invoiceUrl))
+      const url = isMobile
+        ? `https://wa.me/?text=${encodedMsg}`
+        : `https://web.whatsapp.com/`
+
+      const win = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!win || win.closed || typeof win.closed === 'undefined') {
+        window.location.href = url
+      }
+
       setShareInfo({
         kind: 'info',
-        text: 'Invoice diunduh. WhatsApp Web dibuka — silakan pilih kontak.',
+        text: 'Perangkat tidak mendukung berbagi file langsung. Invoice diunduh, WhatsApp dibuka — lampirkan PNG yang baru terunduh.',
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[Invoice] WhatsApp flow error:', err)
+      setShareInfo({
+        kind: 'error',
+        text: `Gagal kirim invoice: ${err?.message || 'unknown error'}`,
       })
     } finally {
       setSharing(false)
