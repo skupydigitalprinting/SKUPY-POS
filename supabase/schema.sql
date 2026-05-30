@@ -1,6 +1,11 @@
 -- =============================================================
--- Skupy POS — Supabase schema (v3 — Enterprise edition)
+-- Skupy POS — Supabase schema (Enterprise edition, fully idempotent)
 -- Run in Supabase Dashboard → SQL Editor → New query → Run
+--
+-- SAFE TO RE-RUN: every statement is wrapped with IF NOT EXISTS,
+-- ON CONFLICT DO NOTHING, DROP-then-CREATE for triggers, or DO blocks
+-- with existence checks for objects that don't natively support it
+-- (policies, publication membership).
 -- =============================================================
 
 -- ---------- CORE TABLES ----------
@@ -224,17 +229,47 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('logos', 'logos', true)
 ON CONFLICT (id) DO NOTHING;
 
-DO $$ BEGIN CREATE POLICY "Public read logos"   ON storage.objects FOR SELECT USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE POLICY "Public upload logos" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE POLICY "Public update logos" ON storage.objects FOR UPDATE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE POLICY "Public delete logos" ON storage.objects FOR DELETE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('invoices', 'invoices', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$ BEGIN CREATE POLICY "Public read logos"      ON storage.objects FOR SELECT USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public upload logos"    ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public update logos"    ON storage.objects FOR UPDATE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public delete logos"    ON storage.objects FOR DELETE USING (bucket_id = 'logos'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN CREATE POLICY "Public read invoices"   ON storage.objects FOR SELECT USING (bucket_id = 'invoices'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public upload invoices" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'invoices'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public update invoices" ON storage.objects FOR UPDATE USING (bucket_id = 'invoices'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "Public delete invoices" ON storage.objects FOR DELETE USING (bucket_id = 'invoices'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------- REALTIME ----------
-ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.customers;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.debts;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.debt_payments;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.products;
+-- Add tables to the `supabase_realtime` publication only if they're not already members.
+-- `ALTER PUBLICATION ... ADD TABLE` is NOT natively idempotent (raises duplicate_object),
+-- so we check pg_publication_tables first.
+DO $$
+DECLARE
+  tbl text;
+  tables text[] := ARRAY['transactions','customers','debts','debt_payments','products','admins','settings'];
+BEGIN
+  -- Skip the whole block if the publication doesn't exist yet (non-Supabase Postgres)
+  IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    RAISE NOTICE 'supabase_realtime publication tidak ditemukan — skip realtime setup';
+    RETURN;
+  END IF;
+
+  FOREACH tbl IN ARRAY tables LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename  = tbl
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+      RAISE NOTICE 'Added % to supabase_realtime', tbl;
+    END IF;
+  END LOOP;
+END $$;
 
 -- ---------- DEFAULT SEED ----------
 

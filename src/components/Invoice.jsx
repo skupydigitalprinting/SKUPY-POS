@@ -1,20 +1,22 @@
-import React, { useRef, useState } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { X, Printer, FileText, MessageCircle, Loader2, Download } from 'lucide-react'
 import html2canvas from 'html2canvas'
 import { formatRupiah, formatDateTime, STATUS_MAP, downloadFile } from '../utils/helpers'
 import { STORE_INFO as DEFAULT_STORE } from '../data/dummyData'
 import { buildWaLink, normalizePhone, isValidWA } from '../utils/whatsapp'
+import { uploadInvoiceImage } from '../lib/supabase'
 import Logo from './Logo'
 
 const PAYMENT_LABEL = {
   cash: 'Cash', transfer: 'Bank Transfer', qris: 'QRIS', hutang: 'Hutang / Tempo',
 }
 
-export default function Invoice({ transaction: t, onClose, storeInfo }) {
+export default function Invoice({ transaction: t, onClose, storeInfo, autoShare = false }) {
   const STORE_INFO = storeInfo || DEFAULT_STORE
   const printRef = useRef(null)
   const [sharing, setSharing] = useState(false)
   const [shareInfo, setShareInfo] = useState(null)
+  const autoTriggered = useRef(false)
   const status = STATUS_MAP[t.status]
 
   /** Render the invoice DOM to a PNG blob — fully captured (no clipping). */
@@ -84,57 +86,98 @@ export default function Invoice({ transaction: t, onClose, storeInfo }) {
     setTimeout(() => { win.print(); win.close() }, 600)
   }
 
+  /**
+   * Send invoice via WhatsApp.
+   *
+   * NO native share dialog. NO file download. NO export popup.
+   *
+   * Flow:
+   *   1. Render invoice DOM → PNG blob (html2canvas)
+   *   2. Upload PNG → Supabase Storage `invoices` bucket → get public URL
+   *   3. Build wa.me URL with customer phone + auto-filled message containing the URL
+   *   4. window.open() → WhatsApp opens directly with message ready
+   */
   const handleWhatsApp = async () => {
     if (sharing) return
-    setSharing(true); setShareInfo(null)
+
+    const phone = t.customerPhone || ''
+    if (!phone) {
+      setShareInfo({ kind: 'error', text: 'Nomor WhatsApp customer belum tersedia' })
+      return
+    }
+    if (!isValidWA(phone)) {
+      setShareInfo({ kind: 'error', text: `Nomor WhatsApp customer tidak valid: ${phone}` })
+      return
+    }
+
+    setSharing(true)
+    setShareInfo({ kind: 'info', text: 'Memproses invoice & upload ke storage...' })
+
     try {
+      // 1. Render PNG
       const blob = await renderInvoicePNG()
-      const filename = `Invoice-${t.invoiceNo}.png`
-      const file = new File([blob], filename, { type: 'image/png' })
 
-      const phone = t.customerPhone || '' // Use customer phone if available
-      const caption = [
-        `Halo ${t.customer},`,
-        `Terima kasih telah melakukan transaksi.`,
-        ``,
-        `Nomor Invoice: *${t.invoiceNo}*`,
-        `Total: *${formatRupiah(t.total)}*`,
-        `Status: *${(status?.label || t.status || '').toUpperCase()}*`,
-        ``,
-        `Terima kasih.`,
-        STORE_INFO.name,
-      ].join('\n')
-
-      // Try native Web Share API with file
-      if (typeof navigator !== 'undefined' && navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: `Invoice ${t.invoiceNo}`,
-            text: caption,
-          })
-          setShareInfo({ kind: 'success', text: 'Invoice dikirim 🎉' })
-          return
-        } catch (e) {
-          if (e.name === 'AbortError') { setShareInfo(null); return }
-        }
+      // 2. Upload to Supabase Storage → public URL
+      let invoiceUrl = ''
+      try {
+        invoiceUrl = await uploadInvoiceImage(blob, t.invoiceNo)
+      } catch (uploadErr) {
+        // eslint-disable-next-line no-console
+        console.error('[Invoice] Upload gagal:', uploadErr)
+        setShareInfo({
+          kind: 'error',
+          text: `Gagal upload invoice: ${uploadErr.message || uploadErr}. Pastikan bucket "invoices" sudah dibuat di Supabase Storage.`,
+        })
+        return
       }
 
-      // Fallback: download + open wa.me
-      downloadFile(filename, blob, 'image/png')
-      const link = phone && isValidWA(phone)
-        ? buildWaLink(phone, caption + `\n\n_(Lampirkan ${filename} yang sudah diunduh.)_`)
-        : `https://wa.me/?text=${encodeURIComponent(caption + `\n\n_(Lampirkan ${filename} yang sudah diunduh.)_`)}`
-      setTimeout(() => {
-        window.open(link, '_blank', 'noopener,noreferrer')
-      }, 200)
-      setShareInfo({ kind: 'info', text: 'PNG diunduh — lampirkan ke WhatsApp yang terbuka.' })
+      // 3. Build pesan sesuai format yang diminta
+      const paymentLabel = PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod || '-'
+      const message = [
+        `Halo ${t.customer || 'Customer'}`,
+        `Terima kasih telah bertransaksi di ${STORE_INFO.name || 'SKUPY'}.`,
+        ``,
+        `No Invoice:`,
+        t.invoiceNo,
+        ``,
+        `Total:`,
+        formatRupiah(t.total),
+        ``,
+        `Metode Pembayaran:`,
+        paymentLabel,
+        ``,
+        `Invoice:`,
+        invoiceUrl,
+        ``,
+        `Terima kasih 🙏`,
+      ].join('\n')
+
+      // 4. Open WhatsApp DIRECTLY (no navigator.share, no download)
+      const waUrl = buildWaLink(phone, message)
+      const win = window.open(waUrl, '_blank', 'noopener,noreferrer')
+      if (!win || win.closed || typeof win.closed === 'undefined') {
+        window.location.href = waUrl
+        return
+      }
+      setShareInfo({ kind: 'success', text: 'WhatsApp dibuka. Tinggal kirim 🚀' })
     } catch (err) {
-      setShareInfo({ kind: 'error', text: err.message || 'Gagal share' })
+      // eslint-disable-next-line no-console
+      console.error('[Invoice] WhatsApp flow error:', err)
+      setShareInfo({ kind: 'error', text: err.message || 'Gagal kirim WhatsApp' })
     } finally {
       setSharing(false)
     }
   }
+
+  // Auto-trigger WhatsApp when component mounts with autoShare=true
+  useEffect(() => {
+    if (autoShare && !autoTriggered.current) {
+      autoTriggered.current = true
+      const id = setTimeout(() => handleWhatsApp(), 300)
+      return () => clearTimeout(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoShare])
 
   const handleDownloadPNG = async () => {
     if (sharing) return

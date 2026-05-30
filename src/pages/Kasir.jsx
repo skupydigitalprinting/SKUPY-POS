@@ -26,6 +26,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   })
   const [successTrx, setSuccessTrx] = useState(null)
   const [showInvoice, setShowInvoice] = useState(false)
+  const [autoShareWA, setAutoShareWA] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
   const [checkingOut, setCheckingOut] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
@@ -175,10 +176,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       setCustomerId('')
       setPaymentMethod('cash')
       setCartOpen(false)
-
-      // For Hutang transactions, auto-open the invoice preview
-      if (isHutang) setShowInvoice(true)
-      else setShowInvoice(false)
+      // Always show the success popup first (NOT invoice preview).
+      // User picks: Print Invoice / Kirim WhatsApp / Selesai from popup.
+      setShowInvoice(false)
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[Kasir] checkout outer error:', err)
@@ -798,85 +798,142 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
       {/* Success Modal */}
       {successTrx && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fadeIn"
-          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)' }}
-        >
-          <div
-            className="animate-scaleIn rounded-2xl p-6 w-full max-w-sm text-center"
-            style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid rgba(16,217,138,0.3)',
-              boxShadow: '0 24px 80px rgba(0,0,0,0.5), 0 0 40px rgba(16,217,138,0.15)',
-            }}
-          >
-            <div className="flex justify-center mb-4">
+        (() => {
+          const isHutangSuccess = successTrx.paymentMethod === 'hutang'
+          const theme = isHutangSuccess
+            ? {
+                glow: 'rgba(245,158,11,0.18)',
+                border: 'rgba(245,158,11,0.35)',
+                iconBg: 'rgba(245,158,11,0.14)',
+                iconBorder: 'rgba(245,158,11,0.45)',
+                iconColor: '#f59e0b',
+                totalColor: '#f59e0b',
+              }
+            : {
+                glow: 'rgba(16,217,138,0.15)',
+                border: 'rgba(16,217,138,0.3)',
+                iconBg: 'rgba(16,217,138,0.12)',
+                iconBorder: 'rgba(16,217,138,0.4)',
+                iconColor: '#10d98a',
+                totalColor: '#10d98a',
+              }
+          return (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fadeIn"
+              style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)' }}
+            >
               <div
-                className="w-20 h-20 rounded-full flex items-center justify-center animate-float"
+                className="animate-scaleIn rounded-2xl p-6 w-full max-w-sm text-center"
                 style={{
-                  background: 'rgba(16,217,138,0.12)',
-                  border: '2px solid rgba(16,217,138,0.4)',
-                  boxShadow: '0 0 32px rgba(16,217,138,0.3)',
+                  background: 'var(--bg-elevated)',
+                  border: `1px solid ${theme.border}`,
+                  boxShadow: `0 24px 80px rgba(0,0,0,0.5), 0 0 40px ${theme.glow}`,
                 }}
               >
-                <CheckCircle2 size={36} style={{ color: '#10d98a' }} />
+                <div className="flex justify-center mb-4">
+                  <div
+                    className="w-20 h-20 rounded-full flex items-center justify-center animate-float"
+                    style={{
+                      background: theme.iconBg,
+                      border: `2px solid ${theme.iconBorder}`,
+                      boxShadow: `0 0 32px ${theme.glow}`,
+                    }}
+                  >
+                    <CheckCircle2 size={36} style={{ color: theme.iconColor }} />
+                  </div>
+                </div>
+                <h3 className="font-bold text-xl mb-1"
+                  style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                  Transaksi Berhasil!
+                </h3>
+                <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+                  {successTrx.invoiceNo}
+                </p>
+                <p className="text-3xl font-bold mb-4"
+                  style={{ fontFamily: 'Syne', color: theme.totalColor }}>
+                  {formatRupiah(successTrx.total)}
+                </p>
+                {successTrx.remaining > 0 && (
+                  <div className="mb-3 px-3 py-2 rounded-xl text-sm"
+                    style={{
+                      background: 'rgba(245,158,11,0.1)',
+                      color: '#f59e0b',
+                      border: '1px solid rgba(245,158,11,0.25)',
+                    }}>
+                    Sisa Pembayaran: <strong>{formatRupiah(successTrx.remaining)}</strong>
+                  </div>
+                )}
+                {isHutangSuccess && (
+                  <div className="mb-4 px-3 py-2 rounded-xl text-xs"
+                    style={{
+                      background: 'rgba(245,158,11,0.08)',
+                      color: '#f59e0b',
+                      border: '1px solid rgba(245,158,11,0.25)',
+                      fontFamily: 'DM Sans',
+                    }}>
+                    📒 Piutang berhasil dibuat dan tercatat di menu <strong>Piutang</strong>
+                  </div>
+                )}
+
+                <div className={`grid ${isHutangSuccess ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
+                  <button
+                    onClick={() => { setAutoShareWA(false); setShowInvoice(true) }}
+                    className="flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl text-xs font-semibold btn-press"
+                    style={{
+                      background: 'var(--bg-card)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border)',
+                      fontFamily: 'Syne',
+                    }}
+                  >
+                    <Printer size={14} />
+                    Print Invoice
+                  </button>
+                  {isHutangSuccess && (
+                    <button
+                      onClick={() => { setAutoShareWA(true); setShowInvoice(true) }}
+                      className="flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl text-xs font-semibold btn-press"
+                      style={{
+                        background: 'linear-gradient(135deg, #25d366, #128c7e)',
+                        color: '#fff',
+                        boxShadow: '0 4px 14px rgba(37,211,102,0.3)',
+                        fontFamily: 'Syne',
+                      }}
+                    >
+                      📱 Kirim WhatsApp
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { setSuccessTrx(null); setAutoShareWA(false) }}
+                    className="flex flex-col items-center justify-center gap-1 py-2.5 rounded-xl text-xs font-semibold btn-press"
+                    style={{
+                      background: isHutangSuccess
+                        ? 'linear-gradient(135deg, #f59e0b, #ea580c)'
+                        : 'linear-gradient(135deg, var(--accent), #6366f1)',
+                      color: '#fff',
+                      fontFamily: 'Syne',
+                      boxShadow: isHutangSuccess
+                        ? '0 4px 16px rgba(245,158,11,0.35)'
+                        : '0 4px 16px rgba(139,92,246,0.35)',
+                    }}
+                  >
+                    Selesai
+                  </button>
+                </div>
               </div>
             </div>
-            <h3 className="font-bold text-xl mb-1"
-              style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-              Transaksi Berhasil!
-            </h3>
-            <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
-              {successTrx.invoiceNo}
-            </p>
-            <p className="text-3xl font-bold mb-4"
-              style={{ fontFamily: 'Syne', color: '#10d98a' }}>
-              {formatRupiah(successTrx.total)}
-            </p>
-            {successTrx.remaining > 0 && (
-              <div className="mb-4 px-3 py-2 rounded-xl text-sm"
-                style={{
-                  background: 'rgba(245,158,11,0.1)',
-                  color: '#f59e0b',
-                  border: '1px solid rgba(245,158,11,0.2)',
-                }}>
-                Sisa pembayaran: <strong>{formatRupiah(successTrx.remaining)}</strong>
-              </div>
-            )}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowInvoice(true)}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold btn-press"
-                style={{
-                  background: 'var(--bg-card)',
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border)',
-                  fontFamily: 'Syne',
-                }}
-              >
-                <Printer size={15} />
-                Print
-              </button>
-              <button
-                onClick={() => setSuccessTrx(null)}
-                className="flex-1 py-2.5 rounded-xl text-sm font-semibold btn-press"
-                style={{
-                  background: 'linear-gradient(135deg, var(--accent), #6366f1)',
-                  color: '#fff',
-                  fontFamily: 'Syne',
-                  boxShadow: '0 4px 16px rgba(139,92,246,0.35)',
-                }}
-              >
-                Selesai
-              </button>
-            </div>
-          </div>
-        </div>
+          )
+        })()
       )}
 
       {/* Invoice Modal */}
       {showInvoice && successTrx && (
-        <Invoice transaction={successTrx} storeInfo={storeInfo} onClose={() => setShowInvoice(false)} />
+        <Invoice
+          transaction={successTrx}
+          storeInfo={storeInfo}
+          autoShare={autoShareWA}
+          onClose={() => { setShowInvoice(false); setAutoShareWA(false) }}
+        />
       )}
     </div>
   )

@@ -20,6 +20,7 @@ export const supabase = createClient(
 )
 
 export const LOGOS_BUCKET = 'logos'
+export const INVOICES_BUCKET = 'invoices'
 
 /**
  * Upload a logo image to the public `logos` bucket.
@@ -42,6 +43,26 @@ export async function uploadLogo(file, name = 'logo') {
   if (error) throw error
 
   const { data } = supabase.storage.from(LOGOS_BUCKET).getPublicUrl(filename)
+  return data.publicUrl
+}
+
+/**
+ * Upload an invoice image (PNG blob) to the public `invoices` bucket.
+ * Returns the public URL. Used by WhatsApp share so the message includes a link.
+ */
+export async function uploadInvoiceImage(blob, invoiceNo = 'invoice') {
+  if (!blob) throw new Error('PNG kosong')
+  const safe = String(invoiceNo).replace(/[^A-Za-z0-9_-]/g, '-')
+  const filename = `${safe}-${Date.now()}.png`
+  const { error } = await supabase.storage
+    .from(INVOICES_BUCKET)
+    .upload(filename, blob, {
+      upsert: true,
+      contentType: 'image/png',
+      cacheControl: '3600',
+    })
+  if (error) throw error
+  const { data } = supabase.storage.from(INVOICES_BUCKET).getPublicUrl(filename)
   return data.publicUrl
 }
 
