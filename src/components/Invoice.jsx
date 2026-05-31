@@ -94,7 +94,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
       <!DOCTYPE html>
       <html><head><title>Invoice ${t.invoiceNo}</title><meta charset="UTF-8" />
       <style>
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=Bree+Serif&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=Bree+Serif&family=Sora:wght@600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@500;600;700&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         html, body { background: #f1f1f5; }
         body { font-family: 'DM Sans', sans-serif; color: #1a1a25; padding: 24px; display: flex; justify-content: center; }
@@ -640,12 +640,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     margin: '12px 0',
                   }} />
 
-                  {/* TOTAL — slightly less dominant for Hutang (focus is SISA TAGIHAN) */}
+                  {/* TOTAL — Sora ExtraBold, 10-15% smaller than before */}
                   <div style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    marginBottom: (t.remaining || 0) > 0 ? 12 : 4,
+                    marginBottom: (t.remaining || 0) > 0 ? 14 : 4,
                     gap: 6,
                   }}>
                     <span style={{
@@ -655,12 +655,15 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                       Total
                     </span>
                     <span style={{
-                      // Smaller for Hutang (focus is SISA), normal size for Lunas
-                      fontSize: (t.remaining || 0) > 0 ? 22 : 28,
+                      // Hutang: tegas tapi tidak dominan
+                      // Lunas: tetap dominan
+                      fontSize: (t.remaining || 0) > 0 ? 19 : 26,
                       fontWeight: 800,
                       color: (t.remaining || 0) > 0 ? '#e0e0e8' : '#fff',
-                      fontFamily: 'Syne', letterSpacing: '-0.02em',
+                      fontFamily: '"Sora", "Syne", sans-serif',
+                      letterSpacing: '-0.02em',
                       whiteSpace: 'nowrap',
+                      fontVariantNumeric: 'tabular-nums',
                     }}>
                       {formatRupiah(t.total)}
                     </span>
@@ -675,12 +678,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         margin: '10px 0',
                       }} />
 
-                      {/* DP Dibayar */}
+                      {/* DP DIBAYAR — Inter SemiBold (medium-readable) */}
                       <div style={{
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'baseline',
-                        marginBottom: 12,
+                        marginBottom: 14,
                       }}>
                         <span style={{
                           fontSize: 11,
@@ -694,46 +697,51 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         </span>
                         <span style={{
                           fontSize: 17,
-                          fontWeight: 700,
+                          fontWeight: 600,
                           color: '#10d98a',
-                          fontFamily: 'Syne',
+                          fontFamily: '"Inter", "DM Sans", sans-serif',
+                          letterSpacing: '-0.01em',
                           whiteSpace: 'nowrap',
+                          fontVariantNumeric: 'tabular-nums',
                         }}>
                           {formatRupiah(t.dp || t.paid || 0)}
                         </span>
                       </div>
 
-                      {/* SISA TAGIHAN — HERO BLOCK (focus utama, vertical centered) */}
+                      {/* SISA TAGIHAN — HERO BLOCK (Space Grotesk Bold gold, vertical centered) */}
                       <div style={{
-                        background: 'linear-gradient(135deg, rgba(245,158,11,0.18), rgba(234,88,12,0.1))',
-                        border: '1px solid rgba(245,158,11,0.4)',
+                        background: 'linear-gradient(135deg, rgba(245,158,11,0.2), rgba(234,88,12,0.1))',
+                        border: '1px solid rgba(245,158,11,0.45)',
                         borderRadius: 12,
-                        padding: '18px 18px 20px',
+                        padding: '20px 20px 22px',
                         display: 'flex',
                         flexDirection: 'column',
                         justifyContent: 'center',
-                        gap: 8,
+                        gap: 10,
+                        marginTop: -2,  // raise slightly for balance
                       }}>
                         <div style={{
                           fontSize: 11,
                           fontWeight: 800,
                           color: '#fbbf24',
                           textTransform: 'uppercase',
-                          letterSpacing: '0.12em',
+                          letterSpacing: '0.14em',
                           fontFamily: 'Syne',
                           lineHeight: 1,
                         }}>
                           Sisa Tagihan
                         </div>
                         <div style={{
-                          fontSize: 34,
-                          fontWeight: 800,
+                          fontSize: 30,
+                          fontWeight: 700,
                           color: '#fbbf24',
-                          fontFamily: 'Syne',
-                          letterSpacing: '-0.02em',
-                          lineHeight: 1,
+                          // Space Grotesk → digit yang tegas, modern, terbaca jelas
+                          fontFamily: '"Space Grotesk", "Sora", "Syne", sans-serif',
+                          letterSpacing: '-0.025em',
+                          lineHeight: 1.02,
                           whiteSpace: 'nowrap',
-                          textShadow: '0 0 24px rgba(245,158,11,0.45)',
+                          textShadow: '0 0 26px rgba(245,158,11,0.5)',
+                          fontVariantNumeric: 'tabular-nums',
                         }}>
                           {formatRupiah(t.remaining)}
                         </div>
