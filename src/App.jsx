@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { AlertTriangle, Database, RefreshCw } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
@@ -17,14 +17,77 @@ import { ToastProvider } from './components/Toast'
 import { useStore } from './hooks/useStore'
 
 function LoadingSplash() {
+  const [showSlow, setShowSlow] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setShowSlow(true), 3000)
+    return () => clearTimeout(t)
+  }, [])
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center mesh-bg p-6">
-      <div className="animate-float mb-6"><Logo size={72} /></div>
-      <div className="flex items-center gap-3 text-sm"
-        style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
-        <div className="w-4 h-4 rounded-full border-2 border-purple-400/30 border-t-purple-400 animate-spin" />
-        Memuat data dari Supabase...
+    <div
+      className="flex flex-col items-center justify-center mesh-bg p-6"
+      style={{ minHeight: '100dvh', width: '100%' }}
+    >
+      <div
+        style={{
+          animation: 'splashPulse 2.2s ease-in-out infinite',
+          textAlign: 'center',
+        }}
+      >
+        <div
+          style={{
+            fontFamily: 'Syne, sans-serif',
+            fontWeight: 800,
+            fontSize: 'clamp(56px, 16vw, 120px)',
+            color: '#ffffff',
+            letterSpacing: '-0.04em',
+            lineHeight: 1,
+            // subtle gradient glow under the wordmark
+            textShadow:
+              '0 0 24px rgba(139,92,246,0.35), 0 0 48px rgba(99,102,241,0.18)',
+          }}
+        >
+          SKUPY
+        </div>
+        <div
+          style={{
+            marginTop: 14,
+            fontFamily: 'DM Sans, sans-serif',
+            fontStyle: 'italic',
+            fontWeight: 400,
+            fontSize: 'clamp(13px, 3.4vw, 16px)',
+            color: 'rgba(255,255,255,0.55)',
+            letterSpacing: '0.01em',
+          }}
+        >
+          Cetak Impian, Wujudkan Karya
+        </div>
       </div>
+
+      {/* Subtle slow-loading hint (only after 3s) */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 'calc(env(safe-area-inset-bottom) + 32px)',
+          left: 0, right: 0,
+          textAlign: 'center',
+          fontFamily: 'Syne, sans-serif',
+          fontSize: 12,
+          color: 'rgba(255,255,255,0.4)',
+          letterSpacing: '0.04em',
+          opacity: showSlow ? 1 : 0,
+          transition: 'opacity 0.6s ease',
+        }}
+      >
+        Menyiapkan sistem...
+      </div>
+
+      <style>{`
+        @keyframes splashPulse {
+          0%, 100% { opacity: 0.78; transform: scale(1); }
+          50%      { opacity: 1; transform: scale(1.025); }
+        }
+      `}</style>
     </div>
   )
 }

@@ -31,9 +31,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     await new Promise(r => requestAnimationFrame(r))
     await new Promise(r => requestAnimationFrame(r))
 
-    // Use the actual rendered box — offsetWidth/Height includes padding
-    const width = node.offsetWidth
-    const height = node.offsetHeight
+    // CRITICAL — use scrollWidth/scrollHeight to capture the ENTIRE invoice content,
+    // not just what's currently visible inside the modal's scrollable preview area.
+    // offsetHeight would be wrong if a parent uses overflow:hidden, but scrollHeight
+    // always reflects the natural content height of the element.
+    const width = Math.max(node.offsetWidth, node.scrollWidth, 720)
+    const height = Math.max(node.offsetHeight, node.scrollHeight)
 
     const canvas = await html2canvas(node, {
       backgroundColor: '#ffffff',
@@ -43,19 +46,34 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
       logging: false,
       width,
       height,
-      windowWidth: Math.max(width, document.documentElement.scrollWidth),
-      windowHeight: Math.max(height, document.documentElement.scrollHeight),
+      // Window dimensions must be at least as big as the element so layout fits
+      windowWidth: Math.max(width, window.innerWidth, document.documentElement.scrollWidth),
+      windowHeight: Math.max(height, window.innerHeight, document.documentElement.scrollHeight),
       scrollX: 0,
       scrollY: -window.scrollY,
       onclone: (clonedDoc) => {
-        // Ensure cloned node has fixed width + visible overflow for full capture
+        // In the cloned document, force the invoice to render at its full natural
+        // height with no parent constraints clipping it.
         const clone = clonedDoc.getElementById('invoice-print')
         if (clone) {
           clone.style.width = width + 'px'
+          clone.style.minWidth = width + 'px'
           clone.style.maxWidth = 'none'
+          clone.style.height = 'auto'
+          clone.style.maxHeight = 'none'
           clone.style.overflow = 'visible'
           clone.style.boxShadow = 'none'
           clone.style.margin = '0'
+          clone.style.transform = 'none'
+        }
+        // Also relax constraints on parent containers in the cloned doc so
+        // nothing clips the invoice from above.
+        let parent = clone?.parentElement
+        while (parent && parent !== clonedDoc.body) {
+          parent.style.overflow = 'visible'
+          parent.style.maxHeight = 'none'
+          parent.style.height = 'auto'
+          parent = parent.parentElement
         }
       },
     })
@@ -209,7 +227,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-strong)',
         boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
-        maxWidth: 760, maxHeight: '94vh',
+        maxWidth: 760, maxHeight: '94dvh',
       }}>
         {/* Toolbar */}
         <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 flex-shrink-0 gap-2"
@@ -536,7 +554,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 color: '#fff',
                 minWidth: 0,
                 position: 'relative',
-                overflow: 'hidden',
+                // Use clip-path instead of overflow:hidden so html2canvas can capture full element
+                clipPath: 'inset(0 round 12px)',
               }}>
                 {/* Soft glow accent untuk hutang */}
                 {(t.remaining || 0) > 0 && (
