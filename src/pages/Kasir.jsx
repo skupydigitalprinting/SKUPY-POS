@@ -420,9 +420,20 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* Summary */}
-      <div className="px-4 py-3 space-y-3 flex-shrink-0"
-        style={{ borderTop: '1px solid var(--border)', background: 'rgba(0,0,0,0.15)' }}>
+      {/* Summary — sticky footer, compact spacing, safe-area aware */}
+      <div
+        className="px-4 py-2.5 space-y-2 flex-shrink-0"
+        style={{
+          borderTop: '1px solid var(--border)',
+          background: 'rgba(10,10,15,0.95)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          position: 'sticky',
+          bottom: 0,
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)',
+          zIndex: 10,
+        }}>
+
         {/* Discount */}
         <div className="flex items-center gap-2">
           <Tag size={13} style={{ color: 'var(--text-muted)' }} />
@@ -557,36 +568,35 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           })}
         </div>
 
-        {/* Hutang due-date picker */}
+        {/* Hutang due-date picker — compact inline */}
         {paymentMethod === 'hutang' && (
-          <div className="rounded-xl p-3 animate-fadeIn"
+          <div className="rounded-xl px-3 py-2 animate-fadeIn flex items-center gap-2"
             style={{
               background: 'rgba(245,158,11,0.06)',
               border: '1px solid rgba(245,158,11,0.25)',
             }}>
-            <div className="flex items-center gap-2 mb-2">
-              <Calendar size={12} style={{ color: '#f59e0b' }} />
-              <span className="text-xs font-semibold" style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
-                Jatuh Tempo
-              </span>
-            </div>
+            <Calendar size={12} style={{ color: '#f59e0b', flexShrink: 0 }} />
+            <span className="text-xs font-semibold flex-shrink-0"
+              style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
+              Jatuh Tempo
+            </span>
             <input
               type="date"
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
-              className="w-full px-2 py-1.5 rounded-lg text-xs"
+              className="flex-1 min-w-0 px-2 py-1 rounded-lg text-xs"
               style={{
                 background: 'var(--bg-card)',
                 border: '1px solid var(--border)',
                 color: 'var(--text-primary)',
               }}
             />
-            {!customerId && (
-              <p className="text-xs mt-2" style={{ color: '#f59e0b' }}>
-                ⚠️ Customer wajib dipilih untuk Hutang
-              </p>
-            )}
           </div>
+        )}
+        {paymentMethod === 'hutang' && !customerId && (
+          <p className="text-xs" style={{ color: '#f59e0b' }}>
+            ⚠️ Customer wajib dipilih untuk Hutang
+          </p>
         )}
 
         {/* Buttons */}

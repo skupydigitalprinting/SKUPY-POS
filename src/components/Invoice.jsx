@@ -5,6 +5,7 @@ import { formatRupiah, formatDateTime, STATUS_MAP, downloadFile } from '../utils
 import { STORE_INFO as DEFAULT_STORE } from '../data/dummyData'
 import { buildWaLink, normalizePhone, isValidWA } from '../utils/whatsapp'
 import { uploadInvoiceImage } from '../lib/supabase'
+import useIsMobile from '../hooks/useIsMobile'
 import Logo from './Logo'
 
 const PAYMENT_LABEL = {
@@ -18,6 +19,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   const [shareInfo, setShareInfo] = useState(null)
   const autoTriggered = useRef(false)
   const status = STATUS_MAP[t.status]
+  const isMobile = useIsMobile(640)   // < 640px → mobile layout
 
   /** Render the invoice DOM to a PNG blob — fully captured (no clipping). */
   const renderInvoicePNG = async () => {
@@ -289,22 +291,25 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             ref={printRef}
             id="invoice-print"
             style={{
-              width: 680,
+              width: isMobile ? '100%' : 680,
               maxWidth: '100%',
               background: '#ffffff',
               color: '#1a1a25',
               borderRadius: 16,
-              padding: '0 40px 64px',
+              padding: isMobile ? '0 16px 40px' : '0 40px 64px',
               fontFamily: 'DM Sans, sans-serif',
               boxShadow: '0 16px 48px rgba(0,0,0,0.25)',
               position: 'relative',
               boxSizing: 'border-box',
+              overflowX: 'hidden',
+              wordBreak: 'normal',
+              overflowWrap: 'break-word',
             }}
           >
             {/* Top gradient strip (inline, no absolute) */}
             <div style={{
               height: 8,
-              margin: '0 -40px 36px',
+              margin: isMobile ? '0 -16px 24px' : '0 -40px 36px',
               background: 'linear-gradient(90deg, #a3ff3a 0%, #06d6f5 35%, #6e3aff 65%, #ff2dbe 100%)',
               borderTopLeftRadius: 16,
               borderTopRightRadius: 16,
@@ -314,42 +319,42 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
-              alignItems: 'flex-start',
-              gap: 24,
+              alignItems: isMobile ? 'center' : 'flex-start',
+              gap: isMobile ? 12 : 24,
               flexWrap: 'wrap',
-              marginBottom: 32,
+              marginBottom: isMobile ? 20 : 32,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <Logo size={68} customSrc={STORE_INFO.invoiceLogo} onLight />
+              <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14 }}>
+                <Logo size={isMobile ? 48 : 68} customSrc={STORE_INFO.invoiceLogo} onLight />
                 <div>
                   <div style={{
-                    fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 24,
+                    fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: isMobile ? 18 : 24,
                     color: '#0a0a0f', letterSpacing: '-0.02em', lineHeight: 1.1,
                   }}>
                     {STORE_INFO.name}
                   </div>
-                  <div style={{ fontSize: 12, color: '#6b6b80', marginTop: 3, fontStyle: 'italic' }}>
+                  <div style={{ fontSize: isMobile ? 10 : 12, color: '#6b6b80', marginTop: 3, fontStyle: 'italic' }}>
                     {STORE_INFO.tagline}
                   </div>
                 </div>
               </div>
 
-              <div style={{ textAlign: 'right' }}>
+              <div style={{ textAlign: isMobile ? 'left' : 'right', flex: isMobile ? '1 1 100%' : 'unset' }}>
                 <div style={{
-                  fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 36,
+                  fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: isMobile ? 26 : 36,
                   color: '#0a0a0f', letterSpacing: '-0.03em', lineHeight: 1,
                 }}>
                   INVOICE
                 </div>
                 <div style={{
-                  fontSize: 13, fontWeight: 700, color: '#8b5cf6',
+                  fontSize: isMobile ? 11 : 13, fontWeight: 700, color: '#8b5cf6',
                   marginTop: 6, fontFamily: 'DM Sans',
                 }}>
                   #{t.invoiceNo}
                 </div>
                 <div style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
-                  marginTop: 10, padding: '5px 12px', borderRadius: 999,
+                  marginTop: 8, padding: '5px 12px', borderRadius: 999,
                   fontSize: 10, fontWeight: 700, fontFamily: 'Syne',
                   letterSpacing: '0.06em', textTransform: 'uppercase',
                   background: badgeBg, color: status?.hex || '#3b82f6',
@@ -360,12 +365,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               </div>
             </div>
 
-            {/* From / To / Date cards */}
+            {/* From / To / Date cards — stacked on mobile */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr 1fr',
-              gap: 14,
-              marginBottom: 28,
+              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr',
+              gap: isMobile ? 10 : 14,
+              marginBottom: isMobile ? 20 : 28,
             }}>
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Dari</div>
@@ -407,13 +412,14 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               marginBottom: 24,
               background: '#fff',
             }}>
+              {/* Header — hide qty/harga columns on mobile to save space */}
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: '40px 1fr 60px 120px 130px',
-                gap: 12,
-                padding: '14px 18px',
+                gridTemplateColumns: isMobile ? '28px 1fr 110px' : '40px 1fr 60px 120px 130px',
+                gap: isMobile ? 8 : 12,
+                padding: isMobile ? '10px 12px' : '14px 18px',
                 background: '#f8f8fb',
-                fontSize: 11,
+                fontSize: isMobile ? 10 : 11,
                 fontWeight: 700,
                 color: '#55556a',
                 textTransform: 'uppercase',
@@ -423,35 +429,69 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               }}>
                 <span>#</span>
                 <span>Produk</span>
-                <span style={{ textAlign: 'center' }}>Qty</span>
-                <span style={{ textAlign: 'right' }}>Harga</span>
+                {!isMobile && <span style={{ textAlign: 'center' }}>Qty</span>}
+                {!isMobile && <span style={{ textAlign: 'right' }}>Harga</span>}
                 <span style={{ textAlign: 'right' }}>Subtotal</span>
               </div>
               {(t.items || []).map((item, i) => (
                 <div key={i} style={{
                   display: 'grid',
-                  gridTemplateColumns: '40px 1fr 60px 120px 130px',
-                  gap: 12,
-                  padding: '16px 18px',
-                  fontSize: 12,
+                  gridTemplateColumns: isMobile ? '28px 1fr 110px' : '40px 1fr 60px 120px 130px',
+                  gap: isMobile ? 8 : 12,
+                  padding: isMobile ? '12px' : '16px 18px',
+                  fontSize: isMobile ? 11.5 : 12,
                   borderBottom: i < t.items.length - 1 ? '1px solid #ececf2' : 'none',
-                  alignItems: 'center',
+                  alignItems: 'flex-start',
                 }}>
                   <span style={{
-                    fontSize: 11, fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
+                    fontSize: isMobile ? 10 : 11,
+                    fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
+                    paddingTop: 2,
                   }}>
                     {String(i + 1).padStart(2, '0')}
                   </span>
-                  <span style={{ fontWeight: 600, color: '#1a1a25', lineHeight: 1.4, wordBreak: 'break-word' }}>
+                  <span style={{
+                    fontWeight: 600,
+                    color: '#1a1a25',
+                    lineHeight: 1.45,
+                    // CRITICAL: keep product name flowing as words, not letters
+                    wordBreak: 'normal',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'normal',
+                    minWidth: 0,
+                  }}>
                     {item.name}
+                    {/* On mobile, embed qty × harga inline below the name */}
+                    {isMobile && (
+                      <div style={{
+                        fontSize: 10.5,
+                        fontWeight: 500,
+                        color: '#6b6b80',
+                        marginTop: 3,
+                        fontFamily: 'DM Sans',
+                      }}>
+                        {item.qty} × {formatRupiah(item.price)}
+                      </div>
+                    )}
                   </span>
-                  <span style={{ textAlign: 'center', color: '#55556a', fontFamily: 'Syne', fontWeight: 600 }}>
-                    {item.qty}
-                  </span>
-                  <span style={{ textAlign: 'right', color: '#55556a' }}>
-                    {formatRupiah(item.price)}
-                  </span>
-                  <span style={{ textAlign: 'right', fontWeight: 700, color: '#1a1a25', fontFamily: 'Syne' }}>
+                  {!isMobile && (
+                    <span style={{ textAlign: 'center', color: '#55556a', fontFamily: 'Syne', fontWeight: 600 }}>
+                      {item.qty}
+                    </span>
+                  )}
+                  {!isMobile && (
+                    <span style={{ textAlign: 'right', color: '#55556a' }}>
+                      {formatRupiah(item.price)}
+                    </span>
+                  )}
+                  <span style={{
+                    textAlign: 'right',
+                    fontWeight: 700,
+                    color: '#1a1a25',
+                    fontFamily: 'Syne',
+                    whiteSpace: 'nowrap',
+                    paddingTop: 2,
+                  }}>
                     {formatRupiah(item.qty * item.price)}
                   </span>
                 </div>
@@ -461,9 +501,9 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             {/* Bank + Summary — stacked on mobile, side-by-side on wider */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: 18,
-              marginBottom: 26,
+              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+              gap: isMobile ? 12 : 18,
+              marginBottom: isMobile ? 18 : 26,
             }}>
               {/* Bank card */}
               <div style={{
