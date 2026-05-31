@@ -4,7 +4,6 @@ import html2canvas from 'html2canvas'
 import { formatRupiah, formatDateTime, STATUS_MAP, downloadFile } from '../utils/helpers'
 import { STORE_INFO as DEFAULT_STORE } from '../data/dummyData'
 import { buildWaLink, normalizePhone, isValidWA } from '../utils/whatsapp'
-import { uploadInvoiceImage } from '../lib/supabase'
 import Logo from './Logo'
 
 const PAYMENT_LABEL = {
@@ -16,6 +15,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   const printRef = useRef(null)
   const [sharing, setSharing] = useState(false)
   const [shareInfo, setShareInfo] = useState(null)
+  // Kept PNG blob untuk tombol "Lampirkan Invoice" fallback (tidak diupload ke storage)
+  const [pendingBlob, setPendingBlob] = useState(null)
   const autoTriggered = useRef(false)
   const status = STATUS_MAP[t.status]
   const isHutang = t.paymentMethod === 'hutang' || (t.remaining || 0) > 0
@@ -106,77 +107,97 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   }
 
   /**
-   * Send invoice via WhatsApp.
+   * Send invoice via WhatsApp — simple & fast.
    *
-   * Flow (final, sesuai spec):
-   *   1. Generate invoice PNG dari DOM (html2canvas).
-   *   2. Upload PNG ke Supabase Storage bucket `invoices`.
-   *   3. Dapatkan public URL.
-   *   4. Buka WhatsApp via https://wa.me/{nomor} dengan pesan auto-fill yang
-   *      berisi URL publik invoice + total.
+   * Flow:
+   *   1. Generate PNG (in-memory blob)
+   *   2. Try Web Share API with file → user picks WhatsApp in OS share sheet,
+   *      file attached automatically. This is the ONLY browser-native way
+   *      to attach a file directly to WhatsApp.
+   *   3. If Web Share with files unsupported → open WhatsApp directly via wa.me
+   *      (customer number = direct chat, no number = pick contact),
+   *      and keep PNG blob in memory so user can press "Lampirkan Invoice"
+   *      button to download it as backup.
    *
-   * Yang TIDAK dilakukan:
-   *   - ❌ Download PNG ke perangkat
-   *   - ❌ navigator.share() / Web Share API
-   *   - ❌ Share dialog OS (AirDrop / Mail / Messages)
-   *
-   * Support: Android, iPhone, WhatsApp Desktop, WhatsApp Web.
+   * Tidak ada upload ke Supabase Storage, tidak ada auto-download.
    */
   const handleWhatsApp = async () => {
     if (sharing) return
-
     setSharing(true)
-    setShareInfo({ kind: 'info', text: 'Membuat invoice PNG...' })
+    setShareInfo({ kind: 'info', text: 'Membuat invoice...' })
 
     const phone = t.customerPhone || ''
     const hasValidPhone = !!phone && isValidWA(phone)
+    const filename = `Invoice-${t.invoiceNo}.png`
+
+    // Build pesan otomatis sesuai spec
+    const customerLabel = (!t.customer || /^umum$/i.test(String(t.customer).trim()))
+      ? 'Pelanggan Umum' : t.customer
+    const message = [
+      `Halo ${customerLabel}`,
+      `Berikut invoice pesanan Anda.`,
+      ``,
+      `No Invoice:`,
+      t.invoiceNo,
+      ``,
+      `Total:`,
+      formatRupiah(t.total),
+      ``,
+      `Terima kasih telah menggunakan layanan SKUPY.`,
+    ].join('\n')
 
     try {
-      // 1. Generate PNG
+      // 1. Generate PNG in-memory
       const blob = await renderInvoicePNG()
+      const file = new File([blob], filename, { type: 'image/png' })
 
-      // 2-3. Upload ke Supabase Storage → public URL (BLOCKING — invoice URL wajib)
-      setShareInfo({ kind: 'info', text: 'Mengunggah invoice ke storage...' })
-      let publicUrl = ''
-      try {
-        publicUrl = await uploadInvoiceImage(blob, t.invoiceNo)
-      } catch (uploadErr) {
-        // eslint-disable-next-line no-console
-        console.error('[Invoice] Upload gagal:', uploadErr)
-        setShareInfo({
-          kind: 'error',
-          text: `Gagal upload invoice ke storage: ${uploadErr.message || uploadErr}. Pastikan bucket "invoices" sudah dibuat di Supabase Storage.`,
-        })
-        return
+      // 2. Web Share API with file — best UX (file attached automatically)
+      if (
+        typeof navigator !== 'undefined' &&
+        typeof navigator.canShare === 'function' &&
+        typeof navigator.share === 'function' &&
+        navigator.canShare({ files: [file] })
+      ) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: `Invoice ${t.invoiceNo}`,
+            text: message,
+          })
+          setShareInfo({
+            kind: 'success',
+            text: 'Invoice berhasil dibagikan. Pilih WhatsApp dari daftar.',
+          })
+          setPendingBlob(null)
+          return
+        } catch (shareErr) {
+          if (shareErr?.name === 'AbortError') {
+            setShareInfo(null)
+            return
+          }
+          // Real error → fall through to manual flow
+          // eslint-disable-next-line no-console
+          console.warn('[Invoice] navigator.share gagal — fallback ke wa.me', shareErr)
+        }
       }
 
-      // 4. Build pesan otomatis (sesuai spec)
-      const customerLabel = (!t.customer || /^umum$/i.test(String(t.customer).trim()))
-        ? 'Pelanggan Umum' : t.customer
-      const message = [
-        `Halo ${customerLabel},`,
-        `Berikut invoice Anda:`,
-        publicUrl,
-        `Total: ${formatRupiah(t.total)}`,
-        `Terima kasih.`,
-      ].join('\n')
+      // 3. Fallback — buka WhatsApp directly (chat customer kalau ada nomor)
+      //    Simpan blob di state untuk tombol "Lampirkan Invoice"
+      setPendingBlob(blob)
 
-      // 5. Buka WhatsApp via wa.me
       const phonePart = hasValidPhone ? normalizePhone(phone) : ''
       const waUrl = `https://wa.me/${phonePart}?text=${encodeURIComponent(message)}`
 
       const win = window.open(waUrl, '_blank', 'noopener,noreferrer')
       if (!win || win.closed || typeof win.closed === 'undefined') {
-        // Popup-blocker → same-tab navigation (works on all platforms)
         window.location.href = waUrl
-        return
       }
 
       setShareInfo({
-        kind: 'success',
+        kind: 'info',
         text: hasValidPhone
-          ? 'WhatsApp telah dibuka untuk customer. Silakan kirim invoice.'
-          : 'WhatsApp telah dibuka. Silakan pilih kontak tujuan.',
+          ? 'WhatsApp dibuka untuk customer. Klik "Lampirkan Invoice" untuk simpan PNG, lalu attach di chat.'
+          : 'WhatsApp dibuka. Pilih kontak, lalu klik "Lampirkan Invoice" untuk attach file PNG.',
       })
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -188,6 +209,16 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     } finally {
       setSharing(false)
     }
+  }
+
+  /** Save the cached PNG blob to user device for manual attach in WhatsApp. */
+  const handleAttachInvoice = () => {
+    if (!pendingBlob) return
+    downloadFile(`Invoice-${t.invoiceNo}.png`, pendingBlob, 'image/png')
+    setShareInfo({
+      kind: 'success',
+      text: 'Invoice PNG diunduh — tinggal attach di chat WhatsApp.',
+    })
   }
 
   // Auto-trigger WhatsApp when component mounts with autoShare=true
@@ -258,6 +289,24 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               {sharing ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
               <span className="hidden sm:inline">{sharing ? 'Memproses...' : 'WhatsApp'}</span>
             </button>
+            {/* Tombol "Lampirkan Invoice" muncul setelah WA dibuka di browser
+                yang tidak mendukung Web Share file (fallback path). */}
+            {pendingBlob && (
+              <button
+                onClick={handleAttachInvoice}
+                disabled={sharing}
+                className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs font-semibold btn-press animate-fadeIn"
+                style={{
+                  background: 'linear-gradient(135deg, #f59e0b, #ea580c)',
+                  color: '#fff', fontFamily: 'Syne',
+                  boxShadow: '0 4px 14px rgba(245,158,11,0.35)',
+                }}
+                title="Simpan PNG untuk dilampirkan ke WhatsApp"
+              >
+                <Download size={13} />
+                <span className="hidden sm:inline">Lampirkan Invoice</span>
+              </button>
+            )}
             <button onClick={handleDownloadPNG} disabled={sharing}
               className="flex items-center justify-center w-9 h-9 rounded-xl btn-press disabled:opacity-70"
               style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
@@ -591,12 +640,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     margin: '12px 0',
                   }} />
 
-                  {/* TOTAL */}
+                  {/* TOTAL — slightly less dominant for Hutang (focus is SISA TAGIHAN) */}
                   <div style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    marginBottom: (t.remaining || 0) > 0 ? 16 : 4,
+                    marginBottom: (t.remaining || 0) > 0 ? 12 : 4,
                     gap: 6,
                   }}>
                     <span style={{
@@ -606,7 +655,10 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                       Total
                     </span>
                     <span style={{
-                      fontSize: 28, fontWeight: 800, color: '#fff',
+                      // Smaller for Hutang (focus is SISA), normal size for Lunas
+                      fontSize: (t.remaining || 0) > 0 ? 22 : 28,
+                      fontWeight: 800,
+                      color: (t.remaining || 0) > 0 ? '#e0e0e8' : '#fff',
                       fontFamily: 'Syne', letterSpacing: '-0.02em',
                       whiteSpace: 'nowrap',
                     }}>
@@ -614,13 +666,13 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     </span>
                   </div>
 
-                  {/* HUTANG SECTION — DP + SISA TAGIHAN (prominent) */}
+                  {/* HUTANG SECTION — DP + SISA TAGIHAN (focus utama) */}
                   {(t.remaining || 0) > 0 && (
                     <>
                       <div style={{
                         height: 1,
-                        background: 'rgba(245,158,11,0.25)',
-                        margin: '16px 0',
+                        background: 'rgba(245,158,11,0.2)',
+                        margin: '10px 0',
                       }} />
 
                       {/* DP Dibayar */}
@@ -628,7 +680,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'baseline',
-                        marginBottom: 18,
+                        marginBottom: 12,
                       }}>
                         <span style={{
                           fontSize: 11,
@@ -641,7 +693,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                           DP Dibayar
                         </span>
                         <span style={{
-                          fontSize: 16,
+                          fontSize: 17,
                           fontWeight: 700,
                           color: '#10d98a',
                           fontFamily: 'Syne',
@@ -651,33 +703,37 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         </span>
                       </div>
 
-                      {/* SISA TAGIHAN — HERO ELEMENT */}
+                      {/* SISA TAGIHAN — HERO BLOCK (focus utama, vertical centered) */}
                       <div style={{
-                        background: 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(234,88,12,0.08))',
-                        border: '1px solid rgba(245,158,11,0.35)',
-                        borderRadius: 10,
-                        padding: '14px 16px',
+                        background: 'linear-gradient(135deg, rgba(245,158,11,0.18), rgba(234,88,12,0.1))',
+                        border: '1px solid rgba(245,158,11,0.4)',
+                        borderRadius: 12,
+                        padding: '18px 18px 20px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        gap: 8,
                       }}>
                         <div style={{
                           fontSize: 11,
                           fontWeight: 800,
                           color: '#fbbf24',
                           textTransform: 'uppercase',
-                          letterSpacing: '0.1em',
+                          letterSpacing: '0.12em',
                           fontFamily: 'Syne',
-                          marginBottom: 6,
+                          lineHeight: 1,
                         }}>
                           Sisa Tagihan
                         </div>
                         <div style={{
-                          fontSize: 32,
+                          fontSize: 34,
                           fontWeight: 800,
                           color: '#fbbf24',
                           fontFamily: 'Syne',
                           letterSpacing: '-0.02em',
-                          lineHeight: 1.05,
+                          lineHeight: 1,
                           whiteSpace: 'nowrap',
-                          textShadow: '0 0 24px rgba(245,158,11,0.4)',
+                          textShadow: '0 0 24px rgba(245,158,11,0.45)',
                         }}>
                           {formatRupiah(t.remaining)}
                         </div>
