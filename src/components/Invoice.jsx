@@ -5,7 +5,6 @@ import { formatRupiah, formatDateTime, STATUS_MAP, downloadFile } from '../utils
 import { STORE_INFO as DEFAULT_STORE } from '../data/dummyData'
 import { buildWaLink, normalizePhone, isValidWA } from '../utils/whatsapp'
 import { uploadInvoiceImage } from '../lib/supabase'
-import useIsMobile from '../hooks/useIsMobile'
 import Logo from './Logo'
 
 const PAYMENT_LABEL = {
@@ -19,7 +18,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   const [shareInfo, setShareInfo] = useState(null)
   const autoTriggered = useRef(false)
   const status = STATUS_MAP[t.status]
-  const isMobile = useIsMobile(640)   // < 640px → mobile layout
+  const isHutang = t.paymentMethod === 'hutang' || (t.remaining || 0) > 0
 
   /** Render the invoice DOM to a PNG blob — fully captured (no clipping). */
   const renderInvoicePNG = async () => {
@@ -284,70 +283,77 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
         )}
 
         {/* Invoice render area */}
-        <div className="overflow-y-auto p-6 sm:p-8 flex justify-center" style={{ background: '#1c1c28' }}>
+        <div
+          className="overflow-auto p-4 sm:p-8 flex justify-center"
+          style={{
+            background: '#1c1c28',
+            // Allow horizontal scroll on mobile so user can swipe the desktop-sized invoice
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
           {/* IMPORTANT: this is the node captured by html2canvas.
               No `overflow: hidden`, no absolute decorations, plenty of padding. */}
           <div
             ref={printRef}
             id="invoice-print"
             style={{
-              width: isMobile ? '100%' : 680,
-              maxWidth: '100%',
+              // FIXED desktop width — invoice must look identical on PC, Android, iPhone
+              width: 720,
+              minWidth: 720,
               background: '#ffffff',
               color: '#1a1a25',
               borderRadius: 16,
-              padding: isMobile ? '0 16px 40px' : '0 40px 64px',
+              padding: '0 40px 64px',
               fontFamily: 'DM Sans, sans-serif',
               boxShadow: '0 16px 48px rgba(0,0,0,0.25)',
               position: 'relative',
               boxSizing: 'border-box',
-              overflowX: 'hidden',
               wordBreak: 'normal',
               overflowWrap: 'break-word',
+              flexShrink: 0,
             }}
           >
-            {/* Top gradient strip (inline, no absolute) */}
+            {/* Top gradient strip — always desktop */}
             <div style={{
               height: 8,
-              margin: isMobile ? '0 -16px 24px' : '0 -40px 36px',
+              margin: '0 -40px 36px',
               background: 'linear-gradient(90deg, #a3ff3a 0%, #06d6f5 35%, #6e3aff 65%, #ff2dbe 100%)',
               borderTopLeftRadius: 16,
               borderTopRightRadius: 16,
             }} />
 
-            {/* Header: Logo + Invoice meta */}
+            {/* Header: Logo + Invoice meta — always desktop layout */}
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
-              alignItems: isMobile ? 'center' : 'flex-start',
-              gap: isMobile ? 12 : 24,
-              flexWrap: 'wrap',
-              marginBottom: isMobile ? 20 : 32,
+              alignItems: 'flex-start',
+              gap: 24,
+              marginBottom: 32,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14 }}>
-                <Logo size={isMobile ? 48 : 68} customSrc={STORE_INFO.invoiceLogo} onLight />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <Logo size={68} customSrc={STORE_INFO.invoiceLogo} onLight />
                 <div>
                   <div style={{
-                    fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: isMobile ? 18 : 24,
+                    fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 24,
                     color: '#0a0a0f', letterSpacing: '-0.02em', lineHeight: 1.1,
                   }}>
                     {STORE_INFO.name}
                   </div>
-                  <div style={{ fontSize: isMobile ? 10 : 12, color: '#6b6b80', marginTop: 3, fontStyle: 'italic' }}>
+                  <div style={{ fontSize: 12, color: '#6b6b80', marginTop: 3, fontStyle: 'italic' }}>
                     {STORE_INFO.tagline}
                   </div>
                 </div>
               </div>
 
-              <div style={{ textAlign: isMobile ? 'left' : 'right', flex: isMobile ? '1 1 100%' : 'unset' }}>
+              <div style={{ textAlign: 'right' }}>
                 <div style={{
-                  fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: isMobile ? 26 : 36,
+                  fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 36,
                   color: '#0a0a0f', letterSpacing: '-0.03em', lineHeight: 1,
                 }}>
                   INVOICE
                 </div>
                 <div style={{
-                  fontSize: isMobile ? 11 : 13, fontWeight: 700, color: '#8b5cf6',
+                  fontSize: 13, fontWeight: 700, color: '#8b5cf6',
                   marginTop: 6, fontFamily: 'DM Sans',
                 }}>
                   #{t.invoiceNo}
@@ -365,12 +371,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               </div>
             </div>
 
-            {/* From / To / Date cards — stacked on mobile */}
+            {/* From / To / Date cards — always 3 columns */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr',
-              gap: isMobile ? 10 : 14,
-              marginBottom: isMobile ? 20 : 28,
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: 14,
+              marginBottom: 28,
             }}>
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Dari</div>
@@ -412,14 +418,14 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               marginBottom: 24,
               background: '#fff',
             }}>
-              {/* Header — hide qty/harga columns on mobile to save space */}
+              {/* Header — always 5 columns desktop */}
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: isMobile ? '28px 1fr 110px' : '40px 1fr 60px 120px 130px',
-                gap: isMobile ? 8 : 12,
-                padding: isMobile ? '10px 12px' : '14px 18px',
+                gridTemplateColumns: '40px 1fr 60px 120px 130px',
+                gap: 12,
+                padding: '14px 18px',
                 background: '#f8f8fb',
-                fontSize: isMobile ? 10 : 11,
+                fontSize: 11,
                 fontWeight: 700,
                 color: '#55556a',
                 textTransform: 'uppercase',
@@ -429,68 +435,43 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               }}>
                 <span>#</span>
                 <span>Produk</span>
-                {!isMobile && <span style={{ textAlign: 'center' }}>Qty</span>}
-                {!isMobile && <span style={{ textAlign: 'right' }}>Harga</span>}
+                <span style={{ textAlign: 'center' }}>Qty</span>
+                <span style={{ textAlign: 'right' }}>Harga</span>
                 <span style={{ textAlign: 'right' }}>Subtotal</span>
               </div>
               {(t.items || []).map((item, i) => (
                 <div key={i} style={{
                   display: 'grid',
-                  gridTemplateColumns: isMobile ? '28px 1fr 110px' : '40px 1fr 60px 120px 130px',
-                  gap: isMobile ? 8 : 12,
-                  padding: isMobile ? '12px' : '16px 18px',
-                  fontSize: isMobile ? 11.5 : 12,
+                  gridTemplateColumns: '40px 1fr 60px 120px 130px',
+                  gap: 12,
+                  padding: '16px 18px',
+                  fontSize: 12,
                   borderBottom: i < t.items.length - 1 ? '1px solid #ececf2' : 'none',
-                  alignItems: 'flex-start',
+                  alignItems: 'center',
                 }}>
                   <span style={{
-                    fontSize: isMobile ? 10 : 11,
-                    fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
-                    paddingTop: 2,
+                    fontSize: 11, fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
                   }}>
                     {String(i + 1).padStart(2, '0')}
                   </span>
                   <span style={{
-                    fontWeight: 600,
-                    color: '#1a1a25',
-                    lineHeight: 1.45,
-                    // CRITICAL: keep product name flowing as words, not letters
+                    fontWeight: 600, color: '#1a1a25', lineHeight: 1.4,
+                    // Keep words intact, never per-letter break
                     wordBreak: 'normal',
                     overflowWrap: 'break-word',
                     whiteSpace: 'normal',
-                    minWidth: 0,
                   }}>
                     {item.name}
-                    {/* On mobile, embed qty × harga inline below the name */}
-                    {isMobile && (
-                      <div style={{
-                        fontSize: 10.5,
-                        fontWeight: 500,
-                        color: '#6b6b80',
-                        marginTop: 3,
-                        fontFamily: 'DM Sans',
-                      }}>
-                        {item.qty} × {formatRupiah(item.price)}
-                      </div>
-                    )}
                   </span>
-                  {!isMobile && (
-                    <span style={{ textAlign: 'center', color: '#55556a', fontFamily: 'Syne', fontWeight: 600 }}>
-                      {item.qty}
-                    </span>
-                  )}
-                  {!isMobile && (
-                    <span style={{ textAlign: 'right', color: '#55556a' }}>
-                      {formatRupiah(item.price)}
-                    </span>
-                  )}
+                  <span style={{ textAlign: 'center', color: '#55556a', fontFamily: 'Syne', fontWeight: 600 }}>
+                    {item.qty}
+                  </span>
+                  <span style={{ textAlign: 'right', color: '#55556a', whiteSpace: 'nowrap' }}>
+                    {formatRupiah(item.price)}
+                  </span>
                   <span style={{
-                    textAlign: 'right',
-                    fontWeight: 700,
-                    color: '#1a1a25',
-                    fontFamily: 'Syne',
-                    whiteSpace: 'nowrap',
-                    paddingTop: 2,
+                    textAlign: 'right', fontWeight: 700, color: '#1a1a25',
+                    fontFamily: 'Syne', whiteSpace: 'nowrap',
                   }}>
                     {formatRupiah(item.qty * item.price)}
                   </span>
@@ -498,12 +479,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               ))}
             </div>
 
-            {/* Bank + Summary — stacked on mobile, side-by-side on wider */}
+            {/* Bank + Summary — always 2 columns desktop */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
-              gap: isMobile ? 12 : 18,
-              marginBottom: isMobile ? 18 : 26,
+              gridTemplateColumns: isHutang ? '1fr 1.15fr' : '1fr 1fr',
+              gap: 18,
+              marginBottom: 26,
             }}>
               {/* Bank card */}
               <div style={{
@@ -545,61 +526,146 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 </div>
               </div>
 
-              {/* Total summary */}
+              {/* Total summary — Hutang mode emphasizes SISA TAGIHAN */}
               <div style={{
-                padding: 18,
+                padding: 20,
                 borderRadius: 12,
-                background: 'linear-gradient(135deg, #0a0a0f 0%, #1a0a2e 100%)',
+                background: (t.remaining || 0) > 0
+                  ? 'linear-gradient(135deg, #0a0a0f 0%, #2d1a0a 100%)'   // hutang: dark + orange glow
+                  : 'linear-gradient(135deg, #0a0a0f 0%, #1a0a2e 100%)',   // lunas: dark + purple
                 color: '#fff',
                 minWidth: 0,
+                position: 'relative',
+                overflow: 'hidden',
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 8 }}>
-                  <span style={{ color: '#8888a8' }}>Subtotal</span>
-                  <span style={{ color: '#f0f0f8', fontWeight: 600 }}>{formatRupiah(t.subtotal)}</span>
-                </div>
-                {t.discount > 0 && (
+                {/* Soft glow accent untuk hutang */}
+                {(t.remaining || 0) > 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    top: -40, right: -40,
+                    width: 160, height: 160,
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle, rgba(245,158,11,0.25), transparent 70%)',
+                    pointerEvents: 'none',
+                  }} />
+                )}
+
+                <div style={{ position: 'relative' }}>
+                  {/* Subtotal */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 8 }}>
-                    <span style={{ color: '#8888a8' }}>Diskon</span>
-                    <span style={{ color: '#ff4d6a', fontWeight: 600 }}>−{formatRupiah(t.discount)}</span>
+                    <span style={{ color: '#8888a8' }}>Subtotal</span>
+                    <span style={{ color: '#f0f0f8', fontWeight: 600 }}>{formatRupiah(t.subtotal)}</span>
                   </div>
-                )}
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '12px 0' }} />
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 8,
-                  gap: 6,
-                }}>
-                  <span style={{
-                    fontSize: 12, fontWeight: 700, color: '#a78bfa',
-                    textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: 'Syne',
+
+                  {/* Diskon */}
+                  {t.discount > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 8 }}>
+                      <span style={{ color: '#8888a8' }}>Diskon</span>
+                      <span style={{ color: '#ff4d6a', fontWeight: 600 }}>−{formatRupiah(t.discount)}</span>
+                    </div>
+                  )}
+
+                  {/* Divider */}
+                  <div style={{
+                    height: 1,
+                    background: 'rgba(255,255,255,0.1)',
+                    margin: '12px 0',
+                  }} />
+
+                  {/* TOTAL */}
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: (t.remaining || 0) > 0 ? 16 : 4,
+                    gap: 6,
                   }}>
-                    Total
-                  </span>
-                  <span style={{
-                    fontSize: 22, fontWeight: 800, color: '#fff',
-                    fontFamily: 'Syne', letterSpacing: '-0.02em',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {formatRupiah(t.total)}
-                  </span>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700, color: '#a78bfa',
+                      textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: 'Syne',
+                    }}>
+                      Total
+                    </span>
+                    <span style={{
+                      fontSize: 28, fontWeight: 800, color: '#fff',
+                      fontFamily: 'Syne', letterSpacing: '-0.02em',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {formatRupiah(t.total)}
+                    </span>
+                  </div>
+
+                  {/* HUTANG SECTION — DP + SISA TAGIHAN (prominent) */}
+                  {(t.remaining || 0) > 0 && (
+                    <>
+                      <div style={{
+                        height: 1,
+                        background: 'rgba(245,158,11,0.25)',
+                        margin: '16px 0',
+                      }} />
+
+                      {/* DP Dibayar */}
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'baseline',
+                        marginBottom: 18,
+                      }}>
+                        <span style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: '#8888a8',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.08em',
+                          fontFamily: 'Syne',
+                        }}>
+                          DP Dibayar
+                        </span>
+                        <span style={{
+                          fontSize: 16,
+                          fontWeight: 700,
+                          color: '#10d98a',
+                          fontFamily: 'Syne',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {formatRupiah(t.dp || t.paid || 0)}
+                        </span>
+                      </div>
+
+                      {/* SISA TAGIHAN — HERO ELEMENT */}
+                      <div style={{
+                        background: 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(234,88,12,0.08))',
+                        border: '1px solid rgba(245,158,11,0.35)',
+                        borderRadius: 10,
+                        padding: '14px 16px',
+                      }}>
+                        <div style={{
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: '#fbbf24',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.1em',
+                          fontFamily: 'Syne',
+                          marginBottom: 6,
+                        }}>
+                          Sisa Tagihan
+                        </div>
+                        <div style={{
+                          fontSize: 32,
+                          fontWeight: 800,
+                          color: '#fbbf24',
+                          fontFamily: 'Syne',
+                          letterSpacing: '-0.02em',
+                          lineHeight: 1.05,
+                          whiteSpace: 'nowrap',
+                          textShadow: '0 0 24px rgba(245,158,11,0.4)',
+                        }}>
+                          {formatRupiah(t.remaining)}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
-                {t.dp > 0 && t.remaining > 0 && (
-                  <>
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '10px 0' }} />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
-                      <span style={{ color: '#8888a8' }}>DP Dibayar</span>
-                      <span style={{ color: '#10d98a', fontWeight: 600 }}>{formatRupiah(t.dp)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                      <span style={{ color: '#f59e0b', fontWeight: 700, fontFamily: 'Syne' }}>SISA</span>
-                      <span style={{ color: '#f59e0b', fontWeight: 700, fontFamily: 'Syne', whiteSpace: 'nowrap' }}>
-                        {formatRupiah(t.remaining)}
-                      </span>
-                    </div>
-                  </>
-                )}
               </div>
             </div>
 
