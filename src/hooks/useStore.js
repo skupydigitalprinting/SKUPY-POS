@@ -456,65 +456,45 @@ export function useStore() {
   }), [wrap])
 
   // ---------- TRANSACTIONS ----------
-  // Daily-reset invoice & order numbering (sesuai spec):
-  //   invoice_no : DDMMYYYY-001 → 01062026-001
-  //   order_no   : ORD-DDMMYYYY-001 → ORD-01062026-001
-  // No urut reset setiap hari, ditentukan dari COUNT(*) baris yang sudah ada
-  // dengan prefix tanggal yang sama. Format lama (INV-YYYY-NNNN) tetap dibaca
-  // (sudah tersimpan di DB) — hanya format BARU yang dipakai untuk insert.
-  const todayPrefix = () => {
+  // Format invoice baru: TIMESTAMP + RANDOM SUFFIX
+  //   invoice_no : INV-YYYYMMDD-HHMMSS-XXX  → INV-20260601-151923-482
+  //   order_no   : ORD-YYYYMMDD-HHMMSS-XXX  → ORD-20260601-151923-482
+  // Kenapa diganti dari format harian (DDMMYYYY-001):
+  //   • Format harian rentan tabrakan kalau ada baris yang dihapus atau
+  //     dua kasir checkout bersamaan (lihat error 23505 yang muncul user).
+  //   • Format timestamp + random 3-digit secara praktis collision-proof:
+  //     harus DUA checkout di detik yang sama AND random sama (1/1000).
+  //   • Tetap human-readable dan terurut secara alami.
+  // Generator dipanggil tepat saat checkout (lihat addTransaction);
+  // tidak ada generate "early" saat halaman Kasir dibuka.
+  const generateInvoiceNumber = useCallback(() => {
     const d = new Date()
-    const dd = String(d.getDate()).padStart(2, '0')
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const yyyy = d.getFullYear()
-    return `${dd}${mm}${yyyy}`
-  }
-
-  // Generate next invoice_no by querying MAX existing for today, then +1.
-  // Why not COUNT(*): kalau ada invoice yang dihapus, COUNT < MAX → nomor
-  // berikutnya berbenturan dengan invoice yang sudah ada → unique violation.
-  // MAX selalu menghasilkan nomor yang lebih tinggi dari semua yang ada.
-  const nextInvoiceNumber = useCallback(async () => {
-    const prefix = todayPrefix()
-    const { data, error: e } = await supabase
-      .from('transactions')
-      .select('invoice_no')
-      .like('invoice_no', `${prefix}-%`)
-      .order('invoice_no', { ascending: false })
-      .limit(1)
-    if (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] nextInvoiceNumber query gagal, fallback ke 001:', e)
-    }
-    let nextNum = 1
-    const last = data?.[0]?.invoice_no
-    if (last) {
-      const m = String(last).match(/-(\d+)$/)
-      if (m) nextNum = parseInt(m[1], 10) + 1
-    }
-    return `${prefix}-${String(nextNum).padStart(3, '0')}`
+    const y = d.getFullYear()
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const da = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mi = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    const rand = String(Math.floor(Math.random() * 1000)).padStart(3, '0')
+    return `INV-${y}${mo}${da}-${hh}${mi}${ss}-${rand}`
   }, [])
 
-  const nextOrderNumber = useCallback(async () => {
-    const prefix = todayPrefix()
-    const { data, error: e } = await supabase
-      .from('transactions')
-      .select('order_no')
-      .like('order_no', `ORD-${prefix}-%`)
-      .order('order_no', { ascending: false })
-      .limit(1)
-    if (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] nextOrderNumber query gagal, fallback ke 001:', e)
-    }
-    let nextNum = 1
-    const last = data?.[0]?.order_no
-    if (last) {
-      const m = String(last).match(/-(\d+)$/)
-      if (m) nextNum = parseInt(m[1], 10) + 1
-    }
-    return `ORD-${prefix}-${String(nextNum).padStart(3, '0')}`
+  const generateOrderNumber = useCallback(() => {
+    const d = new Date()
+    const y = d.getFullYear()
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const da = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mi = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    const rand = String(Math.floor(Math.random() * 1000)).padStart(3, '0')
+    return `ORD-${y}${mo}${da}-${hh}${mi}${ss}-${rand}`
   }, [])
+
+  // Compat: nama lama dipertahankan supaya callers (di addTransaction
+  // dan elsewhere) tidak perlu diubah massal. Keduanya sekarang sync.
+  const nextInvoiceNumber = useCallback(async () => generateInvoiceNumber(), [generateInvoiceNumber])
+  const nextOrderNumber   = useCallback(async () => generateOrderNumber(),   [generateOrderNumber])
 
   // Detect Postgres UNIQUE violation (code 23505) so we know to regenerate
   // the invoice number and retry. Supabase forwards the code on err.code,
