@@ -240,6 +240,15 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
     // Validation — only block on actually-missing requirements
     const isHutang = paymentMethod === 'hutang'
+
+    // Nama pelanggan WAJIB diisi untuk SEMUA metode pembayaran.
+    // Boleh berasal dari customer picker (otomatis terisi) atau diketik manual.
+    const finalCustomerName = (customerName || '').trim()
+    if (!finalCustomerName) {
+      setCheckoutError('Nama pelanggan wajib diisi sebelum checkout')
+      return
+    }
+
     if (isHutang) {
       if (!customerId) {
         setCheckoutError('Tolong pilih customer terlebih dahulu')
@@ -263,7 +272,8 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
       const picked = customerId ? customers.find(c => c.id === customerId) : null
       const trx = {
-        customer: customerName.trim() || picked?.name || 'Pelanggan Umum',
+        // Nama selalu hasil dari validasi di atas; tidak ada fallback "Umum".
+        customer: finalCustomerName,
         customerId: customerId || null,
         customerPhone: picked?.whatsapp || picked?.phone || '',
         customerAddress: picked?.address || '',
@@ -365,11 +375,19 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
               setCustomerSearch(e.target.value)
               setCustomerId('')
             }}
-            placeholder={paymentMethod === 'hutang' ? 'Pilih customer (wajib)' : 'Nama pelanggan (opsional)'}
+            placeholder="Nama pelanggan wajib diisi"
+            required
             className="w-full pl-8 pr-3 py-2 rounded-xl text-xs"
             style={{
               background: 'var(--bg-card)',
-              border: `1px solid ${paymentMethod === 'hutang' && !customerId ? 'rgba(245,158,11,0.4)' : 'var(--border)'}`,
+              // Border kuning kalau kosong (peringatan), amber kalau hutang+belum pilih customer
+              border: `1px solid ${
+                !customerName.trim()
+                  ? 'rgba(245,158,11,0.45)'
+                  : (paymentMethod === 'hutang' && !customerId
+                      ? 'rgba(245,158,11,0.4)'
+                      : 'var(--border)')
+              }`,
               color: 'var(--text-primary)',
             }}
           />
