@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS public.transactions (
   status_history     jsonb NOT NULL DEFAULT '[]'::jsonb,
   cashier            text DEFAULT '',
   cashier_id         uuid REFERENCES public.admins(id) ON DELETE SET NULL,
+  due_date           date,                       -- tanggal jatuh tempo (hutang/tempo)
   created_at         timestamptz DEFAULT now()
 );
 
@@ -131,6 +132,7 @@ ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS customer_address text D
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS order_status     text DEFAULT 'menunggu';
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS notes            text DEFAULT '';
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS status_history   jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS due_date         date;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at   ON public.transactions (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_status       ON public.transactions (status);

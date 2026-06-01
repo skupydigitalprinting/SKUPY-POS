@@ -473,6 +473,15 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 <div style={infoLabel}>Detail</div>
                 <DetailRow k="Tanggal" v={formatDateTime(t.date)} />
                 <DetailRow k="Pembayaran" v={PAYMENT_LABEL[t.paymentMethod] || t.paymentMethod} />
+                {/* Hanya tampil untuk Hutang / Tempo (cash/transfer/qris tidak butuh tempo) */}
+                {isHutang && t.dueDate && (
+                  <DetailRow
+                    k="Jatuh Tempo"
+                    v={new Date(t.dueDate).toLocaleDateString('id-ID', {
+                      day: '2-digit', month: '2-digit', year: 'numeric',
+                    })}
+                  />
+                )}
                 {t.cashier && <DetailRow k="Kasir" v={t.cashier} />}
               </div>
             </div>

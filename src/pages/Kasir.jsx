@@ -479,9 +479,10 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                 const u = getUnit(item.unit)
                 const allowDecimal = u.decimal
                 const qtyNum = Number(item.qty) || 0
-                // +/- step for fabric units = 0.5 (practical for printing/sablon).
-                // Minimum allowed value is 0.1 (enforced in QtyInput.handleBlur).
-                const stepSize = allowDecimal ? 0.5 : 1
+                // Step = always +1 / -1 per click (sesuai spec user) — even for
+                // meter/yard, so 0,5 → 1,5 → 2,5. Manual decimal tetap bisa
+                // diketik lewat QtyInput.
+                const STEP = 1
                 const minQty = allowDecimal ? 0.1 : 1
                 return (
                   <>
@@ -493,13 +494,18 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                       }}
                     >
                       <button
-                        onClick={() => {
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          // eslint-disable-next-line no-console
+                          console.log('MINUS CLICKED', { productId: item.productId, qty: qtyNum, unit: item.unit })
                           if (qtyNum <= minQty + 0.001) {
                             if (window.confirm(`Hapus "${item.name}" dari keranjang?`)) {
                               removeItem(item.productId)
                             }
                           } else {
-                            updateQty(item.productId, -stepSize)
+                            updateQty(item.productId, -STEP)
                           }
                         }}
                         aria-label="Kurangi"
@@ -509,9 +515,13 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                           borderRadius: 10,
                           background: 'transparent',
                           color: 'var(--text-secondary)',
+                          touchAction: 'manipulation', // iOS 300ms tap-delay killer
+                          WebkitTapHighlightColor: 'transparent',
+                          cursor: 'pointer',
+                          userSelect: 'none',
                         }}
                       >
-                        <Minus size={16} />
+                        <Minus size={16} style={{ pointerEvents: 'none' }} />
                       </button>
                       <QtyInput
                         qty={qtyNum}
@@ -525,12 +535,20 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                           fontFamily: 'Syne',
                           letterSpacing: '0.06em',
                           opacity: 0.85,
+                          pointerEvents: 'none', // never intercept taps meant for +/-
                         }}
                       >
                         {u.label}
                       </span>
                       <button
-                        onClick={() => updateQty(item.productId, minStep)}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          // eslint-disable-next-line no-console
+                          console.log('PLUS CLICKED', { productId: item.productId, qty: qtyNum, unit: item.unit })
+                          updateQty(item.productId, STEP)
+                        }}
                         aria-label="Tambah"
                         className="flex items-center justify-center btn-press flex-shrink-0"
                         style={{
@@ -538,9 +556,13 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                           borderRadius: 10,
                           background: 'rgba(139,92,246,0.15)',
                           color: 'var(--accent-light)',
+                          touchAction: 'manipulation',
+                          WebkitTapHighlightColor: 'transparent',
+                          cursor: 'pointer',
+                          userSelect: 'none',
                         }}
                       >
-                        <Plus size={16} />
+                        <Plus size={16} style={{ pointerEvents: 'none' }} />
                       </button>
                     </div>
 

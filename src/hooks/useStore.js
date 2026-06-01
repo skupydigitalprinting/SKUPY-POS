@@ -104,6 +104,7 @@ const trxFromDB = (r) => ({
   statusHistory: r.status_history || [],
   cashier: r.cashier || '',
   cashierId: r.cashier_id,
+  dueDate: r.due_date || null,
   date: r.created_at,
 })
 
@@ -124,6 +125,7 @@ const trxToDB = (t) => ({
   status_history: t.statusHistory || [],
   cashier: t.cashier || '',
   cashier_id: t.cashierId || null,
+  due_date: t.dueDate || null,
 })
 
 // Order workflow statuses (separate from payment status)
@@ -480,7 +482,17 @@ export function useStore() {
       })
       // eslint-disable-next-line no-console
       console.log('[useStore] Inserting transaction:', invoiceNo, 'payload:', payload)
-      const { data: row, error: e } = await supabase.from('transactions').insert(payload).select().single()
+      let { data: row, error: e } = await supabase.from('transactions').insert(payload).select().single()
+      // Defensive retry: if DB doesn't have the new due_date column yet
+      // (user hasn't run the migration), strip it from the payload and retry.
+      // The dueDate is still persisted in the `debts` table for hutang trx.
+      if (e && isSchemaCacheError(e, 'due_date')) {
+        // eslint-disable-next-line no-console
+        console.warn('[useStore] DB belum punya kolom transactions.due_date — transaksi disimpan tanpa due_date. Jalankan migrasi schema.sql terbaru.')
+        const retry = await supabase
+          .from('transactions').insert(omit(payload, ['due_date'])).select().single()
+        row = retry.data; e = retry.error
+      }
       if (e) {
         // eslint-disable-next-line no-console
         console.error('[useStore] Gagal insert transaksi:', e, payload)
