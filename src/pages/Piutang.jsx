@@ -232,25 +232,61 @@ export default function Piutang({
                         {d.dueDate && <> · <CalendarDays size={9} className="inline" /> {formatDate(d.dueDate)}</>}
                       </p>
                     </div>
-                    <div className="grid grid-cols-3 gap-3 sm:gap-4 flex-shrink-0">
+                    <div className="grid grid-cols-3 gap-3 sm:gap-4 flex-shrink-0 items-center">
                       <div className="text-right">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total</p>
-                        <p className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+                        <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Total</p>
+                        <p className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
                           {formatRupiah(d.totalDebt)}
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Dibayar</p>
-                        <p className="text-xs font-bold" style={{ color: '#10d98a', fontFamily: 'Syne' }}>
+                        <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Dibayar</p>
+                        <p className="text-xs font-bold" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
                           {formatRupiah(d.paid)}
                         </p>
                       </div>
-                      <div className="text-right">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Sisa</p>
-                        <p className="text-sm font-bold"
-                          style={{ color: d.remaining > 0 ? '#f59e0b' : '#10d98a', fontFamily: 'Syne' }}>
+                      {/* SISA HUTANG — red emphasis block (paling mencolok) */}
+                      <div className="text-right rounded-xl px-3 py-2"
+                        style={{
+                          background: d.remaining > 0
+                            ? 'rgba(239,68,68,0.10)'
+                            : 'rgba(16,217,138,0.10)',
+                          border: `1px solid ${d.remaining > 0 ? 'rgba(239,68,68,0.35)' : 'rgba(16,217,138,0.35)'}`,
+                          boxShadow: d.remaining > 0
+                            ? '0 0 12px rgba(239,68,68,0.18)'
+                            : '0 0 12px rgba(16,217,138,0.18)',
+                        }}>
+                        <p className="text-[10px] uppercase tracking-widest font-bold"
+                          style={{
+                            color: d.remaining > 0 ? '#ef4444' : '#10d98a',
+                            fontFamily: 'Syne',
+                            letterSpacing: '0.12em',
+                          }}>
+                          {d.remaining > 0 ? 'Sisa Hutang' : 'Lunas'}
+                        </p>
+                        <p className="text-base font-extrabold"
+                          style={{
+                            color: d.remaining > 0 ? '#ef4444' : '#10d98a',
+                            fontFamily: '"Space Grotesk", "Syne", sans-serif',
+                            letterSpacing: '-0.01em',
+                            fontVariantNumeric: 'tabular-nums',
+                            textShadow: d.remaining > 0
+                              ? '0 0 12px rgba(239,68,68,0.4)'
+                              : '0 0 12px rgba(16,217,138,0.35)',
+                          }}>
                           {formatRupiah(d.remaining)}
                         </p>
+                        {d.remaining > 0 && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-bold"
+                            style={{
+                              background: 'rgba(239,68,68,0.18)',
+                              color: '#ef4444',
+                              fontFamily: 'Syne',
+                              letterSpacing: '0.06em',
+                            }}>
+                            BELUM LUNAS
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -306,70 +342,244 @@ export default function Piutang({
         )}
       </div>
 
-      {/* Pay modal */}
+      {/* Pay modal — realtime simulation preview */}
       <Modal open={!!payTarget} onClose={() => setPayTarget(null)}
         title="Bayar Cicilan"
         subtitle={payTarget?.invoiceNo}
         size="sm">
-        {payTarget && (
-          <div className="space-y-4">
-            <div className="rounded-xl p-4 space-y-2"
-              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-              <div className="flex justify-between text-sm">
-                <span style={{ color: 'var(--text-muted)' }}>Total Hutang</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne' }}>
-                  {formatRupiah(payTarget.totalDebt)}
-                </span>
+        {payTarget && (() => {
+          // Realtime computed values — re-derive every render based on input
+          const total = +payTarget.totalDebt || 0
+          const alreadyPaid = +payTarget.paid || 0
+          const remaining = Math.max(0, +payTarget.remaining || 0)
+          // payAmount string → numeric (strip non-digit). Empty → 0.
+          const rawAmt = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
+          const newPaidTotal = alreadyPaid + rawAmt
+          const newRemaining = total - newPaidTotal
+          const exceeds = rawAmt > remaining
+          const willBeLunas = rawAmt > 0 && newRemaining <= 0 && !exceeds
+          const willBePartial = rawAmt > 0 && newRemaining > 0 && !exceeds
+          // Formatted display: "3.000.000" (no Rp prefix in input itself; prefix lives in label)
+          const formattedAmt = rawAmt > 0
+            ? new Intl.NumberFormat('id-ID').format(rawAmt)
+            : ''
+
+          return (
+            <div className="space-y-4">
+              {/* TOP CARD — initial state */}
+              <div className="rounded-xl p-4 space-y-2"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: 'var(--text-muted)' }}>Total Hutang</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(total)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</span>
+                  <span style={{ color: '#10d98a', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(alreadyPaid)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center pt-2"
+                  style={{ borderTop: '1px dashed var(--border)' }}>
+                  <span className="text-xs uppercase tracking-wider font-bold"
+                    style={{ color: '#ef4444', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                    Sisa Hutang
+                  </span>
+                  <span style={{
+                    color: '#ef4444', fontWeight: 800, fontFamily: 'Syne',
+                    fontSize: 18, fontVariantNumeric: 'tabular-nums',
+                    textShadow: '0 0 16px rgba(239,68,68,0.35)',
+                  }}>
+                    {formatRupiah(remaining)}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between text-sm">
-                <span style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</span>
-                <span style={{ color: '#10d98a', fontWeight: 600 }}>{formatRupiah(payTarget.paid)}</span>
-              </div>
-              <div className="flex justify-between text-sm pt-2"
-                style={{ borderTop: '1px dashed var(--border)' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Sisa</span>
-                <span style={{ color: 'var(--amber)', fontWeight: 700, fontFamily: 'Syne' }}>
-                  {formatRupiah(payTarget.remaining)}
-                </span>
-              </div>
-            </div>
-            <Input label="Jumlah Bayar" required type="number" prefix="Rp"
-              value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
-            <div>
-              <label className="block text-xs font-semibold mb-2"
-                style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
-                Metode Pembayaran
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'cash', label: 'Cash', icon: '💵' },
-                  { id: 'transfer', label: 'Transfer', icon: '🏦' },
-                  { id: 'qris', label: 'QRIS', icon: '📱' },
-                ].map(m => (
-                  <button key={m.id} onClick={() => setPayMethod(m.id)}
-                    className="flex flex-col items-center gap-1 py-2 rounded-xl text-xs font-medium"
+
+              {/* INPUT — formatted thousand-separator while typing */}
+              <div>
+                <label className="block text-xs font-semibold mb-2"
+                  style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                  Jumlah Bayar <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold"
+                    style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
+                    Rp
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    value={formattedAmt}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/[^\d]/g, '')
+                      setPayAmount(digits)
+                    }}
+                    placeholder="0"
+                    className="w-full pl-10 pr-3 py-3 rounded-xl text-lg font-bold"
                     style={{
-                      background: payMethod === m.id ? 'rgba(139,92,246,0.15)' : 'var(--bg-card)',
-                      border: `1px solid ${payMethod === m.id ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`,
-                      color: payMethod === m.id ? 'var(--accent-light)' : 'var(--text-muted)',
+                      background: 'var(--bg-card)',
+                      border: `1px solid ${exceeds ? 'rgba(239,68,68,0.5)' : 'var(--border)'}`,
+                      color: 'var(--text-primary)',
                       fontFamily: 'Syne',
-                    }}>
-                    <span>{m.icon}</span> {m.label}
-                  </button>
-                ))}
+                      fontVariantNumeric: 'tabular-nums',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* SIMULASI PEMBAYARAN — realtime panel */}
+              <div className="rounded-2xl overflow-hidden animate-fadeIn"
+                style={{
+                  background: 'linear-gradient(180deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04))',
+                  border: '1px solid rgba(139,92,246,0.25)',
+                }}>
+                <div className="px-4 py-2 text-[10px] uppercase tracking-widest font-bold text-center"
+                  style={{
+                    color: 'var(--accent-light)',
+                    fontFamily: 'Syne',
+                    letterSpacing: '0.16em',
+                    borderBottom: '1px solid rgba(139,92,246,0.18)',
+                    background: 'rgba(139,92,246,0.08)',
+                  }}>
+                  Simulasi Pembayaran
+                </div>
+                <div className="p-4 space-y-3">
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                      Total Hutang
+                    </span>
+                    <span className="font-bold"
+                      style={{ color: '#ffffff', fontFamily: 'Syne', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(total)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                      Pembayaran Saat Ini
+                    </span>
+                    <span className="font-bold"
+                      style={{ color: '#10d98a', fontFamily: 'Syne', fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(rawAmt)}
+                    </span>
+                  </div>
+                  {/* Sisa Setelah Pembayaran — angka TERBESAR di modal */}
+                  <div className="pt-3"
+                    style={{ borderTop: '1px dashed rgba(245,158,11,0.3)' }}>
+                    <div className="text-[10px] uppercase tracking-widest font-bold mb-1"
+                      style={{ color: '#f59e0b', fontFamily: 'Syne', letterSpacing: '0.14em' }}>
+                      Sisa Setelah Pembayaran
+                    </div>
+                    <div
+                      key={Math.max(0, newRemaining)}
+                      className="animate-scaleIn"
+                      style={{
+                        fontSize: 28,
+                        fontWeight: 800,
+                        color: newRemaining <= 0 ? '#10d98a' : (exceeds ? '#ef4444' : '#fbbf24'),
+                        fontFamily: '"Space Grotesk", "Syne", sans-serif',
+                        letterSpacing: '-0.02em',
+                        textShadow: newRemaining <= 0
+                          ? '0 0 20px rgba(16,217,138,0.45)'
+                          : (exceeds ? '0 0 20px rgba(239,68,68,0.5)' : '0 0 20px rgba(251,191,36,0.45)'),
+                        fontVariantNumeric: 'tabular-nums',
+                        transition: 'color 0.2s ease',
+                      }}>
+                      {formatRupiah(Math.max(0, newRemaining))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* VALIDATION BADGES */}
+              {exceeds && (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(239,68,68,0.12)',
+                    border: '1px solid rgba(239,68,68,0.4)',
+                    color: '#ef4444',
+                  }}>
+                  <AlertTriangle size={14} />
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    Nominal melebihi sisa hutang
+                  </span>
+                </div>
+              )}
+              {willBeLunas && (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(16,217,138,0.12)',
+                    border: '1px solid rgba(16,217,138,0.4)',
+                    color: '#10d98a',
+                  }}>
+                  <CheckCircle2 size={14} />
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    Hutang Akan Lunas
+                  </span>
+                </div>
+              )}
+              {willBePartial && (
+                <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(245,158,11,0.10)',
+                    border: '1px solid rgba(245,158,11,0.35)',
+                    color: '#f59e0b',
+                  }}>
+                  <span className="flex items-center gap-2 text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    <AlertTriangle size={14} /> Sisa Setelah Pembayaran
+                  </span>
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(newRemaining)}
+                  </span>
+                </div>
+              )}
+
+              {/* PAYMENT METHOD */}
+              <div>
+                <label className="block text-xs font-semibold mb-2"
+                  style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                  Metode Pembayaran
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'cash', label: 'Cash', icon: '💵' },
+                    { id: 'transfer', label: 'Transfer', icon: '🏦' },
+                    { id: 'qris', label: 'QRIS', icon: '📱' },
+                  ].map(m => (
+                    <button key={m.id} onClick={() => setPayMethod(m.id)}
+                      className="flex flex-col items-center gap-1 py-2 rounded-xl text-xs font-medium"
+                      style={{
+                        background: payMethod === m.id ? 'rgba(139,92,246,0.15)' : 'var(--bg-card)',
+                        border: `1px solid ${payMethod === m.id ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`,
+                        color: payMethod === m.id ? 'var(--accent-light)' : 'var(--text-muted)',
+                        fontFamily: 'Syne',
+                      }}>
+                      <span>{m.icon}</span> {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ACTIONS */}
+              <div className="flex gap-2">
+                <Button variant="secondary" className="flex-1" onClick={() => setPayTarget(null)} disabled={paying}>
+                  Batal
+                </Button>
+                <Button variant="success" className="flex-1"
+                  onClick={handlePay}
+                  disabled={paying || exceeds || rawAmt <= 0}>
+                  {paying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                  {paying ? 'Memproses...' : 'Konfirmasi'}
+                </Button>
               </div>
             </div>
-            <div className="flex gap-2">
-              <Button variant="secondary" className="flex-1" onClick={() => setPayTarget(null)} disabled={paying}>
-                Batal
-              </Button>
-              <Button variant="success" className="flex-1" onClick={handlePay} disabled={paying}>
-                {paying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                {paying ? 'Memproses...' : 'Konfirmasi'}
-              </Button>
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </Modal>
 
       {/* History modal */}
