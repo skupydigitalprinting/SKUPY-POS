@@ -666,16 +666,25 @@ export function useStore() {
 
       // If "Hutang", create a debt row
       if (trx.paymentMethod === 'hutang' && trx.customerId) {
-        const totalDebtAmt = +trx.remaining || (+trx.total - (+trx.paid || 0)) || +trx.total || 0
+        // ✱ DEBT MIRROR-OF-TRANSACTION ✱
+        // debt.total_debt   = transactions.total        (full total tagihan)
+        // debt.paid         = transactions.paid         (sudah include DP)
+        // debt.remaining    = transactions.remaining    (total - paid)
+        // Sebelumnya debt.paid disimpan 0 + total_debt = sisa-setelah-DP →
+        // saat processDebtPayment menulis paidAfter ke transactions, DP
+        // hilang (terpotong dobel). Sekarang kedua tabel selalu mirror.
+        const totalFinal = +trx.total || 0
+        const dpAmt = +trx.paid || +trx.dp || 0
+        const remainingAmt = Math.max(0, totalFinal - dpAmt)
         const debtPayload = {
           customer_id: trx.customerId,
           transaction_id: row.id,
           invoice_no: invoiceNo,
-          total_debt: totalDebtAmt,
-          paid: 0,
-          remaining: totalDebtAmt,
+          total_debt: totalFinal,
+          paid: dpAmt,
+          remaining: remainingAmt,
           due_date: trx.dueDate || null,
-          status: 'aktif',
+          status: remainingAmt <= 0 ? 'lunas' : 'aktif',
           notes: trx.notes || '',
         }
         const { error: debtErr } = await supabase.from('debts').insert(debtPayload)
@@ -891,15 +900,17 @@ export function useStore() {
       debtRow = byTrx.data
     }
 
-    // 3-6. Tentukan remainingBefore + paidBefore (debt > transaction priority)
-    const remainingBefore = debtRow != null && debtRow.remaining != null
-      ? Number(debtRow.remaining) || 0
-      : Number(trxRow.remaining) || 0
-    const paidBefore = debtRow != null && debtRow.paid != null
-      ? Number(debtRow.paid) || 0
-      : Number(trxRow.paid) || 0
+    // 3-6. Tentukan remainingBefore + paidBefore
+    // PRIORITAS: TRANSACTIONS (karena selalu include DP awal). Fallback ke
+    // debt kalau transaction.paid masih 0 untuk row legacy.
+    const total = Number(trxRow.total) || 0
+    const paidBefore = (Number(trxRow.paid) || 0) > 0
+      ? Number(trxRow.paid)
+      : (debtRow && Number(debtRow.paid) ? Number(debtRow.paid) : 0)
+    const remainingBefore = Math.max(0, total - paidBefore)
 
-    // 7. Hitung
+    // 7. Hitung — kurangkan dari remainingBefore (BUKAN dari total - paidAfter
+    //    yang bisa salah kalau ada drift)
     const paidAfter = paidBefore + amount
     let remainingAfter = remainingBefore - amount
     if (remainingAfter < 0) remainingAfter = 0
