@@ -75,12 +75,14 @@ const customerToDB = (c) => ({
 const productFromDB = (r) => ({
   id: r.id, name: r.name, category: r.category,
   price: Number(r.price) || 0, modal: Number(r.modal) || 0, stock: Number(r.stock) || 0,
+  unit: (r.unit || 'pcs').toLowerCase(),
   description: r.description || '', image: r.image || '',
 })
 
 const productToDB = (p) => ({
   name: p.name, category: p.category,
   price: Number(p.price) || 0, modal: Number(p.modal) || 0, stock: Number(p.stock) || 0,
+  unit: (p.unit || 'pcs').toLowerCase(),
   description: p.description || '', image: p.image || '',
 })
 

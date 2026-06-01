@@ -114,6 +114,50 @@ export const STATUS_MAP = {
   lunas: { label: 'Lunas', color: 'accent', hex: '#a78bfa' },
 }
 
+// ---------- UNIT (PCS / Meter / Yard) ----------
+
+export const UNIT_OPTIONS = [
+  { id: 'pcs',   label: 'PCS',   short: 'pcs',   decimal: false },
+  { id: 'meter', label: 'Meter', short: 'm',     decimal: true  },
+  { id: 'yard',  label: 'Yard',  short: 'yd',    decimal: true  },
+]
+
+/** Returns the unit config (or PCS fallback). */
+export function getUnit(unit) {
+  return UNIT_OPTIONS.find(u => u.id === (unit || 'pcs').toLowerCase()) || UNIT_OPTIONS[0]
+}
+
+/** True if the unit supports decimals (meter/yard). */
+export function unitAllowsDecimal(unit) {
+  return getUnit(unit).decimal
+}
+
+/**
+ * Format a quantity for display, e.g. 1.5 → "1,5 Meter", 3 → "3 PCS".
+ * Indonesia uses comma as decimal separator.
+ */
+export function formatQty(qty, unit = 'pcs') {
+  const u = getUnit(unit)
+  const n = Number(qty) || 0
+  const str = u.decimal
+    ? (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
+    : String(Math.round(n))
+  return `${str} ${u.label}`
+}
+
+/**
+ * Parse a quantity string into a number.
+ * - Accepts Indonesian comma ("1,5") and dot ("1.5")
+ * - Returns 0 for invalid input
+ */
+export function parseQty(str, allowDecimal = false) {
+  if (str === '' || str == null) return 0
+  const normalized = String(str).trim().replace(',', '.').replace(/[^\d.]/g, '')
+  if (!normalized) return 0
+  const n = allowDecimal ? parseFloat(normalized) : parseInt(normalized, 10)
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
 export function nextInvoiceNo(existing = []) {
   const year = new Date().getFullYear()
   const yearTrx = existing.filter(t => (t.invoiceNo || '').includes(`INV-${year}`))

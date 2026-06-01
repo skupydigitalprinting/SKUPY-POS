@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx'
 import { CATEGORIES } from '../data/dummyData'
+import { getUnit } from './helpers'
 
 const PAYMENT_LABEL = {
   cash: 'Cash', transfer: 'Transfer', qris: 'QRIS', hutang: 'Hutang/Tempo',
@@ -110,7 +111,7 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
     const aoa = []
     const headers = [
       'No', 'Tanggal', 'Jam', 'Nomor Order', 'Nomor Invoice', 'Nama Pelanggan', 'No WhatsApp',
-      'Nama Produk', 'Kategori', 'Qty', 'Harga', 'Subtotal Item',
+      'Nama Produk', 'Kategori', 'Qty', 'Satuan', 'Harga', 'Subtotal Item',
       'Subtotal Trx', 'Diskon', 'Total', 'Metode Pembayaran', 'Status Pembayaran', 'Status Order',
       'Catatan', 'Kasir',
     ]
@@ -118,10 +119,15 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
 
     let no = 0
     const findCustomer = (cid) => customers.find(c => c.id === cid)
+    const productFor = (productId) => products.find(x => x.id === productId)
     const catFor = (productId) => {
       if (!productId) return '-'
-      const p = products.find(x => x.id === productId)
-      return catLabel(p?.category)
+      return catLabel(productFor(productId)?.category)
+    }
+    // Resolve unit label from item (if stored) or fallback to product master
+    const unitLabelFor = (item) => {
+      const raw = item?.unit || productFor(item?.productId)?.unit || 'pcs'
+      return getUnit(raw).label
     }
 
     transactions.forEach(t => {
@@ -131,6 +137,7 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
       items.forEach(item => {
         no += 1
         const dt = new Date(t.date)
+        const qtyNum = +item?.qty || 0
         aoa.push([
           no,
           dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }),
@@ -141,9 +148,10 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
           whatsapp,
           item?.name || '-',
           catFor(item?.productId),
-          item?.qty || 0,
+          qtyNum,
+          item ? unitLabelFor(item) : '-',
           +item?.price || 0,
-          (+item?.qty || 0) * (+item?.price || 0),
+          qtyNum * (+item?.price || 0),
           +t.subtotal || 0,
           +t.discount || 0,
           +t.total || 0,
@@ -156,10 +164,9 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
       })
     })
 
-    // Totals row
-    const totalsRowIdx = aoa.length
+    // Totals row — note extra '' inserted for the new Satuan column
     aoa.push([
-      '', '', '', '', '', '', '', '', 'TOTAL', '', '',
+      '', '', '', '', '', '', '', '', 'TOTAL', '', '', '',
       transactions.reduce((s, t) =>
         s + (t.items || []).reduce((q, i) => q + (+i.qty || 0) * (+i.price || 0), 0), 0),
       transactions.reduce((s, t) => s + (+t.subtotal || 0), 0),
@@ -170,8 +177,9 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
 
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     ws['!cols'] = autoWidth(aoa, 0)
-    // Currency columns: 10 (Harga), 11 (Subtotal Item), 12 (Subtotal Trx), 13 (Diskon), 14 (Total)
-    const currencyCols = [10, 11, 12, 13, 14]
+    // Currency columns shift by +1 because of inserted Satuan column:
+    // 11 (Harga), 12 (Subtotal Item), 13 (Subtotal Trx), 14 (Diskon), 15 (Total)
+    const currencyCols = [11, 12, 13, 14, 15]
     applyCurrencyFormat(ws, aoa.length - 1, currencyCols, 1)
     freeze(ws, 1)
     XLSX.utils.book_append_sheet(wb, ws, 'Detail Order')
@@ -222,16 +230,19 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
 
   // ===== SHEET 4: REKAP PRODUK =====
   {
-    const aoa = [['Nama Produk', 'Kategori', 'Qty Terjual', 'Jumlah Transaksi', 'Omzet', 'Harga Rata-rata']]
+    const aoa = [['Nama Produk', 'Kategori', 'Satuan', 'Qty Terjual', 'Jumlah Transaksi', 'Omzet', 'Harga Rata-rata']]
     const map = new Map()
     transactions.forEach(t => {
       const seenInTrx = new Set()
       ;(t.items || []).forEach(item => {
         if (!item.name) return
         const key = item.productId || item.name
+        const productMaster = products.find(p => p.id === item.productId)
+        const unitRaw = item.unit || productMaster?.unit || 'pcs'
         const cur = map.get(key) || {
           name: item.name,
-          category: catLabel(products.find(p => p.id === item.productId)?.category),
+          category: catLabel(productMaster?.category),
+          unit: getUnit(unitRaw).label,
           qty: 0,
           trxCount: 0,
           omzet: 0,
@@ -244,11 +255,11 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
     })
     const list = [...map.values()].sort((a, b) => b.qty - a.qty)
     list.forEach(r => aoa.push([
-      r.name, r.category, r.qty, r.trxCount, r.omzet,
+      r.name, r.category, r.unit, r.qty, r.trxCount, r.omzet,
       r.qty > 0 ? Math.round(r.omzet / r.qty) : 0,
     ]))
     aoa.push([
-      'TOTAL', '',
+      'TOTAL', '', '',
       list.reduce((s, r) => s + r.qty, 0),
       list.reduce((s, r) => s + r.trxCount, 0),
       list.reduce((s, r) => s + r.omzet, 0),
@@ -257,7 +268,8 @@ export function exportTransactionsXLSX(transactions, storeInfo = {}, options = {
 
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     ws['!cols'] = autoWidth(aoa, 0)
-    applyCurrencyFormat(ws, aoa.length - 1, [4, 5], 1)
+    // Currency cols shift +1: Omzet (5), Harga Rata-rata (6)
+    applyCurrencyFormat(ws, aoa.length - 1, [5, 6], 1)
     freeze(ws, 1)
     XLSX.utils.book_append_sheet(wb, ws, 'Rekap Produk')
   }

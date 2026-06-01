@@ -506,44 +506,78 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 <span style={{ textAlign: 'right' }}>Harga</span>
                 <span style={{ textAlign: 'right' }}>Subtotal</span>
               </div>
-              {(t.items || []).map((item, i) => (
-                <div key={i} style={{
-                  display: 'grid',
-                  gridTemplateColumns: '40px 1fr 60px 120px 130px',
-                  gap: 12,
-                  padding: '16px 18px',
-                  fontSize: 12,
-                  borderBottom: i < t.items.length - 1 ? '1px solid #ececf2' : 'none',
-                  alignItems: 'center',
-                }}>
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
+              {(t.items || []).map((item, i) => {
+                const unit = (item.unit || 'pcs').toLowerCase()
+                // qty formatted Indonesian (1,5 / 2,75 / 3)
+                const qtyNum = Number(item.qty) || 0
+                const qtyDisplay = (unit === 'meter' || unit === 'yard')
+                  ? (Number.isInteger(qtyNum)
+                      ? String(qtyNum)
+                      : qtyNum.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
+                  : String(Math.round(qtyNum))
+                const unitLabel = unit === 'meter' ? 'Meter' : unit === 'yard' ? 'Yard' : 'PCS'
+                return (
+                  <div key={i} style={{
+                    display: 'grid',
+                    gridTemplateColumns: '40px 1fr 60px 120px 130px',
+                    gap: 12,
+                    padding: '16px 18px',
+                    fontSize: 12,
+                    borderBottom: i < t.items.length - 1 ? '1px solid #ececf2' : 'none',
+                    alignItems: 'center',
                   }}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span style={{
-                    fontWeight: 600, color: '#1a1a25', lineHeight: 1.4,
-                    // Keep words intact, never per-letter break
-                    wordBreak: 'normal',
-                    overflowWrap: 'break-word',
-                    whiteSpace: 'normal',
-                  }}>
-                    {item.name}
-                  </span>
-                  <span style={{ textAlign: 'center', color: '#55556a', fontFamily: 'Syne', fontWeight: 600 }}>
-                    {item.qty}
-                  </span>
-                  <span style={{ textAlign: 'right', color: '#55556a', whiteSpace: 'nowrap' }}>
-                    {formatRupiah(item.price)}
-                  </span>
-                  <span style={{
-                    textAlign: 'right', fontWeight: 700, color: '#1a1a25',
-                    fontFamily: 'Syne', whiteSpace: 'nowrap',
-                  }}>
-                    {formatRupiah(item.qty * item.price)}
-                  </span>
-                </div>
-              ))}
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, color: '#8b5cf6', fontFamily: 'Syne',
+                    }}>
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span style={{
+                      fontWeight: 600, color: '#1a1a25', lineHeight: 1.4,
+                      wordBreak: 'normal',
+                      overflowWrap: 'break-word',
+                      whiteSpace: 'normal',
+                    }}>
+                      {item.name}
+                      <span style={{
+                        display: 'inline-block',
+                        marginLeft: 8,
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: '#8b5cf6',
+                        background: 'rgba(139,92,246,0.10)',
+                        border: '1px solid rgba(139,92,246,0.18)',
+                        fontFamily: 'Syne',
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                        verticalAlign: 'middle',
+                      }}>
+                        {qtyDisplay} {unitLabel}
+                      </span>
+                    </span>
+                    <span style={{
+                      textAlign: 'center', color: '#1a1a25', fontFamily: 'Syne', fontWeight: 700,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>
+                      {qtyDisplay}
+                    </span>
+                    <span style={{
+                      textAlign: 'right', color: '#55556a', whiteSpace: 'nowrap',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>
+                      {formatRupiah(item.price)}
+                    </span>
+                    <span style={{
+                      textAlign: 'right', fontWeight: 700, color: '#1a1a25',
+                      fontFamily: 'Syne', whiteSpace: 'nowrap',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>
+                      {formatRupiah(qtyNum * item.price)}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
 
             {/* Bank + Summary — always 2 columns desktop */}
@@ -675,15 +709,15 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                       <div style={{
                         height: 1,
                         background: 'rgba(245,158,11,0.2)',
-                        margin: '10px 0',
+                        margin: '8px 0',                        // ← tighter (was 10)
                       }} />
 
-                      {/* DP DIBAYAR — Inter SemiBold (medium-readable) */}
+                      {/* DP DIBAYAR — Inter SemiBold, ukuran normal */}
                       <div style={{
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'baseline',
-                        marginBottom: 14,
+                        marginBottom: 10,                       // ← tighter (was 14)
                       }}>
                         <span style={{
                           fontSize: 11,
@@ -708,17 +742,21 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         </span>
                       </div>
 
-                      {/* SISA TAGIHAN — HERO BLOCK (Space Grotesk Bold gold, vertical centered) */}
+                      {/* SISA TAGIHAN — HERO BLOCK
+                          • Font ~ 24px = TOTAL × 1.26 (spec: 15-25% lebih besar)
+                          • Padding simetris atas-bawah → nominal vertical-centered
+                          • marginTop negatif untuk merapatkan ke DP DIBAYAR */}
                       <div style={{
                         background: 'linear-gradient(135deg, rgba(245,158,11,0.2), rgba(234,88,12,0.1))',
                         border: '1px solid rgba(245,158,11,0.45)',
                         borderRadius: 12,
-                        padding: '20px 20px 22px',
+                        padding: '20px',                        // ← symmetric all-sides
                         display: 'flex',
                         flexDirection: 'column',
                         justifyContent: 'center',
-                        gap: 10,
-                        marginTop: -2,  // raise slightly for balance
+                        alignItems: 'flex-start',
+                        gap: 12,                                // ← lega antara label & nominal
+                        marginTop: -2,
                       }}>
                         <div style={{
                           fontSize: 11,
@@ -732,15 +770,16 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                           Sisa Tagihan
                         </div>
                         <div style={{
-                          fontSize: 30,
-                          fontWeight: 700,
+                          // ~24px = 19 × 1.26 (sesuai spec 15-25% bigger than TOTAL)
+                          fontSize: 24,
+                          fontWeight: 800,
                           color: '#fbbf24',
-                          // Space Grotesk → digit yang tegas, modern, terbaca jelas
+                          // Space Grotesk → digit tegas, modern
                           fontFamily: '"Space Grotesk", "Sora", "Syne", sans-serif',
-                          letterSpacing: '-0.025em',
-                          lineHeight: 1.02,
+                          letterSpacing: '-0.02em',
+                          lineHeight: 1,
                           whiteSpace: 'nowrap',
-                          textShadow: '0 0 26px rgba(245,158,11,0.5)',
+                          textShadow: '0 0 20px rgba(245,158,11,0.5)',
                           fontVariantNumeric: 'tabular-nums',
                         }}>
                           {formatRupiah(t.remaining)}

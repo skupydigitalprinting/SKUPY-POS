@@ -4,7 +4,10 @@ import {
   CheckCircle2, X, Package, User, Calendar,
 } from 'lucide-react'
 import { CATEGORIES, PAYMENT_METHODS } from '../data/dummyData'
-import { formatRupiah, toDateInputValue } from '../utils/helpers'
+import {
+  formatRupiah, toDateInputValue,
+  getUnit, formatQty,
+} from '../utils/helpers'
 import { Button, ProductImage, EmptyState } from '../components/ui'
 import Invoice from '../components/Invoice'
 
@@ -40,14 +43,20 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
     })
   }, [products, search, category])
 
+  // Stock is no longer a hard inventory gate — Skupy POS sells mostly services
+  // (sablon/printing/DTF/jersey). We DO NOT block adding a product when stock = 0.
+  // If stock > 0 we treat it as a soft cap; if stock = 0 we treat as "untracked".
+  const wouldExceedStock = (item, nextQty) =>
+    item.stock != null && Number(item.stock) > 0 && nextQty > Number(item.stock)
+
   const addToCart = (product) => {
-    if (product.stock === 0) return
     setCart((prev) => {
       const existing = prev.find((i) => i.productId === product.id)
       if (existing) {
-        if (existing.qty >= product.stock) return prev
+        const next = Number(existing.qty) + 1
+        if (wouldExceedStock(existing, next)) return prev
         return prev.map((i) =>
-          i.productId === product.id ? { ...i, qty: i.qty + 1 } : i
+          i.productId === product.id ? { ...i, qty: next } : i
         )
       }
       return [
@@ -59,6 +68,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           qty: 1,
           image: product.image,
           stock: product.stock,
+          unit: (product.unit || 'pcs').toLowerCase(),
         },
       ]
     })
@@ -69,22 +79,32 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       prev
         .map((i) => {
           if (i.productId !== productId) return i
-          const next = i.qty + delta
-          if (next > i.stock) return i
-          return { ...i, qty: next }
+          const next = Number(i.qty) + delta
+          if (wouldExceedStock(i, next)) return i
+          // Round to 2 decimals for meter/yard, integer for pcs
+          const rounded = (i.unit === 'meter' || i.unit === 'yard')
+            ? Math.round(next * 100) / 100
+            : Math.round(next)
+          return { ...i, qty: rounded }
         })
-        .filter((i) => i.qty > 0)
+        .filter((i) => Number(i.qty) > 0)
     )
   }
 
   // Set exact qty (from manual input). Empty/0/invalid → coerce to 1.
   // Caps at item.stock if known.
+  // setQtyExact — supports decimals for meter/yard, integer for PCS.
+  // Accepts Indonesian comma format: "1,5" → 1.5
   const setQtyExact = (productId, raw) => {
     setCart((prev) => prev.map((i) => {
       if (i.productId !== productId) return i
-      let n = parseInt(raw, 10)
-      if (!Number.isFinite(n) || n < 1) n = 1
-      if (i.stock != null && n > i.stock) n = i.stock
+      const allowDecimal = i.unit === 'meter' || i.unit === 'yard'
+      // Normalize comma → dot, strip non-numeric (except dot)
+      const cleaned = String(raw ?? '').trim().replace(',', '.').replace(/[^\d.]/g, '')
+      let n = allowDecimal ? parseFloat(cleaned) : parseInt(cleaned, 10)
+      if (!Number.isFinite(n) || n <= 0) n = allowDecimal ? 1 : 1
+      // Round decimal to 2 places to avoid floating-point glitches
+      if (allowDecimal) n = Math.round(n * 100) / 100
       return { ...i, qty: n }
     }))
   }
@@ -323,7 +343,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                   </p>
                   <p className="text-xs mt-0.5"
                     style={{ color: 'var(--text-muted)' }}>
-                    {formatRupiah(item.price)} / pcs
+                    {formatRupiah(item.price)} / {getUnit(item.unit).short}
                   </p>
                 </div>
                 <button
@@ -342,79 +362,107 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                 </button>
               </div>
 
-              {/* Row 2: Qty controls + Subtotal */}
-              <div className="flex items-center justify-between gap-2">
-                <div
-                  className="flex items-center gap-1 rounded-xl p-1"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border)',
-                  }}
-                >
-                  <button
-                    onClick={() => {
-                      if (item.qty <= 1) {
-                        if (window.confirm(`Hapus "${item.name}" dari keranjang?`)) {
-                          removeItem(item.productId)
-                        }
-                      } else {
-                        updateQty(item.productId, -1)
-                      }
-                    }}
-                    aria-label="Kurangi"
-                    className="flex items-center justify-center btn-press"
-                    style={{
-                      width: 44, height: 44, minWidth: 44, minHeight: 44,
-                      borderRadius: 10,
-                      background: 'transparent',
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    <Minus size={16} />
-                  </button>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    value={item.qty}
-                    min={1}
-                    max={item.stock || undefined}
-                    onChange={(e) => setQtyExact(item.productId, e.target.value)}
-                    onBlur={(e) => {
-                      const n = parseInt(e.target.value, 10)
-                      if (!Number.isFinite(n) || n < 1) setQtyExact(item.productId, 1)
-                    }}
-                    onFocus={(e) => e.target.select()}
-                    aria-label="Jumlah"
-                    className="qty-input text-center text-base font-bold"
-                    style={{
-                      width: 60, minHeight: 44,
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--text-primary)',
-                      fontFamily: 'Syne',
-                      outline: 'none',
-                    }}
-                  />
-                  <button
-                    onClick={() => updateQty(item.productId, 1)}
-                    aria-label="Tambah"
-                    className="flex items-center justify-center btn-press"
-                    style={{
-                      width: 44, height: 44, minWidth: 44, minHeight: 44,
-                      borderRadius: 10,
-                      background: 'rgba(139,92,246,0.15)',
-                      color: 'var(--accent-light)',
-                    }}
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-                <p className="text-sm font-bold text-right"
-                  style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-                  {formatRupiah(item.price * item.qty)}
-                </p>
-              </div>
+              {/* Row 2: Qty controls + Unit badge + Subtotal */}
+              {(() => {
+                const u = getUnit(item.unit)
+                const allowDecimal = u.decimal
+                // Display string: "1,5" for decimals or "3" for pcs
+                const qtyNum = Number(item.qty) || 0
+                const qtyText = allowDecimal
+                  ? (Number.isInteger(qtyNum) ? String(qtyNum) : qtyNum.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
+                  : String(Math.round(qtyNum))
+                return (
+                  <div className="flex items-center justify-between gap-2">
+                    <div
+                      className="flex items-center gap-1 rounded-xl p-1"
+                      style={{
+                        background: 'var(--bg-elevated)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      <button
+                        onClick={() => {
+                          if (qtyNum <= 1) {
+                            if (window.confirm(`Hapus "${item.name}" dari keranjang?`)) {
+                              removeItem(item.productId)
+                            }
+                          } else {
+                            updateQty(item.productId, -1)
+                          }
+                        }}
+                        aria-label="Kurangi"
+                        className="flex items-center justify-center btn-press"
+                        style={{
+                          width: 44, height: 44, minWidth: 44, minHeight: 44,
+                          borderRadius: 10,
+                          background: 'transparent',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        <Minus size={16} />
+                      </button>
+                      <input
+                        type="text"
+                        inputMode={allowDecimal ? 'decimal' : 'numeric'}
+                        pattern={allowDecimal ? '[0-9.,]*' : '[0-9]*'}
+                        value={qtyText}
+                        onChange={(e) => setQtyExact(item.productId, e.target.value)}
+                        onBlur={(e) => {
+                          const cleaned = String(e.target.value).replace(',', '.').replace(/[^\d.]/g, '')
+                          const n = allowDecimal ? parseFloat(cleaned) : parseInt(cleaned, 10)
+                          if (!Number.isFinite(n) || n <= 0) setQtyExact(item.productId, '1')
+                        }}
+                        onFocus={(e) => e.target.select()}
+                        aria-label="Jumlah"
+                        className="qty-input text-center text-base font-bold"
+                        style={{
+                          width: 64, minHeight: 44,
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--text-primary)',
+                          fontFamily: 'Syne',
+                          outline: 'none',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      />
+                      <span
+                        className="text-[10px] font-bold uppercase tracking-wider px-2"
+                        style={{
+                          color: 'var(--accent-light)',
+                          fontFamily: 'Syne',
+                          letterSpacing: '0.06em',
+                          opacity: 0.85,
+                        }}
+                      >
+                        {u.label}
+                      </span>
+                      <button
+                        onClick={() => updateQty(item.productId, 1)}
+                        aria-label="Tambah"
+                        className="flex items-center justify-center btn-press"
+                        style={{
+                          width: 44, height: 44, minWidth: 44, minHeight: 44,
+                          borderRadius: 10,
+                          background: 'rgba(139,92,246,0.15)',
+                          color: 'var(--accent-light)',
+                        }}
+                      >
+                        <Plus size={16} />
+                      </button>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase tracking-wider"
+                        style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                        {formatQty(qtyNum, item.unit)}
+                      </p>
+                      <p className="text-sm font-bold"
+                        style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatRupiah(item.price * qtyNum)}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           ))
         )}
@@ -723,7 +771,6 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
               {filtered.map((p) => {
                 const inCart = cart.find((i) => i.productId === p.id)
-                const outOfStock = p.stock === 0
                 return (
                   <div
                     key={p.id}
@@ -732,8 +779,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                     style={{
                       background: 'var(--bg-card)',
                       border: `1px solid ${inCart ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`,
-                      opacity: outOfStock ? 0.5 : 1,
-                      cursor: outOfStock ? 'not-allowed' : 'pointer',
+                      cursor: 'pointer',
                     }}
                   >
                     <div className="relative aspect-square">
@@ -757,25 +803,15 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                             boxShadow: '0 4px 12px rgba(139,92,246,0.5)',
                           }}
                         >
-                          {inCart.qty}
-                        </div>
-                      )}
-                      {outOfStock && (
-                        <div
-                          className="absolute inset-0 flex items-center justify-center"
-                          style={{ background: 'rgba(0,0,0,0.55)' }}
-                        >
-                          <span
-                            className="text-xs font-bold px-3 py-1 rounded-full"
-                            style={{
-                              background: 'rgba(255,77,106,0.2)',
-                              color: 'var(--red)',
-                              border: '1px solid rgba(255,77,106,0.3)',
-                              fontFamily: 'Syne',
-                            }}
-                          >
-                            Stok Habis
-                          </span>
+                          {(() => {
+                            const q = Number(inCart.qty) || 0
+                            const isDec = p.unit === 'meter' || p.unit === 'yard'
+                            const txt = isDec
+                              ? (Number.isInteger(q) ? String(q) : q.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
+                              : String(Math.round(q))
+                            const suf = p.unit === 'meter' ? ' m' : p.unit === 'yard' ? ' yd' : ''
+                            return `${txt}${suf}`
+                          })()}
                         </div>
                       )}
                     </div>
@@ -791,12 +827,11 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                         style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}
                       >
                         {formatRupiah(p.price)}
-                      </p>
-                      <p
-                        className="text-xs mt-0.5"
-                        style={{ color: p.stock < 5 ? 'var(--amber)' : 'var(--text-muted)' }}
-                      >
-                        Stok: {p.stock}
+                        <span style={{
+                          color: 'var(--text-muted)', fontSize: 10, fontWeight: 500, marginLeft: 4,
+                        }}>
+                          / {p.unit === 'meter' ? 'm' : p.unit === 'yard' ? 'yd' : 'pcs'}
+                        </span>
                       </p>
                     </div>
                   </div>

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import {
-  Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Filter, AlertTriangle,
+  Plus, Search, Edit2, Trash2, Package, X, ImagePlus,
 } from 'lucide-react'
 import { CATEGORIES } from '../data/dummyData'
 import { formatRupiah, toBase64 } from '../utils/helpers'
@@ -8,8 +8,16 @@ import { Input, Select, Textarea, Button, Badge, ProductImage, EmptyState } from
 import Modal from '../components/Modal'
 
 const EMPTY_FORM = {
-  name: '', category: 'jersey', price: '', modal: '', stock: '', description: '', image: '',
+  name: '', category: 'jersey', price: '', modal: '',
+  unit: 'pcs',
+  description: '', image: '',
 }
+
+const UNIT_OPTIONS = [
+  { id: 'pcs',   label: 'PCS',   icon: '📦' },
+  { id: 'meter', label: 'Meter', icon: '📏' },
+  { id: 'yard',  label: 'Yard',  icon: '🧵' },
+]
 
 const CAT_COLOR = {
   jersey: 'blue', dtf: 'accent', sablon: 'amber',
@@ -37,9 +45,6 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
     })
   }, [products, search, filterCat])
 
-  const totalStockValue = products.reduce((s, p) => s + (p.modal || 0) * (p.stock || 0), 0)
-  const lowStock = products.filter((p) => p.stock > 0 && p.stock < 5).length
-  const outOfStock = products.filter((p) => p.stock === 0).length
 
   const openAdd = () => {
     setEditId(null)
@@ -56,7 +61,7 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
       category: p.category,
       price: p.price,
       modal: p.modal,
-      stock: p.stock,
+      unit: p.unit || 'pcs',
       description: p.description || '',
       image: p.image || '',
     })
@@ -82,7 +87,6 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
     if (!form.name?.trim()) errs.name = 'Nama wajib diisi'
     if (!form.price || Number(form.price) <= 0) errs.price = 'Harga harus > 0'
     if (Number(form.modal) < 0) errs.modal = 'Modal tidak valid'
-    if (Number(form.stock) < 0) errs.stock = 'Stok tidak valid'
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
@@ -97,7 +101,9 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
         name: form.name.trim(),
         price: Number(form.price),
         modal: Number(form.modal) || 0,
-        stock: Number(form.stock) || 0,
+        // Stok default 0 saat tambah; editing tetap pakai existing stock
+        stock: editId ? (products.find(p => p.id === editId)?.stock || 0) : 0,
+        unit: form.unit || 'pcs',
         image: form.image ||
           'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=600&q=80',
       }
@@ -146,34 +152,6 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
             <Plus size={15} />
             Tambah Produk
           </Button>
-        </div>
-
-        {/* Stat strips */}
-        <div className="grid grid-cols-3 gap-3 mb-5">
-          <div className="rounded-xl p-4"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Nilai Stok</p>
-            <p className="text-sm sm:text-base font-bold truncate"
-              style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-              {formatRupiah(totalStockValue)}
-            </p>
-          </div>
-          <div className="rounded-xl p-4"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Stok Menipis</p>
-            <p className="text-sm sm:text-base font-bold"
-              style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
-              {lowStock} produk
-            </p>
-          </div>
-          <div className="rounded-xl p-4"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Stok Habis</p>
-            <p className="text-sm sm:text-base font-bold"
-              style={{ color: 'var(--red)', fontFamily: 'Syne' }}>
-              {outOfStock} produk
-            </p>
-          </div>
         </div>
 
         {/* Search + Filter */}
@@ -252,27 +230,12 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
                       {catLabels[p.category]?.icon} {catLabels[p.category]?.label}
                     </Badge>
                   </div>
-                  {p.stock === 0 && (
-                    <div className="absolute inset-0 flex items-center justify-center"
-                      style={{ background: 'rgba(0,0,0,0.55)' }}>
-                      <span className="text-xs font-bold px-3 py-1 rounded-full"
-                        style={{
-                          background: 'rgba(255,77,106,0.2)',
-                          color: 'var(--red)',
-                          border: '1px solid rgba(255,77,106,0.3)',
-                          fontFamily: 'Syne',
-                        }}>
-                        Stok Habis
-                      </span>
-                    </div>
-                  )}
-                  {p.stock > 0 && p.stock < 5 && (
-                    <div className="absolute top-2 right-2">
-                      <Badge color="amber">
-                        <AlertTriangle size={9} /> Stok Menipis
-                      </Badge>
-                    </div>
-                  )}
+                  {/* Unit badge top-right */}
+                  <div className="absolute top-2 right-2">
+                    <Badge color="gray">
+                      {p.unit === 'meter' ? '📏 / m' : p.unit === 'yard' ? '🧵 / yd' : '📦 / pcs'}
+                    </Badge>
+                  </div>
                 </div>
                 <div className="p-4">
                   <h3 className="font-semibold text-sm mb-2 leading-tight line-clamp-2"
@@ -300,15 +263,8 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
                     style={{ color: 'var(--text-muted)' }}>
                     <span>Modal: {formatRupiah(p.modal)}</span>
                     <span>
-                      Stok:{' '}
-                      <strong style={{
-                        color: p.stock === 0
-                          ? 'var(--red)'
-                          : p.stock < 5
-                          ? 'var(--amber)'
-                          : 'var(--text-secondary)',
-                      }}>
-                        {p.stock}
+                      Satuan: <strong style={{ color: 'var(--text-secondary)' }}>
+                        {p.unit === 'meter' ? 'Meter' : p.unit === 'yard' ? 'Yard' : 'PCS'}
                       </strong>
                     </span>
                   </div>
@@ -479,13 +435,41 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
             </div>
           </div>
 
-          <Input
-            label="Stok"
-            type="number"
-            value={form.stock}
-            onChange={(e) => setForm((p) => ({ ...p, stock: e.target.value }))}
-            placeholder="0"
-          />
+          {/* Unit/Satuan selector */}
+          <div>
+            <label className="block text-xs font-semibold mb-2"
+              style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+              Tipe Satuan <span style={{ color: 'var(--red)' }}>*</span>
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {UNIT_OPTIONS.map((u) => {
+                const active = form.unit === u.id
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => setForm((p) => ({ ...p, unit: u.id }))}
+                    className="flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-semibold transition-all"
+                    style={{
+                      background: active
+                        ? 'linear-gradient(135deg, var(--accent), #6366f1)'
+                        : 'var(--bg-card)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
+                      fontFamily: 'Syne',
+                    }}>
+                    <span className="text-base">{u.icon}</span>
+                    {u.label}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-xs mt-1.5" style={{ color: 'var(--text-muted)' }}>
+              {form.unit === 'pcs'
+                ? 'Dijual per biji (qty bulat).'
+                : `Dijual per ${form.unit === 'meter' ? 'meter (mendukung desimal 1,5 m)' : 'yard (mendukung desimal 2,75 yd)'}.`}
+            </p>
+          </div>
 
           <Textarea
             label="Deskripsi"

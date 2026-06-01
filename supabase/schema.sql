@@ -60,11 +60,16 @@ CREATE TABLE IF NOT EXISTS public.products (
   category     text DEFAULT '',
   price        numeric DEFAULT 0,
   modal        numeric DEFAULT 0,
-  stock        integer DEFAULT 0,
+  stock        numeric DEFAULT 0,          -- numeric (was integer) for decimal units (meter/yard)
+  unit         text DEFAULT 'pcs',         -- pcs | meter | yard
   description  text DEFAULT '',
   image        text DEFAULT '',
   created_at   timestamptz DEFAULT now()
 );
+
+-- Migration for existing products tables
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS unit text DEFAULT 'pcs';
+ALTER TABLE public.products ALTER COLUMN stock TYPE numeric;
 
 CREATE INDEX IF NOT EXISTS idx_products_category ON public.products (category);
 
