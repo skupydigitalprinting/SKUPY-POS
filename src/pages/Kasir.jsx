@@ -277,7 +277,11 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         customerId: customerId || null,
         customerPhone: picked?.whatsapp || picked?.phone || '',
         customerAddress: picked?.address || '',
-        items: cart.map(({ stock, ...rest }) => rest),
+        // Strip 'stock' DAN 'image' dari item — image bisa base64 puluhan KB
+        // dan tidak dibutuhkan untuk render invoice (Invoice cuma pakai nama,
+        // qty, harga). Memastikan items JSONB tetap ramping → tabel
+        // transactions tidak membengkak → SELECT * tetap cepat.
+        items: cart.map(({ stock, image, ...rest }) => rest),
         subtotal,
         discount: discountAmount,
         tax: taxAmount,
