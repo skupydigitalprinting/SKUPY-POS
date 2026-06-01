@@ -34,10 +34,20 @@ export default function Piutang({
   const [loadingHistory, setLoadingHistory] = useState(false)
 
   const enriched = useMemo(() => {
-    return debts.map(d => ({
-      ...d,
-      customer: customers.find(c => c.id === d.customerId) || { name: 'Customer dihapus', phone: '', whatsapp: '' },
-    }))
+    // Setiap card menampilkan SISA yang DIDERIVASI dari totalDebt - paid,
+    // bukan `debt.remaining` mentah. Ini mencegah card menampilkan angka
+    // salah kalau ada drift di DB antara remaining vs (totalDebt - paid).
+    return debts.map(d => {
+      const totalDebt = +d.totalDebt || 0
+      const paid = +d.paid || 0
+      const derivedRemaining = Math.max(0, totalDebt - paid)
+      return {
+        ...d,
+        // Override `remaining` dengan nilai yang konsisten secara matematis
+        remaining: derivedRemaining,
+        customer: customers.find(c => c.id === d.customerId) || { name: 'Customer dihapus', phone: '', whatsapp: '' },
+      }
+    })
   }, [debts, customers])
 
   const filtered = useMemo(() => {
@@ -59,9 +69,13 @@ export default function Piutang({
 
   const handlePay = async () => {
     if (paying) return
-    const amount = Number(payAmount)
+    // Strip non-digit dari payAmount (UI sekarang pakai formatted string)
+    const amount = Number(String(payAmount).replace(/[^\d]/g, ''))
     if (!amount || amount <= 0) return toast.error('Nominal harus > 0')
-    if (amount > payTarget.remaining) return toast.error('Nominal melebihi sisa hutang')
+    // Validasi terhadap sisa yang DIDERIVASI (totalDebt - paid), bukan dari
+    // debt.remaining mentah yang bisa stale.
+    const derivedRemaining = Math.max(0, (+payTarget.totalDebt || 0) - (+payTarget.paid || 0))
+    if (amount > derivedRemaining) return toast.error('Nominal pembayaran melebihi sisa hutang')
     setPaying(true)
     try {
       const res = await payDebt(payTarget.id, amount, payMethod, '')
@@ -348,31 +362,41 @@ export default function Piutang({
         subtitle={payTarget?.invoiceNo}
         size="sm">
         {payTarget && (() => {
-          // Realtime computed values — re-derive every render based on input
-          const total = +payTarget.totalDebt || 0
+          // ─── CANONICAL MATH ─────────────────────────────────────────
+          // Sumber kebenaran adalah totalDebt - alreadyPaid (HASIL DIDERIVASI).
+          // Kita TIDAK pakai debt.remaining mentah dari DB karena kalau
+          // ada drift (mis. trigger lama belum update), nilainya bisa salah.
+          //   totalDebt              → utang awal (tidak berubah saat dicicil)
+          //   alreadyPaid            → akumulasi pembayaran sebelumnya
+          //   currentPayment         → nominal yang sedang diketik kasir
+          //   remainingBeforePayment = totalDebt - alreadyPaid
+          //   remainingAfterPayment  = remainingBeforePayment - currentPayment
+          const totalDebt = +payTarget.totalDebt || 0
           const alreadyPaid = +payTarget.paid || 0
-          const remaining = Math.max(0, +payTarget.remaining || 0)
-          // payAmount string → numeric (strip non-digit). Empty → 0.
-          const rawAmt = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
-          const newPaidTotal = alreadyPaid + rawAmt
-          const newRemaining = total - newPaidTotal
-          const exceeds = rawAmt > remaining
-          const willBeLunas = rawAmt > 0 && newRemaining <= 0 && !exceeds
-          const willBePartial = rawAmt > 0 && newRemaining > 0 && !exceeds
-          // Formatted display: "3.000.000" (no Rp prefix in input itself; prefix lives in label)
-          const formattedAmt = rawAmt > 0
-            ? new Intl.NumberFormat('id-ID').format(rawAmt)
+          // currentPayment dari input — strip non-digit, parse ke number
+          const currentPayment = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
+
+          const remainingBeforePayment = Math.max(0, totalDebt - alreadyPaid)
+          const remainingAfterPayment = remainingBeforePayment - currentPayment
+
+          const exceeds = currentPayment > remainingBeforePayment
+          const willBeLunas = currentPayment > 0 && remainingAfterPayment <= 0 && !exceeds
+          const willBePartial = currentPayment > 0 && remainingAfterPayment > 0 && !exceeds
+
+          // Formatted display untuk input: "3.000.000"
+          const formattedAmt = currentPayment > 0
+            ? new Intl.NumberFormat('id-ID').format(currentPayment)
             : ''
 
           return (
             <div className="space-y-4">
-              {/* TOP CARD — initial state */}
+              {/* TOP CARD — keadaan hutang saat ini (DIDERIVASI dari math) */}
               <div className="rounded-xl p-4 space-y-2"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex justify-between text-sm">
                   <span style={{ color: 'var(--text-muted)' }}>Total Hutang</span>
                   <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRupiah(total)}
+                    {formatRupiah(totalDebt)}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -385,14 +409,14 @@ export default function Piutang({
                   style={{ borderTop: '1px dashed var(--border)' }}>
                   <span className="text-xs uppercase tracking-wider font-bold"
                     style={{ color: '#ef4444', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                    Sisa Hutang
+                    Sisa Sebelum Bayar
                   </span>
                   <span style={{
                     color: '#ef4444', fontWeight: 800, fontFamily: 'Syne',
                     fontSize: 18, fontVariantNumeric: 'tabular-nums',
                     textShadow: '0 0 16px rgba(239,68,68,0.35)',
                   }}>
-                    {formatRupiah(remaining)}
+                    {formatRupiah(remainingBeforePayment)}
                   </span>
                 </div>
               </div>
@@ -451,11 +475,11 @@ export default function Piutang({
                   <div className="flex justify-between items-baseline">
                     <span className="text-xs uppercase tracking-wider"
                       style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                      Total Hutang
+                      Sisa Sebelum Bayar
                     </span>
                     <span className="font-bold"
-                      style={{ color: '#ffffff', fontFamily: 'Syne', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
-                      {formatRupiah(total)}
+                      style={{ color: '#ef4444', fontFamily: 'Syne', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(remainingBeforePayment)}
                     </span>
                   </div>
                   <div className="flex justify-between items-baseline">
@@ -465,7 +489,7 @@ export default function Piutang({
                     </span>
                     <span className="font-bold"
                       style={{ color: '#10d98a', fontFamily: 'Syne', fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
-                      {formatRupiah(rawAmt)}
+                      {formatRupiah(currentPayment)}
                     </span>
                   </div>
                   {/* Sisa Setelah Pembayaran — angka TERBESAR di modal */}
@@ -476,21 +500,21 @@ export default function Piutang({
                       Sisa Setelah Pembayaran
                     </div>
                     <div
-                      key={Math.max(0, newRemaining)}
+                      key={Math.max(0, remainingAfterPayment)}
                       className="animate-scaleIn"
                       style={{
                         fontSize: 28,
                         fontWeight: 800,
-                        color: newRemaining <= 0 ? '#10d98a' : (exceeds ? '#ef4444' : '#fbbf24'),
+                        color: remainingAfterPayment <= 0 ? '#10d98a' : (exceeds ? '#ef4444' : '#fbbf24'),
                         fontFamily: '"Space Grotesk", "Syne", sans-serif',
                         letterSpacing: '-0.02em',
-                        textShadow: newRemaining <= 0
+                        textShadow: remainingAfterPayment <= 0
                           ? '0 0 20px rgba(16,217,138,0.45)'
                           : (exceeds ? '0 0 20px rgba(239,68,68,0.5)' : '0 0 20px rgba(251,191,36,0.45)'),
                         fontVariantNumeric: 'tabular-nums',
                         transition: 'color 0.2s ease',
                       }}>
-                      {formatRupiah(Math.max(0, newRemaining))}
+                      {formatRupiah(Math.max(0, remainingAfterPayment))}
                     </div>
                   </div>
                 </div>
@@ -534,7 +558,7 @@ export default function Piutang({
                     <AlertTriangle size={14} /> Sisa Setelah Pembayaran
                   </span>
                   <span className="text-xs font-bold" style={{ fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRupiah(newRemaining)}
+                    {formatRupiah(remainingAfterPayment)}
                   </span>
                 </div>
               )}
@@ -572,7 +596,7 @@ export default function Piutang({
                 </Button>
                 <Button variant="success" className="flex-1"
                   onClick={handlePay}
-                  disabled={paying || exceeds || rawAmt <= 0}>
+                  disabled={paying || exceeds || currentPayment <= 0}>
                   {paying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                   {paying ? 'Memproses...' : 'Konfirmasi'}
                 </Button>
