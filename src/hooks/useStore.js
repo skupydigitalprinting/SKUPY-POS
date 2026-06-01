@@ -840,55 +840,164 @@ export function useStore() {
     return { ok: true }
   }), [transactions, wrap, syncDebtPaymentStatus, refreshDebts, refreshCustomers])
 
-  const updateTransactionPayment = useCallback(async (id, addPayment) => wrap(async () => {
+  // ═══════════════════════════════════════════════════════════════════
+  // processDebtPayment(opts) — CANONICAL helper untuk pembayaran hutang.
+  // Dipakai oleh BOTH:
+  //   • Halaman Order (tombol "Tambah Pembayaran")
+  //   • Halaman Piutang (tombol "Bayar Cicilan")
+  //
+  // Rumus (sumber kebenaran tunggal — TIDAK pakai total - paidAfter):
+  //   remainingBefore = debt.remaining  ?? transaction.remaining
+  //   paidBefore      = debt.paid       ?? transaction.paid
+  //   paidAfter       = paidBefore + paymentAmount
+  //   remainingAfter  = max(0, remainingBefore - paymentAmount)
+  //
+  // Wajib update bersamaan:
+  //   transactions { paid, dp, remaining, status='lunas'/'pending' }
+  //   debts        { paid, remaining, status='lunas'/'aktif' }
+  //   debt_payments INSERT history row
+  //   customers    { total_debt = SUM(debts.remaining WHERE aktif) }
+  //
+  // Lalu refresh state lokal supaya Order, Piutang, Customers, Dashboard
+  // langsung sinkron tanpa menunggu echo realtime.
+  // ═══════════════════════════════════════════════════════════════════
+  const processDebtPayment = useCallback(async ({
+    invoice_no,
+    paymentAmount,
+    paymentMethod = 'cash',
+    notes = '',
+  }) => wrap(async () => {
+    const amount = Number(paymentAmount) || 0
+    if (amount <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
+    if (!invoice_no) return { ok: false, error: 'invoice_no kosong' }
+
+    // 1. Fetch transaction by invoice_no
+    const { data: trxRow, error: trxErr } = await supabase
+      .from('transactions')
+      .select('id, invoice_no, customer_id, total, paid, remaining, status, dp')
+      .eq('invoice_no', invoice_no)
+      .maybeSingle()
+    if (trxErr || !trxRow) {
+      return { ok: false, error: trxErr?.message || 'Transaksi tidak ditemukan' }
+    }
+
+    // 2. Fetch debt by invoice_no, fallback ke transaction_id
+    let { data: debtRow } = await supabase
+      .from('debts').select('*')
+      .eq('invoice_no', invoice_no).maybeSingle()
+    if (!debtRow) {
+      const byTrx = await supabase.from('debts').select('*')
+        .eq('transaction_id', trxRow.id).maybeSingle()
+      debtRow = byTrx.data
+    }
+
+    // 3-6. Tentukan remainingBefore + paidBefore (debt > transaction priority)
+    const remainingBefore = debtRow != null && debtRow.remaining != null
+      ? Number(debtRow.remaining) || 0
+      : Number(trxRow.remaining) || 0
+    const paidBefore = debtRow != null && debtRow.paid != null
+      ? Number(debtRow.paid) || 0
+      : Number(trxRow.paid) || 0
+
+    // 7. Hitung
+    const paidAfter = paidBefore + amount
+    let remainingAfter = remainingBefore - amount
+    if (remainingAfter < 0) remainingAfter = 0
+
+    // 8. Validasi paymentAmount <= remainingBefore
+    if (amount > remainingBefore) {
+      return { ok: false, error: 'Nominal pembayaran melebihi sisa tagihan' }
+    }
+
+    // 9. Update transactions
+    const trxStatus = remainingAfter <= 0 ? 'lunas' : 'pending'
+    const { error: trxUpdErr } = await supabase
+      .from('transactions')
+      .update({
+        paid: paidAfter,
+        dp: paidAfter,
+        remaining: remainingAfter,
+        status: trxStatus,
+      })
+      .eq('id', trxRow.id)
+    if (trxUpdErr) {
+      // eslint-disable-next-line no-console
+      console.error('[processDebtPayment] gagal update transactions:', trxUpdErr)
+    }
+
+    // 10. Update debts (kalau ada row debts)
+    const debtStatus = remainingAfter <= 0 ? 'lunas' : 'aktif'
+    if (debtRow) {
+      const { error: debtUpdErr } = await supabase
+        .from('debts')
+        .update({
+          paid: paidAfter,
+          remaining: remainingAfter,
+          status: debtStatus,
+        })
+        .eq('id', debtRow.id)
+      if (debtUpdErr) {
+        // eslint-disable-next-line no-console
+        console.error('[processDebtPayment] gagal update debts:', debtUpdErr)
+      }
+    }
+
+    // 11. Insert debt_payments history
+    const cashier = currentUser?.name || currentUser?.username || ''
+    const cashierId = currentUser?.id || null
+    const payPayload = {
+      debt_id: debtRow?.id || null,
+      amount,
+      payment_method: paymentMethod,
+      notes,
+      cashier,
+      cashier_id: cashierId,
+      invoice_no,
+      paid_at: new Date().toISOString(),
+    }
+    let { error: payErr } = await supabase.from('debt_payments').insert(payPayload)
+    if (payErr && isSchemaCacheError(payErr, 'invoice_no')) {
+      // Legacy schema tanpa kolom invoice_no di debt_payments
+      const retry = await supabase.from('debt_payments').insert(omit(payPayload, ['invoice_no']))
+      payErr = retry.error
+    }
+    if (payErr) {
+      // eslint-disable-next-line no-console
+      console.error('[processDebtPayment] gagal insert debt_payments:', payErr)
+      // Tidak return error — UPDATE sudah berhasil; history boleh gagal silent.
+    }
+
+    // 12. Recalculate customers.total_debt
+    const custId = trxRow.customer_id || debtRow?.customer_id || null
+    if (custId) {
+      await recalculateCustomerSummary(custId)
+    }
+
+    // 13. Refresh state lokal: Order + Piutang + Customers
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+
+    return {
+      ok: true,
+      data: { paidAfter, remainingAfter, status: trxStatus, remainingBefore, paidBefore },
+    }
+  }), [wrap, currentUser, refreshTransactions, refreshDebts, refreshCustomers, recalculateCustomerSummary])
+
+  // updateTransactionPayment (Order) — DELEGATE ke processDebtPayment.
+  // Tidak ada wrap() outer karena processDebtPayment sudah pakai wrap sendiri.
+  // Signature lama dipertahankan untuk backward compat: (id, addPayment).
+  const updateTransactionPayment = useCallback(async (id, addPayment) => {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
     const amount = Number(addPayment) || 0
     if (amount <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const newPaid = Math.min(current.total, current.paid + amount)
-    const remaining = current.total - newPaid
-    const updates = { paid: newPaid, dp: newPaid, remaining, status: remaining <= 0 ? 'lunas' : 'pending' }
-    const { data: row, error: e } = await supabase.from('transactions').update(updates).eq('id', id).select().single()
-    if (e) return { ok: false, error: e.message }
-
-    // If this trx has a linked debt, record the payment in debt_payments + sync
-    if (current.invoiceNo) {
-      try {
-        // Find the linked debt
-        const { data: linkedDebt } = await supabase
-          .from('debts').select('*')
-          .or(`invoice_no.eq.${current.invoiceNo},transaction_id.eq.${id}`)
-          .maybeSingle()
-        if (linkedDebt) {
-          const cashier = currentUser?.name || currentUser?.username || ''
-          const cashierId = currentUser?.id || null
-          // Insert history row (defensive retry if invoice_no col missing)
-          const payPayload = {
-            debt_id: linkedDebt.id,
-            amount,
-            payment_method: 'cash',
-            notes: 'Pembayaran dari halaman Order',
-            cashier,
-            cashier_id: cashierId,
-            invoice_no: current.invoiceNo,
-            paid_at: new Date().toISOString(),
-          }
-          let { error: payErr } = await supabase.from('debt_payments').insert(payPayload)
-          if (payErr && isSchemaCacheError(payErr, 'invoice_no')) {
-            await supabase.from('debt_payments').insert(omit(payPayload, ['invoice_no']))
-          }
-        }
-        // Sync debt + customer regardless (works even if no debt row exists)
-        await syncDebtPaymentStatus(current.invoiceNo)
-      } catch (syncErr) {
-        // eslint-disable-next-line no-console
-        console.warn('[useStore] sync debt after partial payment gagal:', syncErr)
-      }
-    }
-    if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
-    await Promise.all([refreshDebts(), refreshCustomers()])
-    return { ok: true }
-  }), [transactions, currentUser, wrap, syncDebtPaymentStatus, refreshDebts, refreshCustomers])
+    if (!current.invoiceNo) return { ok: false, error: 'invoice_no kosong' }
+    return await processDebtPayment({
+      invoice_no: current.invoiceNo,
+      paymentAmount: amount,
+      paymentMethod: 'cash',
+      notes: 'Pembayaran dari halaman Order',
+    })
+  }, [transactions, processDebtPayment])
 
   const deleteTransaction = useCallback(async (id) => wrap(async () => {
     // Capture customerId BEFORE deleting so we can recalc afterwards.
@@ -916,87 +1025,34 @@ export function useStore() {
   // pada SQL trigger; client-side update juga eksplisit agar:
   //   1. UI bisa update langsung sebelum realtime echo datang.
   //   2. Kalau trigger DB gagal/tidak terpasang, data tetap konsisten.
-  const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '') => wrap(async () => {
+  // payDebt (Piutang) — DELEGATE ke processDebtPayment.
+  // Signature lama dipertahankan: (debtId, amount, paymentMethod, notes).
+  // Internal: ambil invoice_no dari debt row, lalu panggil canonical helper
+  // sehingga rumus pengurangan IDENTIK dengan jalur Order.
+  const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '') => {
     const amt = Number(amount)
-    if (!amt || amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const cashier = currentUser?.name || currentUser?.username || ''
-    const cashierId = currentUser?.id || null
-
-    // 1. Snapshot the debt BEFORE inserting payment (to compute new totals)
+    if (!amt || amt <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
+    // Resolve debt → invoice_no
     const { data: debtBefore, error: debtFetchErr } = await supabase
-      .from('debts').select('*').eq('id', debtId).maybeSingle()
+      .from('debts').select('id, invoice_no, transaction_id, customer_id').eq('id', debtId).maybeSingle()
     if (debtFetchErr || !debtBefore) {
       return { ok: false, error: debtFetchErr?.message || 'Hutang tidak ditemukan' }
     }
-
-    const newPaid = (+debtBefore.paid || 0) + amt
-    const newRemaining = Math.max(0, (+debtBefore.total_debt || 0) - newPaid)
-    const newStatus = newRemaining <= 0 ? 'lunas' : 'aktif'
-    const trxId = debtBefore.transaction_id
-
-    // 2. Insert debt_payment history row (with invoice_no for cross-link)
-    const { error: payErr } = await supabase.from('debt_payments').insert({
-      debt_id: debtId,
-      amount: amt,
-      payment_method: paymentMethod,
+    // Fallback: kalau debt tidak punya invoice_no, lookup via transactions
+    let invoiceNo = debtBefore.invoice_no
+    if (!invoiceNo && debtBefore.transaction_id) {
+      const { data: trx } = await supabase
+        .from('transactions').select('invoice_no').eq('id', debtBefore.transaction_id).maybeSingle()
+      invoiceNo = trx?.invoice_no || null
+    }
+    if (!invoiceNo) return { ok: false, error: 'invoice_no kosong di debt + transaction' }
+    return await processDebtPayment({
+      invoice_no: invoiceNo,
+      paymentAmount: amt,
+      paymentMethod,
       notes,
-      cashier,
-      cashier_id: cashierId,
-      // Note: invoice_no on this table is optional; older schemas may not have it.
-      // The defensive retry below strips it if Supabase reports a missing col.
-      invoice_no: debtBefore.invoice_no || null,
-      paid_at: new Date().toISOString(),
     })
-    if (payErr) {
-      // Retry without invoice_no if column missing (legacy schema)
-      if (isSchemaCacheError(payErr, 'invoice_no')) {
-        const retry = await supabase.from('debt_payments').insert({
-          debt_id: debtId,
-          amount: amt,
-          payment_method: paymentMethod,
-          notes,
-          cashier,
-          cashier_id: cashierId,
-        })
-        if (retry.error) {
-          // eslint-disable-next-line no-console
-          console.error('[useStore] Gagal insert debt_payment (retry):', retry.error)
-          return { ok: false, error: retry.error.message }
-        }
-      } else {
-        // eslint-disable-next-line no-console
-        console.error('[useStore] Gagal insert debt_payment:', payErr)
-        return { ok: false, error: payErr.message }
-      }
-    }
-
-    // 3. Update debts row (explicit, in case trigger didn't fire)
-    await supabase.from('debts').update({
-      paid: newPaid,
-      remaining: newRemaining,
-      status: newStatus,
-    }).eq('id', debtId)
-
-    // 4. Update linked transaction — paid+, remaining-, status sync
-    if (trxId) {
-      const trxUpdates = newStatus === 'lunas'
-        ? { paid: +debtBefore.total_debt || 0, dp: +debtBefore.total_debt || 0, remaining: 0, status: 'lunas' }
-        : { paid: newPaid, dp: newPaid, remaining: newRemaining, status: 'pending' }
-      await supabase.from('transactions').update(trxUpdates).eq('id', trxId)
-    }
-
-    // 5. Final canonical sync via invoice_no (idempotent — works as a
-    //    safety net if any explicit update above raced or partially failed).
-    if (debtBefore.invoice_no) {
-      await syncDebtPaymentStatus(debtBefore.invoice_no)
-    } else if (debtBefore.customer_id) {
-      await recalculateCustomerSummary(debtBefore.customer_id)
-    }
-
-    // 6. Refresh local state so all pages see the change immediately
-    await Promise.all([refreshDebts(), refreshCustomers(), refreshTransactions()])
-    return { ok: true }
-  }), [currentUser, wrap, refreshDebts, refreshCustomers, refreshTransactions, recalculateCustomerSummary, syncDebtPaymentStatus])
+  }, [processDebtPayment])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
     const debt = debts.find(d => d.id === id)
@@ -1113,7 +1169,7 @@ export function useStore() {
     products, transactions, storeInfo, stats,
     admins, currentUser, customers, debts,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions,
-    syncDebtPaymentStatus, recalculateCustomerSummary,
+    syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction,
     updateOrderStatus,
