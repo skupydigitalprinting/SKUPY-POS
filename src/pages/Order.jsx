@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
+  AlertTriangle, Loader2,
 } from 'lucide-react'
 import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
@@ -68,6 +69,7 @@ export default function Order({
   const [printTrx, setPrintTrx] = useState(null)
   const [payTrx, setPayTrx] = useState(null)
   const [payAmount, setPayAmount] = useState('')
+  const [paying, setPaying] = useState(false)
   const [delConfirm, setDelConfirm] = useState(null)
 
   // --- Export to Excel state ---
@@ -157,17 +159,40 @@ export default function Order({
 
   const openPay = (t) => {
     setPayTrx(t)
-    setPayAmount(String(t.remaining))
+    // Pre-fill dengan sisa yang DIDERIVASI (total - paid), bukan dari
+    // t.remaining mentah yang bisa stale.
+    const derivedRemaining = Math.max(0, (+t.total || 0) - (+t.paid || 0))
+    setPayAmount(String(derivedRemaining))
+    setPaying(false)
   }
 
-  const handlePay = () => {
-    if (!payTrx) return
-    const amount = Number(payAmount)
-    if (amount > 0) {
-      updateTransactionPayment(payTrx.id, amount)
+  // Rumus pembayaran hutang (sumber kebenaran):
+  //   remainingBefore = total - paid
+  //   currentPayment  = nominal di input (sudah di-strip non-digit)
+  //   newPaid         = paid + currentPayment
+  //   newRemaining    = total - newPaid     (atau remainingBefore - currentPayment)
+  // Jika newRemaining <= 0 → status_bayar = 'lunas', remaining = 0
+  // Jika newRemaining  > 0 → status_bayar = 'pending', remaining = newRemaining
+  const handlePay = async () => {
+    if (!payTrx || paying) return
+    // Strip non-digit dari input (input pakai formatted "1.000.000")
+    const amount = Number(String(payAmount).replace(/[^\d]/g, ''))
+    if (!amount || amount <= 0) return
+    const remainingBefore = Math.max(0, (+payTrx.total || 0) - (+payTrx.paid || 0))
+    if (amount > remainingBefore) return  // safety net; tombol Konfirmasi sudah disable
+    setPaying(true)
+    try {
+      // updateTransactionPayment di useStore sudah handle:
+      //   1. UPDATE transactions (paid, dp, remaining, status)
+      //   2. INSERT debt_payments
+      //   3. syncDebtPaymentStatus(invoice_no) — update debts + customers
+      //   4. refreshDebts + refreshCustomers
+      await updateTransactionPayment(payTrx.id, amount)
+    } finally {
+      setPaying(false)
+      setPayTrx(null)
+      setPayAmount('')
     }
-    setPayTrx(null)
-    setPayAmount('')
   }
 
   return (
@@ -802,45 +827,224 @@ export default function Order({
         subtitle={payTrx?.invoiceNo}
         size="sm"
       >
-        {payTrx && (
-          <div className="space-y-4">
-            <div className="rounded-xl p-4 space-y-2"
-              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-              <div className="flex justify-between text-sm">
-                <span style={{ color: 'var(--text-muted)' }}>Total</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne' }}>
-                  {formatRupiah(payTrx.total)}
-                </span>
+        {payTrx && (() => {
+          // ─── CANONICAL MATH (sama persis seperti Piutang.jsx) ───
+          const total = +payTrx.total || 0
+          const alreadyPaid = +payTrx.paid || 0
+          const currentPayment = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
+          const remainingBeforePayment = Math.max(0, total - alreadyPaid)
+          const remainingAfterPayment = remainingBeforePayment - currentPayment
+          const exceeds = currentPayment > remainingBeforePayment
+          const isEmpty = !payAmount || String(payAmount).trim() === ''
+          const isZero = !isEmpty && currentPayment === 0
+          const willBeLunas = currentPayment > 0 && remainingAfterPayment <= 0 && !exceeds
+          const willBePartial = currentPayment > 0 && remainingAfterPayment > 0 && !exceeds
+          const formattedAmt = currentPayment > 0
+            ? new Intl.NumberFormat('id-ID').format(currentPayment)
+            : ''
+          // Error message untuk validation
+          const errorMsg = exceeds ? 'Nominal melebihi sisa tagihan'
+                          : isZero  ? 'Nominal pembayaran harus lebih dari 0'
+                          : ''
+          // Konfirmasi enabled hanya saat valid
+          const canSubmit = !paying && currentPayment > 0 && !exceeds
+
+          // Enter handler — sama dengan klik tombol Konfirmasi
+          const onKeyDown = (e) => {
+            if (e.key === 'Enter' && canSubmit) {
+              e.preventDefault()
+              handlePay()
+            }
+          }
+
+          return (
+            <div className="space-y-4">
+              {/* TOP CARD */}
+              <div className="rounded-xl p-4 space-y-2"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: 'var(--text-muted)' }}>Total Tagihan</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(total)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</span>
+                  <span style={{ color: '#10d98a', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(alreadyPaid)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center pt-2"
+                  style={{ borderTop: '1px dashed var(--border)' }}>
+                  <span className="text-xs uppercase tracking-wider font-bold"
+                    style={{ color: '#ef4444', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                    Sisa Sebelum Bayar
+                  </span>
+                  <span style={{
+                    color: '#ef4444', fontWeight: 800, fontFamily: 'Syne',
+                    fontSize: 18, fontVariantNumeric: 'tabular-nums',
+                    textShadow: '0 0 16px rgba(239,68,68,0.35)',
+                  }}>
+                    {formatRupiah(remainingBeforePayment)}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between text-sm">
-                <span style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</span>
-                <span style={{ color: '#10d98a', fontWeight: 600 }}>{formatRupiah(payTrx.paid)}</span>
+
+              {/* INPUT — formatted thousand-separator + Enter to submit */}
+              <div>
+                <label className="block text-xs font-semibold mb-2"
+                  style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                  Jumlah Bayar <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold"
+                    style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
+                    Rp
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    value={formattedAmt}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/[^\d]/g, '')
+                      setPayAmount(digits)
+                    }}
+                    onKeyDown={onKeyDown}
+                    placeholder={isEmpty ? '0' : ''}
+                    className="w-full pl-10 pr-3 py-3 rounded-xl text-lg font-bold"
+                    style={{
+                      background: 'var(--bg-card)',
+                      border: `1px solid ${exceeds ? 'rgba(239,68,68,0.5)' : 'var(--border)'}`,
+                      color: 'var(--text-primary)',
+                      fontFamily: 'Syne',
+                      fontVariantNumeric: 'tabular-nums',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
               </div>
-              <div className="flex justify-between text-sm pt-2"
-                style={{ borderTop: '1px dashed var(--border)' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Sisa</span>
-                <span style={{ color: 'var(--red)', fontWeight: 700, fontFamily: 'Syne' }}>
-                  {formatRupiah(payTrx.remaining)}
-                </span>
+
+              {/* SIMULASI PEMBAYARAN — realtime */}
+              <div className="rounded-2xl overflow-hidden animate-fadeIn"
+                style={{
+                  background: 'linear-gradient(180deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04))',
+                  border: '1px solid rgba(139,92,246,0.25)',
+                }}>
+                <div className="px-4 py-2 text-[10px] uppercase tracking-widest font-bold text-center"
+                  style={{
+                    color: 'var(--accent-light)', fontFamily: 'Syne',
+                    letterSpacing: '0.16em',
+                    borderBottom: '1px solid rgba(139,92,246,0.18)',
+                    background: 'rgba(139,92,246,0.08)',
+                  }}>
+                  Simulasi Pembayaran
+                </div>
+                <div className="p-4 space-y-3">
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                      Sisa Sebelum Bayar
+                    </span>
+                    <span className="font-bold"
+                      style={{ color: '#ef4444', fontFamily: 'Syne', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(remainingBeforePayment)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-xs uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                      Pembayaran Saat Ini
+                    </span>
+                    <span className="font-bold"
+                      style={{ color: '#10d98a', fontFamily: 'Syne', fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(currentPayment)}
+                    </span>
+                  </div>
+                  <div className="pt-3" style={{ borderTop: '1px dashed rgba(245,158,11,0.3)' }}>
+                    <div className="text-[10px] uppercase tracking-widest font-bold mb-1"
+                      style={{ color: '#f59e0b', fontFamily: 'Syne', letterSpacing: '0.14em' }}>
+                      Sisa Setelah Pembayaran
+                    </div>
+                    <div
+                      key={Math.max(0, remainingAfterPayment)}
+                      className="animate-scaleIn"
+                      style={{
+                        fontSize: 28,
+                        fontWeight: 800,
+                        color: remainingAfterPayment <= 0 ? '#10d98a' : (exceeds ? '#ef4444' : '#fbbf24'),
+                        fontFamily: '"Space Grotesk", "Syne", sans-serif',
+                        letterSpacing: '-0.02em',
+                        textShadow: remainingAfterPayment <= 0
+                          ? '0 0 20px rgba(16,217,138,0.45)'
+                          : (exceeds ? '0 0 20px rgba(239,68,68,0.5)' : '0 0 20px rgba(251,191,36,0.45)'),
+                        fontVariantNumeric: 'tabular-nums',
+                        transition: 'color 0.2s ease',
+                      }}>
+                      {formatRupiah(Math.max(0, remainingAfterPayment))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* VALIDATION BADGES */}
+              {errorMsg && (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(239,68,68,0.12)',
+                    border: '1px solid rgba(239,68,68,0.4)',
+                    color: '#ef4444',
+                  }}>
+                  <AlertTriangle size={14} />
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    {errorMsg}
+                  </span>
+                </div>
+              )}
+              {willBeLunas && (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(16,217,138,0.12)',
+                    border: '1px solid rgba(16,217,138,0.4)',
+                    color: '#10d98a',
+                  }}>
+                  <CheckCircle2 size={14} />
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    Hutang Akan Lunas
+                  </span>
+                </div>
+              )}
+              {willBePartial && (
+                <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
+                  style={{
+                    background: 'rgba(245,158,11,0.10)',
+                    border: '1px solid rgba(245,158,11,0.35)',
+                    color: '#f59e0b',
+                  }}>
+                  <span className="flex items-center gap-2 text-xs font-bold" style={{ fontFamily: 'Syne' }}>
+                    <AlertTriangle size={14} /> Sisa Tagihan
+                  </span>
+                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRupiah(remainingAfterPayment)}
+                  </span>
+                </div>
+              )}
+
+              {/* ACTIONS */}
+              <div className="flex gap-2">
+                <Button variant="secondary" className="flex-1" onClick={() => setPayTrx(null)} disabled={paying}>
+                  Batal
+                </Button>
+                <Button variant="success" className="flex-1"
+                  onClick={handlePay}
+                  disabled={!canSubmit}>
+                  {paying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                  {paying ? 'Memproses...' : 'Konfirmasi'}
+                </Button>
               </div>
             </div>
-            <Input
-              label="Jumlah Bayar"
-              required
-              type="number"
-              prefix="Rp"
-              value={payAmount}
-              onChange={(e) => setPayAmount(e.target.value)}
-              placeholder="0"
-            />
-            <div className="flex gap-2">
-              <Button variant="secondary" className="flex-1" onClick={() => setPayTrx(null)}>Batal</Button>
-              <Button variant="success" className="flex-1" onClick={handlePay}>
-                <CheckCircle2 size={14} /> Konfirmasi
-              </Button>
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </Modal>
 
       {/* Delete Confirm */}
