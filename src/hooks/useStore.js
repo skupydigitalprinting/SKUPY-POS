@@ -103,6 +103,7 @@ const trxFromDB = (r) => ({
   notes: r.notes || '',
   statusHistory: r.status_history || [],
   cashier: r.cashier || '',
+  cashierRole: r.cashier_role || '',
   cashierId: r.cashier_id,
   dueDate: r.due_date || null,
   date: r.created_at,
@@ -125,6 +126,7 @@ const trxToDB = (t) => ({
   status_history: t.statusHistory || [],
   cashier: t.cashier || '',
   cashier_id: t.cashierId || null,
+  cashier_role: t.cashierRole || '',
   due_date: t.dueDate || null,
 })
 
@@ -171,6 +173,16 @@ export function useStore() {
 
   useEffect(() => () => { mounted.current = false }, [])
 
+  // ─── refreshAll: initial load + manual refresh ────────────────────
+  // CRITICAL: tabel `transactions` punya kolom JSONB `items` yang bisa
+  // sangat besar (base64 image per item × ribuan baris). SELECT * tanpa
+  // batas memicu "canceling statement due to statement timeout" di
+  // Supabase free/pro tier yang punya statement_timeout ~8 detik.
+  // Solusi: batasi ke 500 transaksi terakhir + 500 debt terakhir untuk
+  // initial paint dashboard. Detail tetap bisa diambil via fetch lazy.
+  const TRX_LIMIT = 500
+  const DEBT_LIMIT = 500
+
   const refreshAll = useCallback(async () => {
     setLoading(true); setError(null)
     try {
@@ -178,9 +190,10 @@ export function useStore() {
         supabase.from('settings').select('*').eq('id', 1).maybeSingle(),
         supabase.from('admins').select('*').order('created_at', { ascending: true }),
         supabase.from('products').select('*').order('created_at', { ascending: false }),
-        supabase.from('transactions').select('*').order('created_at', { ascending: false }),
+        // Limit transactions + debts agar query selalu cepat
+        supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT),
         supabase.from('customers').select('*').order('created_at', { ascending: false }),
-        supabase.from('debts').select('*').order('created_at', { ascending: false }),
+        supabase.from('debts').select('*').order('created_at', { ascending: false }).limit(DEBT_LIMIT),
       ])
       for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
       if (!mounted.current) return
@@ -203,27 +216,10 @@ export function useStore() {
       setCustomers((c.data || []).map(customerFromDB))
       setDebts((d.data || []).map(debtFromDB))
 
-      // ─── Legacy data sync ────────────────────────────────────
-      // Any transaction where remaining=0 but status!=lunas → auto fix in DB.
-      // Best-effort: don't block initial load.
-      try {
-        const stale = trxList.filter(t => (t.remaining || 0) <= 0 && t.status !== 'lunas')
-        if (stale.length > 0) {
-          // eslint-disable-next-line no-console
-          console.log(`[useStore] sinkronisasi ${stale.length} transaksi lama → lunas`)
-          await supabase
-            .from('transactions')
-            .update({ status: 'lunas' })
-            .in('id', stale.map(t => t.id))
-          // Patch local state
-          if (mounted.current) setTransactions(prev => prev.map(t =>
-            (t.remaining || 0) <= 0 ? { ...t, status: 'lunas' } : t
-          ))
-        }
-      } catch (syncErr) {
-        // eslint-disable-next-line no-console
-        console.warn('[useStore] gagal sync legacy data:', syncErr)
-      }
+      // NOTE: Legacy "auto-fix stale=lunas" sync DIHAPUS karena bisa
+      // mem-issue UPDATE bulk ke ratusan baris saat startup → potensi
+      // statement timeout. Sinkronisasi sekarang dikerjakan oleh
+      // syncDebtPaymentStatus per invoice saat aksi user terjadi.
     } catch (e) {
       if (mounted.current) setError(
         isSupabaseConfigured
@@ -233,48 +229,88 @@ export function useStore() {
     } finally {
       if (mounted.current) setLoading(false)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => { refreshAll() }, [refreshAll])
 
-  // Realtime subscriptions — semua tabel yang dipakai UI ikut listen agar
-  // dashboard / order / piutang / customers refresh tanpa reload browser
-  // ketika ada device lain (mobile/desktop) yang mengubah data.
-  useEffect(() => {
-    if (!isSupabaseConfigured) return
-    const channel = supabase.channel('skupy-pos-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => refreshTransactions())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' }, () => refreshDebts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'debt_payments' }, () => {
-        // Payment trigger updates debts + transactions in DB; sync both locally
-        refreshDebts(); refreshTransactions(); refreshCustomers()
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => refreshCustomers())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
-        // Refresh products list (mostly for stock decrement after checkout)
-        const { data } = await supabase
-          .from('products').select('*').order('created_at', { ascending: false })
-        if (mounted.current) setProducts((data || []).map(productFromDB))
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
+  // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
   const refreshCustomers = useCallback(async () => {
-    const { data, error: e } = await supabase.from('customers').select('*').order('created_at', { ascending: false })
+    const { data, error: e } = await supabase
+      .from('customers').select('*')
+      .order('created_at', { ascending: false })
+      .limit(1000)
     if (!e && mounted.current) setCustomers((data || []).map(customerFromDB))
   }, [])
 
   const refreshDebts = useCallback(async () => {
-    const { data, error: e } = await supabase.from('debts').select('*').order('created_at', { ascending: false })
+    const { data, error: e } = await supabase
+      .from('debts').select('*')
+      .order('created_at', { ascending: false })
+      .limit(500)
     if (!e && mounted.current) setDebts((data || []).map(debtFromDB))
   }, [])
 
   const refreshTransactions = useCallback(async () => {
     const { data, error: e } = await supabase
-      .from('transactions').select('*').order('created_at', { ascending: false })
+      .from('transactions').select('*')
+      .order('created_at', { ascending: false })
+      .limit(500)
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
+  }, [])
+
+  // ─── Realtime subscriptions ───────────────────────────────────────
+  // Satu channel, satu subscription. Setiap perubahan dipush ke handler
+  // yang DI-DEBOUNCE: kalau payDebt mengupdate 4 tabel dalam 100ms, kita
+  // hanya issue 1 batch refresh setelah 500ms idle — bukan 4 round-trip
+  // berturut-turut yang bisa memicu statement timeout cascade.
+  useEffect(() => {
+    if (!isSupabaseConfigured) return
+
+    // Debounce: queue tabel mana yang perlu di-refresh, fire sekali.
+    const queue = new Set()
+    let timer = null
+    const flush = () => {
+      timer = null
+      const tables = [...queue]
+      queue.clear()
+      if (tables.includes('transactions')) refreshTransactions()
+      if (tables.includes('debts'))         refreshDebts()
+      if (tables.includes('customers'))     refreshCustomers()
+      if (tables.includes('products')) {
+        // products jarang berubah; pakai inline query supaya tidak
+        // butuh helper terpisah, dan tetap di-LIMIT.
+        supabase.from('products').select('*')
+          .order('created_at', { ascending: false }).limit(500)
+          .then(({ data }) => {
+            if (mounted.current && data) setProducts(data.map(productFromDB))
+          })
+      }
+    }
+    const schedule = (...names) => {
+      names.forEach(n => queue.add(n))
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(flush, 500)  // 500ms debounce window
+    }
+
+    const channel = supabase.channel('skupy-pos-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' },
+        () => schedule('transactions'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' },
+        () => schedule('debts'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'debt_payments' },
+        () => schedule('debts', 'transactions', 'customers'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' },
+        () => schedule('customers'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' },
+        () => schedule('products'))
+      .subscribe()
+
+    return () => {
+      if (timer) clearTimeout(timer)
+      supabase.removeChannel(channel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const wrap = useCallback(async (fn) => {
@@ -550,6 +586,7 @@ export function useStore() {
     try {
       const cashier = currentUser?.name || currentUser?.username || ''
       const cashierId = currentUser?.id || null
+      const cashierRole = currentUser?.role || 'cashier'
       const nowIso = new Date().toISOString()
       const statusHistory = [{
         order_status: trx.orderStatus || 'menunggu',
@@ -577,19 +614,25 @@ export function useStore() {
         const payload = trxToDB({
           ...trx,
           invoiceNo, orderNo,
-          cashier, cashierId,
+          cashier, cashierId, cashierRole,
           statusHistory,
           orderStatus: trx.orderStatus || 'menunggu',
         })
         // eslint-disable-next-line no-console
         console.log(`[useStore] Inserting transaction (attempt ${attempt}/${MAX_ATTEMPTS}):`, invoiceNo)
         let res = await supabase.from('transactions').insert(payload).select().single()
-        // Defensive retry kalau DB belum punya kolom due_date.
+        // Defensive retry kalau DB belum punya kolom due_date / cashier_role.
         if (res.error && isSchemaCacheError(res.error, 'due_date')) {
           // eslint-disable-next-line no-console
           console.warn('[useStore] DB belum punya kolom transactions.due_date — transaksi disimpan tanpa due_date.')
           res = await supabase
             .from('transactions').insert(omit(payload, ['due_date'])).select().single()
+        }
+        if (res.error && isSchemaCacheError(res.error, 'cashier_role')) {
+          // eslint-disable-next-line no-console
+          console.warn('[useStore] DB belum punya kolom transactions.cashier_role — transaksi disimpan tanpa role.')
+          res = await supabase
+            .from('transactions').insert(omit(payload, ['cashier_role'])).select().single()
         }
         row = res.data
         e = res.error

@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo, useState } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend,
@@ -100,7 +100,68 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, setActivePage, storeInfo, currentUser }) {
+export default function Dashboard({ stats, transactions, debts = [], admins = [], setActivePage, storeInfo, currentUser }) {
+  // ─── Owner-only filter: admin dropdown + date range ───
+  // - 'all'      → semua admin gabungan
+  // - <adminId>  → hanya transaksi cashier_id == adminId
+  const [adminFilter, setAdminFilter] = useState('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
+  // Apply filter to a copy of transactions
+  const filteredTrx = useMemo(() => {
+    let list = transactions || []
+    if (adminFilter !== 'all') {
+      list = list.filter(t => t.cashierId === adminFilter)
+    }
+    if (dateFrom) {
+      const from = new Date(dateFrom + 'T00:00:00').getTime()
+      list = list.filter(t => new Date(t.date).getTime() >= from)
+    }
+    if (dateTo) {
+      const to = new Date(dateTo + 'T23:59:59').getTime()
+      list = list.filter(t => new Date(t.date).getTime() <= to)
+    }
+    return list
+  }, [transactions, adminFilter, dateFrom, dateTo])
+
+  // Per-admin performance rows (calculated on every render — small list)
+  const adminPerformance = useMemo(() => {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).getTime()
+    const startOfDay = today.getTime()
+
+    return admins.map(admin => {
+      const own = (transactions || []).filter(t => t.cashierId === admin.id)
+      const totalOmzet = own.reduce((s, t) => s + (+t.total || 0), 0)
+      const omzetToday = own
+        .filter(t => new Date(t.date).getTime() >= startOfDay)
+        .reduce((s, t) => s + (+t.total || 0), 0)
+      const omzetMonth = own
+        .filter(t => new Date(t.date).getTime() >= monthStart)
+        .reduce((s, t) => s + (+t.total || 0), 0)
+      const ownDebts = (debts || []).filter(d => {
+        const linked = (transactions || []).find(t => t.id === d.transactionId)
+        return linked && linked.cashierId === admin.id
+      })
+      const debtCreated = ownDebts.reduce((s, d) => s + (+d.totalDebt || 0), 0)
+      const debtLunas = ownDebts
+        .filter(d => d.status === 'lunas')
+        .reduce((s, d) => s + (+d.totalDebt || 0), 0)
+      return {
+        id: admin.id,
+        name: admin.name || admin.username || '—',
+        role: admin.role || 'cashier',
+        trxCount: own.length,
+        totalOmzet,
+        omzetToday,
+        omzetMonth,
+        debtCreated,
+        debtLunas,
+      }
+    }).sort((a, b) => b.totalOmzet - a.totalOmzet)
+  }, [admins, transactions, debts])
   const recentTrx = transactions.slice(0, 6)
   const catLabel = (id) => CATEGORIES.find(c => c.id === id)?.label || id
 
@@ -161,13 +222,93 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
           </div>
         </div>
 
-        {/* Stat Cards */}
+        {/* Filter Bar — Admin & Date Range (owner only) */}
+        <div className="rounded-2xl p-3 sm:p-4 mb-5 animate-slideUp"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <span className="text-xs font-bold uppercase tracking-wider flex-shrink-0"
+              style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+              Filter
+            </span>
+            <select
+              value={adminFilter}
+              onChange={(e) => setAdminFilter(e.target.value)}
+              className="px-3 py-2 rounded-xl text-xs font-semibold"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                fontFamily: 'Syne',
+                minWidth: 160,
+              }}
+            >
+              <option value="all">Semua Admin</option>
+              {admins.map(a => (
+                <option key={a.id} value={a.id}>
+                  {(a.name || a.username || '—')} ({a.role || 'cashier'})
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-3 py-2 rounded-xl text-xs"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                colorScheme: 'dark',
+              }}
+              placeholder="Dari"
+              title="Dari tanggal"
+            />
+            <span style={{ color: 'var(--text-muted)' }}>—</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-3 py-2 rounded-xl text-xs"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                colorScheme: 'dark',
+              }}
+              placeholder="Sampai"
+              title="Sampai tanggal"
+            />
+            {(adminFilter !== 'all' || dateFrom || dateTo) && (
+              <button
+                onClick={() => { setAdminFilter('all'); setDateFrom(''); setDateTo('') }}
+                className="px-3 py-2 rounded-xl text-xs font-semibold"
+                style={{
+                  background: 'rgba(139,92,246,0.12)',
+                  border: '1px solid rgba(139,92,246,0.3)',
+                  color: 'var(--accent-light)',
+                  fontFamily: 'Syne',
+                }}
+              >
+                Reset
+              </button>
+            )}
+            <span className="ml-auto text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'DM Sans' }}>
+              {filteredTrx.length} transaksi
+            </span>
+          </div>
+        </div>
+
+        {/* Stat Cards — gunakan filteredTrx ketika filter aktif */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-5">
           <StatCard
             icon={TrendingUp}
             label="Total Omzet"
-            value={formatRupiah(stats.totalOmzet)}
-            sub="Semua waktu"
+            value={formatRupiah(
+              (adminFilter !== 'all' || dateFrom || dateTo)
+                ? filteredTrx.reduce((s, t) => s + (+t.total || 0), 0)
+                : stats.totalOmzet
+            )}
+            sub={(adminFilter !== 'all' || dateFrom || dateTo) ? 'Sesuai filter' : 'Semua waktu'}
             color="accent"
             trend="+12%"
             delay={0}
@@ -234,6 +375,101 @@ export default function Dashboard({ stats, transactions, setActivePage, storeInf
             delay={180}
           />
         </div>
+
+        {/* Performa per Admin — owner view */}
+        {adminPerformance.length > 0 && (
+          <div className="rounded-2xl p-5 mb-5 animate-slideUp"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Star size={14} style={{ color: 'var(--accent-light)' }} />
+                <h2 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                  Performa per Admin
+                </h2>
+              </div>
+              <span className="text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'DM Sans' }}>
+                Gabungan: {formatRupiah(adminPerformance.reduce((s, a) => s + a.totalOmzet, 0))}
+              </span>
+            </div>
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th className="px-2 py-2 text-left font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, letterSpacing: '0.08em' }}>
+                      Admin
+                    </th>
+                    <th className="px-2 py-2 text-center font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Total Trx
+                    </th>
+                    <th className="px-2 py-2 text-right font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Hari Ini
+                    </th>
+                    <th className="px-2 py-2 text-right font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Bulan Ini
+                    </th>
+                    <th className="px-2 py-2 text-right font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Total Omzet
+                    </th>
+                    <th className="px-2 py-2 text-right font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Piutang
+                    </th>
+                    <th className="px-2 py-2 text-right font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>
+                      Lunas
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adminPerformance.map(a => (
+                    <tr key={a.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-2 py-3" style={{ color: 'var(--text-primary)' }}>
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                            style={{
+                              background: a.role === 'owner'
+                                ? 'linear-gradient(135deg, #f59e0b, #ea580c)'
+                                : 'linear-gradient(135deg, #8b5cf6, #6366f1)',
+                              color: '#fff', fontFamily: 'Syne',
+                            }}>
+                            {(a.name || '?')[0].toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold leading-tight truncate" style={{ fontFamily: 'Syne' }}>{a.name}</div>
+                            <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{a.role}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-2 py-3 text-center font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {a.trxCount}
+                      </td>
+                      <td className="px-2 py-3 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatCompact(a.omzetToday)}
+                      </td>
+                      <td className="px-2 py-3 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatCompact(a.omzetMonth)}
+                      </td>
+                      <td className="px-2 py-3 text-right font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatRupiah(a.totalOmzet)}
+                      </td>
+                      <td className="px-2 py-3 text-right" style={{ color: '#f59e0b', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatCompact(a.debtCreated)}
+                      </td>
+                      <td className="px-2 py-3 text-right" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatCompact(a.debtLunas)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Top customers strip */}
         {stats.topCustomers?.length > 0 && (

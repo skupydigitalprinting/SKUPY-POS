@@ -64,7 +64,7 @@ export default function Sidebar({
           style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
           Menu Utama
         </div>
-        {NAV.map(({ id, label, icon: Icon, hint }) => {
+        {NAV.filter(({ id }) => isOwner || id !== 'dashboard').map(({ id, label, icon: Icon, hint }) => {
           const active = activePage === id
           return (
             <button

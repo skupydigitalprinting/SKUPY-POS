@@ -13,7 +13,7 @@ import Customers from './pages/Customers'
 import Piutang from './pages/Piutang'
 import Login from './pages/Login'
 import Logo from './components/Logo'
-import { ToastProvider } from './components/Toast'
+import { ToastProvider, useToast } from './components/Toast'
 import { useStore } from './hooks/useStore'
 
 function LoadingSplash() {
@@ -148,10 +148,33 @@ function ErrorScreen({ error, onRetry }) {
 }
 
 function AppShell() {
-  const [activePage, setActivePage] = useState('dashboard')
+  // Default starting page tergantung role — admin/cashier langsung ke Kasir
+  // (Dashboard digated untuk owner saja).
+  const store = useStore()
+  const toast = useToast()
+  const isOwner = store.currentUser?.role === 'owner'
+  const [activePage, setActivePageRaw] = useState(isOwner ? 'dashboard' : 'kasir')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const store = useStore()
+
+  // Wrap setActivePage: kalau non-owner mencoba membuka 'dashboard',
+  // tampilkan toast dan redirect ke 'kasir'. Tidak ada cara akses tersembunyi.
+  const setActivePage = (next) => {
+    if (next === 'dashboard' && !isOwner) {
+      toast.warning('Dashboard hanya dapat diakses oleh Admin Utama')
+      setActivePageRaw('kasir')
+      return
+    }
+    setActivePageRaw(next)
+  }
+
+  // Saat role berubah (mis. user logout lalu login lagi sebagai admin biasa),
+  // pastikan tidak nyangkut di Dashboard.
+  useEffect(() => {
+    if (!isOwner && activePage === 'dashboard') {
+      setActivePageRaw('kasir')
+    }
+  }, [isOwner, activePage])
 
   if (store.loading) return <LoadingSplash />
   if (store.error) return <ErrorScreen error={store.error} onRetry={store.refreshAll} />
@@ -159,10 +182,28 @@ function AppShell() {
     return <Login login={store.login} storeInfo={store.storeInfo} busy={store.busy} />
   }
 
+  // Filter transaksi berdasar role:
+  //   • owner   → semua transaksi
+  //   • admin/cashier → hanya transaksi yang dia buat (cashier_id == user.id)
+  // Owner dashboard menerima FULL list (untuk filter per-admin di UI).
+  // Halaman lain (Order/Customers/Piutang) menerima list yang sudah disaring.
+  const scopedTransactions = isOwner
+    ? store.transactions
+    : store.transactions.filter(t => t.cashierId === store.currentUser?.id)
+  const scopedDebts = isOwner
+    ? store.debts
+    : store.debts.filter(d => {
+        // Hutang dianggap milik kasir yang membuat transaksi-nya
+        const linked = store.transactions.find(t => t.id === d.transactionId)
+        return !linked || linked.cashierId === store.currentUser?.id
+      })
+
   const pages = {
     dashboard: <Dashboard
       stats={store.stats}
       transactions={store.transactions}
+      debts={store.debts}
+      admins={store.admins}
       storeInfo={store.storeInfo}
       currentUser={store.currentUser}
       setActivePage={setActivePage}
@@ -182,10 +223,11 @@ function AppShell() {
       busy={store.busy}
     />,
     order: <Order
-      transactions={store.transactions}
+      transactions={scopedTransactions}
       products={store.products}
       customers={store.customers}
       storeInfo={store.storeInfo}
+      currentUser={store.currentUser}
       updateTransactionStatus={store.updateTransactionStatus}
       updateTransactionPayment={store.updateTransactionPayment}
       updateOrderStatus={store.updateOrderStatus}
@@ -194,15 +236,15 @@ function AppShell() {
     />,
     customers: <Customers
       customers={store.customers}
-      transactions={store.transactions}
+      transactions={scopedTransactions}
       addCustomer={store.addCustomer}
       updateCustomer={store.updateCustomer}
       deleteCustomer={store.deleteCustomer}
     />,
     piutang: <Piutang
-      debts={store.debts}
+      debts={scopedDebts}
       customers={store.customers}
-      transactions={store.transactions}
+      transactions={scopedTransactions}
       stats={store.stats}
       payDebt={store.payDebt}
       deleteDebt={store.deleteDebt}
@@ -259,6 +301,7 @@ function AppShell() {
         activePage={activePage}
         onChange={setActivePage}
         onMore={() => setMobileMenuOpen(true)}
+        currentUser={store.currentUser}
       />
 
       <Settings

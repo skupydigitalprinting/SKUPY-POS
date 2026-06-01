@@ -14,7 +14,9 @@ const ITEMS = [
  * Bottom navigation for iOS / Android mobile feel.
  * Visible on `< md` viewport only.
  */
-export default function BottomNav({ activePage, onChange, onMore }) {
+export default function BottomNav({ activePage, onChange, onMore, currentUser }) {
+  const isOwner = currentUser?.role === 'owner'
+  const items = ITEMS.filter(it => isOwner || it.id !== 'dashboard')
   return (
     <nav
       className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around"
@@ -28,7 +30,7 @@ export default function BottomNav({ activePage, onChange, onMore }) {
         height: 'calc(64px + env(safe-area-inset-bottom))',
       }}
     >
-      {ITEMS.map(({ id, label, icon: Icon }) => {
+      {items.map(({ id, label, icon: Icon }) => {
         const active = activePage === id
         return (
           <button

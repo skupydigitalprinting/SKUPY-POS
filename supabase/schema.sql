@@ -133,6 +133,7 @@ ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS order_status     text D
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS notes            text DEFAULT '';
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS status_history   jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS due_date         date;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS cashier_role     text DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at   ON public.transactions (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_status       ON public.transactions (status);
