@@ -270,14 +270,18 @@ function AppShell() {
         onMobileClose={() => setMobileMenuOpen(false)}
         storeInfo={store.storeInfo}
         currentUser={store.currentUser}
-        onOpenSettings={() => setSettingsOpen(true)}
+        // Only owner can open Settings — staff sees Logout button instead
+        onOpenSettings={isOwner ? () => setSettingsOpen(true) : undefined}
+        onLogout={store.logout}
       />
       <main className="flex flex-1 flex-col overflow-hidden" style={{ minWidth: 0 }}>
         <Header
           activePage={activePage}
           onMenuToggle={() => setMobileMenuOpen(true)}
           currentUser={store.currentUser}
-          onOpenSettings={() => setSettingsOpen(true)}
+          // Only owner can open Settings via header chip
+          onOpenSettings={isOwner ? () => setSettingsOpen(true) : undefined}
+          onLogout={store.logout}
           onRefresh={store.refreshAll}
         />
         <div
@@ -304,8 +308,9 @@ function AppShell() {
         currentUser={store.currentUser}
       />
 
+      {/* Settings modal — OWNER ONLY (security: not just hidden, refuse to render) */}
       <Settings
-        open={settingsOpen}
+        open={settingsOpen && isOwner}
         onClose={() => setSettingsOpen(false)}
         storeInfo={store.storeInfo}
         admins={store.admins}

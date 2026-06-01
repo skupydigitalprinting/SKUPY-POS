@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Menu, Clock, RotateCw, Settings as SettingsIcon } from 'lucide-react'
+import { Menu, Clock, RotateCw, Settings as SettingsIcon, LogOut } from 'lucide-react'
 import { useToast } from './Toast'
 
 const PAGE_TITLES = {
@@ -16,9 +16,11 @@ export default function Header({
   onMenuToggle,
   currentUser,
   onOpenSettings,
+  onLogout,
   onRefresh, // optional override; defaults to a no-op
 }) {
   const meta = PAGE_TITLES[activePage] || PAGE_TITLES.dashboard
+  const isOwner = currentUser?.role === 'owner'
   const [now, setNow] = useState(new Date())
   const [refreshing, setRefreshing] = useState(false)
   const toast = useToast()
@@ -170,15 +172,22 @@ export default function Header({
           </span>
         </div>
 
-        {/* Admin chip — desktop (initial + name + role) */}
+        {/* Admin chip — desktop (initial + name + role).
+            Owner: klik buka Settings. Staff: klik = no-op (display only). */}
         <button
-          onClick={onOpenSettings}
+          onClick={isOwner ? onOpenSettings : undefined}
           className="hidden md:flex items-center gap-2 px-2 py-1 rounded-xl btn-press"
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', height: 36 }}
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            height: 36,
+            cursor: isOwner ? 'pointer' : 'default',
+          }}
+          title={isOwner ? 'Pengaturan' : `${currentUser?.role || 'staff'}`}
         >
           <div className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold"
             style={{
-              background: currentUser?.role === 'owner'
+              background: isOwner
                 ? 'linear-gradient(135deg, #f59e0b, #ea580c)'
                 : 'linear-gradient(135deg, #8b5cf6, #6366f1)',
               color: '#fff', fontFamily: 'Syne',
@@ -188,7 +197,7 @@ export default function Header({
           <div className="hidden lg:block pr-1 text-left">
             <div className="text-xs font-semibold leading-tight"
               style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
-              {currentUser?.name || currentUser?.username || 'Admin'}
+              {currentUser?.name || currentUser?.username || 'Staff'}
             </div>
             <div className="text-xs leading-tight" style={{ color: 'var(--text-muted)' }}>
               {currentUser?.role || 'staff'}
@@ -196,20 +205,42 @@ export default function Header({
           </div>
         </button>
 
-        {/* Admin chip — mobile (just gear icon → settings) */}
-        <button
-          onClick={onOpenSettings}
-          className="md:hidden flex items-center justify-center rounded-xl"
-          style={{
-            width: 36, height: 36,
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            color: 'var(--text-secondary)',
-          }}
-          title="Pengaturan"
-        >
-          <SettingsIcon size={15} />
-        </button>
+        {/* Logout button — selalu tampil untuk staff; owner punya via Settings/Sidebar */}
+        {!isOwner && onLogout && (
+          <button
+            onClick={() => {
+              if (window.confirm('Keluar dari aplikasi?')) onLogout()
+            }}
+            className="flex items-center justify-center rounded-xl"
+            style={{
+              width: 36, height: 36,
+              background: 'var(--bg-card)',
+              border: '1px solid rgba(255,77,106,0.3)',
+              color: 'var(--red)',
+            }}
+            title="Logout"
+            aria-label="Logout"
+          >
+            <LogOut size={15} />
+          </button>
+        )}
+
+        {/* Settings gear (mobile) — owner ONLY */}
+        {isOwner && (
+          <button
+            onClick={onOpenSettings}
+            className="md:hidden flex items-center justify-center rounded-xl"
+            style={{
+              width: 36, height: 36,
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-secondary)',
+            }}
+            title="Pengaturan"
+          >
+            <SettingsIcon size={15} />
+          </button>
+        )}
       </div>
     </header>
   )

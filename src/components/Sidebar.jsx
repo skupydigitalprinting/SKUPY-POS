@@ -2,7 +2,7 @@ import React from 'react'
 import {
   LayoutDashboard, ShoppingCart, Package, ClipboardList,
   ChevronRight, X, Settings as SettingsIcon, Crown,
-  Users, Wallet,
+  Users, Wallet, LogOut,
 } from 'lucide-react'
 import Logo from './Logo'
 
@@ -18,7 +18,7 @@ const NAV = [
 export default function Sidebar({
   activePage, setActivePage,
   mobileOpen, onMobileClose,
-  storeInfo, currentUser, onOpenSettings,
+  storeInfo, currentUser, onOpenSettings, onLogout,
 }) {
   const handleClick = (id) => {
     setActivePage(id)
@@ -121,21 +121,45 @@ export default function Sidebar({
           </div>
         )}
 
-        <button
-          onClick={() => { onOpenSettings?.(); onMobileClose?.() }}
-          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all sidebar-item"
-          style={{
-            background: 'rgba(255,255,255,0.03)',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          <SettingsIcon size={16} style={{ color: 'var(--accent-light)' }} />
-          <span className="text-sm font-semibold flex-1" style={{ fontFamily: 'Syne' }}>
-            Pengaturan
-          </span>
-          <ChevronRight size={13} style={{ opacity: 0.5 }} />
-        </button>
+        {/* Owner: tombol Pengaturan; Staff: tombol Logout (no Settings) */}
+        {isOwner ? (
+          <button
+            onClick={() => { onOpenSettings?.(); onMobileClose?.() }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all sidebar-item"
+            style={{
+              background: 'rgba(255,255,255,0.03)',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <SettingsIcon size={16} style={{ color: 'var(--accent-light)' }} />
+            <span className="text-sm font-semibold flex-1" style={{ fontFamily: 'Syne' }}>
+              Pengaturan
+            </span>
+            <ChevronRight size={13} style={{ opacity: 0.5 }} />
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              if (window.confirm('Keluar dari aplikasi?')) {
+                onLogout?.()
+                onMobileClose?.()
+              }
+            }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all sidebar-item"
+            style={{
+              background: 'rgba(255,77,106,0.06)',
+              color: 'var(--red)',
+              border: '1px solid rgba(255,77,106,0.25)',
+            }}
+          >
+            <LogOut size={16} style={{ color: 'var(--red)' }} />
+            <span className="text-sm font-semibold flex-1" style={{ fontFamily: 'Syne' }}>
+              Logout
+            </span>
+            <ChevronRight size={13} style={{ opacity: 0.5 }} />
+          </button>
+        )}
       </div>
     </>
   )
