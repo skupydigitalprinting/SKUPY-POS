@@ -67,9 +67,34 @@ CREATE TABLE IF NOT EXISTS public.products (
   created_at   timestamptz DEFAULT now()
 );
 
--- Migration for existing products tables
+-- Migration for existing products tables (idempotent, safe to re-run)
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS unit text DEFAULT 'pcs';
-ALTER TABLE public.products ALTER COLUMN stock TYPE numeric;
+
+-- Convert stock to numeric only if it is still integer (decimal support)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'products'
+      AND column_name  = 'stock'
+      AND data_type    = 'integer'
+  ) THEN
+    ALTER TABLE public.products ALTER COLUMN stock TYPE numeric USING stock::numeric;
+  END IF;
+END $$;
+
+-- Backfill unit for legacy rows + lock the default
+UPDATE public.products SET unit = 'pcs' WHERE unit IS NULL;
+ALTER TABLE public.products ALTER COLUMN unit SET DEFAULT 'pcs';
+
+-- Constraint: only PCS / Meter / Yard allowed
+ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_unit_check;
+ALTER TABLE public.products ADD CONSTRAINT products_unit_check
+  CHECK (unit IN ('pcs', 'meter', 'yard'));
+
+CREATE INDEX IF NOT EXISTS idx_products_unit ON public.products (unit);
 
 CREATE INDEX IF NOT EXISTS idx_products_category ON public.products (category);
 
@@ -365,3 +390,8 @@ UPDATE public.customers c
    ), 0);
 
 -- ---------- DONE ----------
+
+-- Refresh PostgREST schema cache so the REST API picks up new columns
+-- (e.g. products.unit) without needing a manual API restart.
+NOTIFY pgrst, 'reload schema';
+

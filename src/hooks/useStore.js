@@ -377,15 +377,57 @@ export function useStore() {
   }), [wrap])
 
   // ---------- PRODUCTS ----------
+  // Detect "missing column" errors from PostgREST (Supabase REST API)
+  // so we can retry with a stripped payload when the DB migration
+  // hasn't been applied yet. Without this, an outdated schema would
+  // crash all product CRUD with "Could not find the 'unit' column".
+  const isSchemaCacheError = (err, col) => {
+    if (!err) return false
+    const msg = String(err.message || err.error_description || '').toLowerCase()
+    const code = String(err.code || '')
+    return (
+      code === 'PGRST204' ||
+      msg.includes(`'${col}' column`) ||
+      msg.includes(`column "${col}"`) ||
+      msg.includes(`could not find the '${col}'`) ||
+      msg.includes('schema cache')
+    )
+  }
+  // Drop one or more keys and return a new object
+  const omit = (obj, keys) => {
+    const out = { ...obj }
+    for (const k of keys) delete out[k]
+    return out
+  }
+
   const addProduct = useCallback(async (data) => wrap(async () => {
-    const { data: row, error: e } = await supabase.from('products').insert(productToDB(data)).select().single()
+    const payload = productToDB(data)
+    let { data: row, error: e } = await supabase
+      .from('products').insert(payload).select().single()
+    // Fallback: DB may be missing `unit` column (migration not yet run).
+    if (e && isSchemaCacheError(e, 'unit')) {
+      // eslint-disable-next-line no-console
+      console.warn('[Skupy POS] DB belum punya kolom products.unit — produk akan disimpan tanpa unit. Jalankan migrasi supabase/migrations/2026_06_add_unit_to_products.sql.')
+      const retry = await supabase
+        .from('products').insert(omit(payload, ['unit'])).select().single()
+      row = retry.data; e = retry.error
+    }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setProducts(prev => [productFromDB(row), ...prev])
     return { ok: true }
   }), [wrap])
 
   const updateProduct = useCallback(async (id, data) => wrap(async () => {
-    const { data: row, error: e } = await supabase.from('products').update(productToDB(data)).eq('id', id).select().single()
+    const payload = productToDB(data)
+    let { data: row, error: e } = await supabase
+      .from('products').update(payload).eq('id', id).select().single()
+    if (e && isSchemaCacheError(e, 'unit')) {
+      // eslint-disable-next-line no-console
+      console.warn('[Skupy POS] DB belum punya kolom products.unit — produk akan disimpan tanpa unit. Jalankan migrasi supabase/migrations/2026_06_add_unit_to_products.sql.')
+      const retry = await supabase
+        .from('products').update(omit(payload, ['unit'])).eq('id', id).select().single()
+      row = retry.data; e = retry.error
+    }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? productFromDB(row) : p))
     return { ok: true }
