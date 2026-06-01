@@ -57,6 +57,14 @@ function getStatus(key) {
   return STATUS_MAP[key] || STATUS_FALLBACK
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ORDER_TABLE_COLUMNS — sumber kebenaran tunggal untuk lebar kolom
+// tabel di halaman Order. Header DAN row MUST pakai constant ini agar
+// tidak ada pergeseran 1px antara label dan data di bawahnya.
+// ═══════════════════════════════════════════════════════════════════
+const ORDER_TABLE_COLUMNS = '220px 220px 150px 150px 180px 140px 180px 220px'
+const ORDER_TABLE_MIN_WIDTH = 1460  // = jumlah semua lebar di atas
+
 export default function Order({
   transactions, storeInfo, busy, products = [], customers = [],
   updateTransactionStatus, updateTransactionPayment, deleteTransaction,
@@ -326,14 +334,20 @@ export default function Order({
           })}
         </div>
 
-        {/* Desktop Table — kolom dipisahkan vertical divider, header sticky,
-            numeric kolom (Total/Sisa) rata kanan agar align dengan body. */}
-        <div className="hidden md:block rounded-2xl overflow-hidden"
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-          <div className="grid px-4 py-3 text-[11px] font-bold uppercase tracking-wider"
+        {/* Desktop Table — horizontal scroll bila viewport sempit; lebar
+            kolom FIXED supaya header & body presisi sejajar 1px. */}
+        <div className="hidden md:block rounded-2xl overflow-x-auto"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+          }}>
+          <div style={{ minWidth: ORDER_TABLE_MIN_WIDTH }}>
+          <div className="grid text-[11px] font-bold uppercase"
             style={{
-              gridTemplateColumns: 'minmax(140px, 1.2fr) minmax(140px, 1.4fr) minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(120px, 1fr) auto',
+              gridTemplateColumns: ORDER_TABLE_COLUMNS,
               gap: 0,
+              minHeight: 48,
+              alignItems: 'center',
               color: 'var(--text-muted)',
               fontFamily: 'Syne',
               letterSpacing: '0.08em',
@@ -343,14 +357,14 @@ export default function Order({
               top: 0,
               zIndex: 1,
             }}>
-            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Invoice</span>
-            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Customer</span>
-            <span className="px-2 text-right truncate" style={{ borderRight: '1px solid var(--border)' }}>Total</span>
-            <span className="px-2 text-right truncate" style={{ borderRight: '1px solid var(--border)' }}>Sisa</span>
-            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Pembayaran</span>
-            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Status</span>
-            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Workflow</span>
-            <span className="px-2 text-right whitespace-nowrap">Aksi</span>
+            <span className="px-3 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Invoice</span>
+            <span className="px-3 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Customer</span>
+            <span className="px-3 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Total</span>
+            <span className="px-3 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Sisa</span>
+            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Pembayaran</span>
+            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Status</span>
+            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Workflow</span>
+            <span className="px-3 truncate text-center">Aksi</span>
           </div>
 
           {filtered.length === 0 ? (
@@ -366,60 +380,86 @@ export default function Order({
               return (
                 <div
                   key={t.id}
-                  className="grid px-4 py-3 items-center hover:bg-white/[0.02] transition-all"
+                  className="grid hover:bg-white/[0.02] transition-all"
                   style={{
-                    gridTemplateColumns: 'minmax(140px, 1.2fr) minmax(140px, 1.4fr) minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(120px, 1fr) auto',
+                    gridTemplateColumns: ORDER_TABLE_COLUMNS,
                     gap: 0,
+                    minHeight: 72,
+                    alignItems: 'center',
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  <div className="px-2 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
-                    <p className="text-xs font-bold truncate"
-                      style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
+                  {/* Invoice — left aligned, ellipsis */}
+                  <div className="px-3 min-w-0" style={{ borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <p className="text-xs font-bold"
+                      style={{
+                        color: 'var(--accent-light)', fontFamily: 'Syne',
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
                       {t.invoiceNo}
                     </p>
                     {t.orderNo && (
-                      <p className="text-xs truncate" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                      <p className="text-xs"
+                        style={{
+                          color: 'var(--text-secondary)', fontFamily: 'Syne',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}>
                         {t.orderNo}
                       </p>
                     )}
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                       {timeAgo(t.date)}
                     </p>
                   </div>
-                  <div className="px-2 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
-                    <p className="text-xs font-semibold truncate"
-                      style={{ color: 'var(--text-primary)' }}>
+                  {/* Customer — left aligned */}
+                  <div className="px-3 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
+                    <p className="text-xs font-semibold"
+                      style={{
+                        color: 'var(--text-primary)',
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
                       {t.customer}
                     </p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                       {(t.items || []).length} item
                     </p>
                   </div>
-                  <p className="px-2 text-xs font-bold text-right truncate"
+                  {/* Total — right aligned, tabular-nums */}
+                  <p className="px-3 text-xs font-bold"
                     style={{
                       color: 'var(--text-primary)', fontFamily: 'Syne',
                       fontVariantNumeric: 'tabular-nums',
                       borderRight: '1px solid var(--border)',
+                      textAlign: 'right',
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>
                     {formatRupiah(t.total)}
                   </p>
-                  <p className="px-2 text-xs font-semibold text-right truncate"
+                  {/* Sisa — right aligned, tabular-nums */}
+                  <p className="px-3 text-xs font-semibold"
                     style={{
                       color: t.remaining > 0 ? 'var(--red)' : '#10d98a',
                       fontFamily: 'Syne',
                       fontVariantNumeric: 'tabular-nums',
                       borderRight: '1px solid var(--border)',
+                      textAlign: 'right',
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>
                     {formatRupiah(t.remaining)}
                   </p>
-                  <p className="px-2 text-xs truncate"
-                    style={{ color: 'var(--text-secondary)', borderRight: '1px solid var(--border)' }}>
+                  {/* Pembayaran — center */}
+                  <p className="px-3 text-xs"
+                    style={{
+                      color: 'var(--text-secondary)',
+                      borderRight: '1px solid var(--border)',
+                      textAlign: 'center',
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>
                     {pm.icon} {pm.label}
                   </p>
-                  <div className="px-2" style={{ borderRight: '1px solid var(--border)' }}>
+                  {/* Status — center */}
+                  <div className="px-3" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {(() => {
-                      // Derive Pending/Lunas from remaining (single source of truth)
                       const isLunas = (t.remaining || 0) <= 0 || t.status === 'lunas'
                       return (
                         <span
@@ -437,12 +477,13 @@ export default function Order({
                       )
                     })()}
                   </div>
-                  <div className="px-2" style={{ borderRight: '1px solid var(--border)' }}>
+                  {/* Workflow — center */}
+                  <div className="px-3" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {updateOrderStatus ? (
                       <select
                         value={t.orderStatus || 'menunggu'}
                         onChange={(e) => updateOrderStatus(t.id, e.target.value)}
-                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer w-full"
+                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer text-center"
                         style={{
                           background: 'transparent',
                           color: wf.color,
@@ -464,7 +505,10 @@ export default function Order({
                       </span>
                     )}
                   </div>
-                  <div className="px-2 flex gap-1.5 justify-end">
+                  {/* Aksi — center, flex with gap 8 */}
+                  <div className="px-3" style={{
+                    display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
+                  }}>
                     {t.remaining > 0 && (
                       <button
                         onClick={() => openPay(t)}
@@ -543,6 +587,7 @@ export default function Order({
               )
             })
           )}
+          </div>{/* end minWidth wrapper for horizontal scroll */}
         </div>
 
         {/* Mobile Card View */}
