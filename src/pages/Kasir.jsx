@@ -25,6 +25,9 @@ import Invoice from '../components/Invoice'
 //   • on blur, empty/invalid resets to "1"
 function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
   // Format a number back into the local display string.
+  // For PCS we keep the raw integer (no thousand separators while editing —
+  // that complicates cursor position). The cart's "Subtotal · N PCS" line
+  // and the invoice handle formatted display via formatQty().
   const fmt = (n) => {
     const num = Number(n) || 0
     if (!allowDecimal) return String(Math.round(num))
@@ -106,9 +109,14 @@ function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
       aria-label="Jumlah"
       className="qty-input text-center text-base font-bold"
       style={{
-        // Auto-size 56–88px so "1,5" or "2,75" never gets cropped
-        width: 72, minWidth: 56, maxWidth: 88,
+        // 96px fits up to ~8 digits in Syne — "10.000.000" easily, while
+        // staying compact enough for iPhone portrait. Tabular-nums keeps
+        // digits aligned so the value never feels cropped mid-typing.
+        width: 96,
+        minWidth: 72,
+        maxWidth: 120,
         minHeight: 44,
+        padding: '0 6px',
         background: 'transparent',
         border: 'none',
         color: 'var(--text-primary)',
@@ -152,18 +160,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
     })
   }, [products, search, category])
 
-  // Stock is no longer a hard inventory gate — Skupy POS sells mostly services
-  // (sablon/printing/DTF/jersey). We DO NOT block adding a product when stock = 0.
-  // If stock > 0 we treat it as a soft cap; if stock = 0 we treat as "untracked".
-  const wouldExceedStock = (item, nextQty) =>
-    item.stock != null && Number(item.stock) > 0 && nextQty > Number(item.stock)
+  // NO QUANTITY LIMITS — Skupy POS sells made-to-order goods (sablon, DTF,
+  // jersey, kain) so customers freely order 1, 58, 500, 1.000, 10.000+ unit.
+  // We intentionally ignore product.stock as a cap; stock decrement on the
+  // backend still happens (Math.max-floored at 0) but the cart is unbounded.
 
   const addToCart = (product) => {
     setCart((prev) => {
       const existing = prev.find((i) => i.productId === product.id)
       if (existing) {
         const next = Number(existing.qty) + 1
-        if (wouldExceedStock(existing, next)) return prev
         return prev.map((i) =>
           i.productId === product.id ? { ...i, qty: next } : i
         )
@@ -176,6 +182,8 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           price: product.price,
           qty: 1,
           image: product.image,
+          // We keep stock on the cart item only for diagnostics; it is
+          // never used as a cap in any handler.
           stock: product.stock,
           unit: (product.unit || 'pcs').toLowerCase(),
         },
@@ -189,7 +197,6 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         .map((i) => {
           if (i.productId !== productId) return i
           const next = Number(i.qty) + delta
-          if (wouldExceedStock(i, next)) return i
           // Round to 2 decimals for meter/yard, integer for pcs
           const rounded = (i.unit === 'meter' || i.unit === 'yard')
             ? Math.round(next * 100) / 100
@@ -201,7 +208,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   }
 
   // Set exact qty from a numeric value (QtyInput already handles parsing
-  // + comma/dot normalization). Caps at item.stock if tracked.
+  // + comma/dot normalization). Unlimited — no stock cap whatsoever.
   const setQtyExact = (productId, n) => {
     setCart((prev) => prev.map((i) => {
       if (i.productId !== productId) return i
@@ -210,9 +217,6 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       if (!Number.isFinite(qty) || qty <= 0) qty = allowDecimal ? 0.1 : 1
       if (allowDecimal) qty = Math.round(qty * 100) / 100
       else qty = Math.round(qty)
-      if (i.stock != null && Number(i.stock) > 0 && qty > Number(i.stock)) {
-        qty = Number(i.stock)
-      }
       return { ...i, qty }
     }))
   }

@@ -133,15 +133,28 @@ export function unitAllowsDecimal(unit) {
 }
 
 /**
- * Format a quantity for display, e.g. 1.5 → "1,5 Meter", 3 → "3 PCS".
- * Indonesia uses comma as decimal separator.
+ * Format a quantity for display, e.g. 1.5 → "1,5 Meter", 3 → "3 PCS",
+ * 1500 → "1.500 PCS", 10000 → "10.000 PCS" (Indonesian thousand
+ * separator). Decimal units (meter/yard) use comma as decimal separator
+ * and still apply the thousand grouping to the integer part.
  */
 export function formatQty(qty, unit = 'pcs') {
   const u = getUnit(unit)
   const n = Number(qty) || 0
-  const str = u.decimal
-    ? (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
-    : String(Math.round(n))
+  const intl = new Intl.NumberFormat('id-ID')
+  let str
+  if (u.decimal) {
+    if (Number.isInteger(n)) {
+      str = intl.format(n)
+    } else {
+      const int = Math.trunc(n)
+      const dec = Math.abs(n - int).toFixed(2).slice(2).replace(/0+$/, '')
+      const intStr = intl.format(int)
+      str = dec ? `${intStr},${dec}` : intStr
+    }
+  } else {
+    str = intl.format(Math.round(n))
+  }
   return `${str} ${u.label}`
 }
 
