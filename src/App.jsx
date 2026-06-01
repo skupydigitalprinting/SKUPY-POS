@@ -236,6 +236,7 @@ function AppShell() {
           onMenuToggle={() => setMobileMenuOpen(true)}
           currentUser={store.currentUser}
           onOpenSettings={() => setSettingsOpen(true)}
+          onRefresh={store.refreshAll}
         />
         <div
           className="flex-1 overflow-hidden flex flex-col"
