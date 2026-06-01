@@ -470,21 +470,61 @@ export function useStore() {
     return `${dd}${mm}${yyyy}`
   }
 
+  // Generate next invoice_no by querying MAX existing for today, then +1.
+  // Why not COUNT(*): kalau ada invoice yang dihapus, COUNT < MAX → nomor
+  // berikutnya berbenturan dengan invoice yang sudah ada → unique violation.
+  // MAX selalu menghasilkan nomor yang lebih tinggi dari semua yang ada.
   const nextInvoiceNumber = useCallback(async () => {
     const prefix = todayPrefix()
-    const { count } = await supabase
-      .from('transactions').select('*', { count: 'exact', head: true })
+    const { data, error: e } = await supabase
+      .from('transactions')
+      .select('invoice_no')
       .like('invoice_no', `${prefix}-%`)
-    return `${prefix}-${String((count || 0) + 1).padStart(3, '0')}`
+      .order('invoice_no', { ascending: false })
+      .limit(1)
+    if (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[useStore] nextInvoiceNumber query gagal, fallback ke 001:', e)
+    }
+    let nextNum = 1
+    const last = data?.[0]?.invoice_no
+    if (last) {
+      const m = String(last).match(/-(\d+)$/)
+      if (m) nextNum = parseInt(m[1], 10) + 1
+    }
+    return `${prefix}-${String(nextNum).padStart(3, '0')}`
   }, [])
 
   const nextOrderNumber = useCallback(async () => {
     const prefix = todayPrefix()
-    const { count } = await supabase
-      .from('transactions').select('*', { count: 'exact', head: true })
+    const { data, error: e } = await supabase
+      .from('transactions')
+      .select('order_no')
       .like('order_no', `ORD-${prefix}-%`)
-    return `ORD-${prefix}-${String((count || 0) + 1).padStart(3, '0')}`
+      .order('order_no', { ascending: false })
+      .limit(1)
+    if (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[useStore] nextOrderNumber query gagal, fallback ke 001:', e)
+    }
+    let nextNum = 1
+    const last = data?.[0]?.order_no
+    if (last) {
+      const m = String(last).match(/-(\d+)$/)
+      if (m) nextNum = parseInt(m[1], 10) + 1
+    }
+    return `ORD-${prefix}-${String(nextNum).padStart(3, '0')}`
   }, [])
+
+  // Detect Postgres UNIQUE violation (code 23505) so we know to regenerate
+  // the invoice number and retry. Supabase forwards the code on err.code,
+  // and the message typically includes "duplicate key value violates unique".
+  const isUniqueViolation = (err) => {
+    if (!err) return false
+    if (err.code === '23505') return true
+    const msg = String(err.message || '').toLowerCase()
+    return msg.includes('duplicate key') || msg.includes('unique constraint')
+  }
 
   // ---------- CUSTOMER RECALCULATION ----------
   // Hitung ulang total_transactions, total_spent, dan total_debt dari tabel
@@ -528,10 +568,6 @@ export function useStore() {
 
   const addTransaction = useCallback(async (trx) => wrap(async () => {
     try {
-      const [invoiceNo, orderNo] = await Promise.all([
-        nextInvoiceNumber(),
-        nextOrderNumber(),
-      ])
       const cashier = currentUser?.name || currentUser?.username || ''
       const cashierId = currentUser?.id || null
       const nowIso = new Date().toISOString()
@@ -540,30 +576,62 @@ export function useStore() {
         changed_at: nowIso,
         changed_by: cashier || 'system',
       }]
-      const payload = trxToDB({
-        ...trx,
-        invoiceNo, orderNo,
-        cashier, cashierId,
-        statusHistory,
-        orderStatus: trx.orderStatus || 'menunggu',
-      })
-      // eslint-disable-next-line no-console
-      console.log('[useStore] Inserting transaction:', invoiceNo, 'payload:', payload)
-      let { data: row, error: e } = await supabase.from('transactions').insert(payload).select().single()
-      // Defensive retry: if DB doesn't have the new due_date column yet
-      // (user hasn't run the migration), strip it from the payload and retry.
-      // The dueDate is still persisted in the `debts` table for hutang trx.
-      if (e && isSchemaCacheError(e, 'due_date')) {
+
+      // ─── RETRY LOOP — handle duplicate invoice_no (race / gap / etc.) ───
+      // Penyebab bentrok:
+      //   1. Dua kasir checkout bersamaan, COUNT/MAX query keduanya balik
+      //      angka sama → keduanya generate nomor yang sama.
+      //   2. Invoice lama dengan nomor yang sama belum sempat tersinkron.
+      //   3. Race condition antara generate dan insert.
+      // Solusi: loop sampai 5x, generate ulang nomor dari MAX, lalu retry.
+      const MAX_ATTEMPTS = 5
+      let row = null, e = null, invoiceNo = '', orderNo = ''
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // Fresh number each attempt (MAX query melihat baris yang baru saja
+        // disisip oleh kasir lain juga, jadi attempt ke-2 akan mendapat
+        // nomor yang sudah berbeda dari attempt ke-1).
+        ;[invoiceNo, orderNo] = await Promise.all([
+          nextInvoiceNumber(),
+          nextOrderNumber(),
+        ])
+        const payload = trxToDB({
+          ...trx,
+          invoiceNo, orderNo,
+          cashier, cashierId,
+          statusHistory,
+          orderStatus: trx.orderStatus || 'menunggu',
+        })
         // eslint-disable-next-line no-console
-        console.warn('[useStore] DB belum punya kolom transactions.due_date — transaksi disimpan tanpa due_date. Jalankan migrasi schema.sql terbaru.')
-        const retry = await supabase
-          .from('transactions').insert(omit(payload, ['due_date'])).select().single()
-        row = retry.data; e = retry.error
+        console.log(`[useStore] Inserting transaction (attempt ${attempt}/${MAX_ATTEMPTS}):`, invoiceNo)
+        let res = await supabase.from('transactions').insert(payload).select().single()
+        // Defensive retry kalau DB belum punya kolom due_date.
+        if (res.error && isSchemaCacheError(res.error, 'due_date')) {
+          // eslint-disable-next-line no-console
+          console.warn('[useStore] DB belum punya kolom transactions.due_date — transaksi disimpan tanpa due_date.')
+          res = await supabase
+            .from('transactions').insert(omit(payload, ['due_date'])).select().single()
+        }
+        row = res.data
+        e = res.error
+        if (!e) break // success
+        if (isUniqueViolation(e)) {
+          // eslint-disable-next-line no-console
+          console.warn(`[useStore] Nomor invoice ${invoiceNo} sudah dipakai, generate ulang (attempt ${attempt}/${MAX_ATTEMPTS})…`)
+          // Short backoff so concurrent inserts don't keep stepping on each other
+          await new Promise(r => setTimeout(r, 60 + attempt * 40))
+          continue
+        }
+        // Non-recoverable error — break out so the user sees the real message
+        break
       }
       if (e) {
         // eslint-disable-next-line no-console
-        console.error('[useStore] Gagal insert transaksi:', e, payload)
-        return { ok: false, error: `Gagal menyimpan transaksi: ${e.message}` }
+        console.error('[useStore] Gagal insert transaksi (semua percobaan habis):', e)
+        // Translate raw DB error → user-friendly Indonesian
+        const friendly = isUniqueViolation(e)
+          ? 'Nomor invoice sedang sibuk digunakan kasir lain. Coba checkout sekali lagi.'
+          : `Gagal menyimpan transaksi: ${e.message}`
+        return { ok: false, error: friendly }
       }
 
       // Decrement stock
