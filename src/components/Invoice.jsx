@@ -649,14 +649,14 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 // Use clip-path instead of overflow:hidden so html2canvas can capture full element
                 clipPath: 'inset(0 round 12px)',
               }}>
-                {/* Soft glow accent untuk hutang */}
+                {/* Soft glow accent untuk hutang — merah halus selaras SISA TAGIHAN */}
                 {(t.remaining || 0) > 0 && (
                   <div style={{
                     position: 'absolute',
                     top: -40, right: -40,
                     width: 160, height: 160,
                     borderRadius: '50%',
-                    background: 'radial-gradient(circle, rgba(245,158,11,0.25), transparent 70%)',
+                    background: 'radial-gradient(circle, rgba(239,68,68,0.22), transparent 70%)',
                     pointerEvents: 'none',
                   }} />
                 )}
@@ -668,11 +668,11 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     <span style={{ color: '#f0f0f8', fontWeight: 600 }}>{formatRupiah(t.subtotal)}</span>
                   </div>
 
-                  {/* Diskon */}
+                  {/* Diskon — orange/amber (pengurang harga, bukan peringatan) */}
                   {t.discount > 0 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 8 }}>
                       <span style={{ color: '#8888a8' }}>Diskon</span>
-                      <span style={{ color: '#ff4d6a', fontWeight: 600 }}>−{formatRupiah(t.discount)}</span>
+                      <span style={{ color: '#f59e0b', fontWeight: 600 }}>−{formatRupiah(t.discount)}</span>
                     </div>
                   )}
 
@@ -717,8 +717,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     <>
                       <div style={{
                         height: 1,
-                        background: 'rgba(245,158,11,0.2)',
-                        margin: '8px 0',                        // ← tighter (was 10)
+                        background: 'rgba(239,68,68,0.22)',   // ← merah halus menyatu dgn SISA TAGIHAN
+                        margin: '8px 0',
                       }} />
 
                       {/* DP DIBAYAR — Inter SemiBold, ukuran normal */}
@@ -754,26 +754,27 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                       {/* Jatuh Tempo dipindah hanya ke kartu Detail (kiri atas)
                           agar panel total tetap fokus ke: Total / DP / Sisa */}
 
-                      {/* SISA TAGIHAN — HERO BLOCK
+                      {/* SISA TAGIHAN — HERO BLOCK (RED EMPHASIS)
                           • Font ~ 24px = TOTAL × 1.26 (spec: 15-25% lebih besar)
-                          • Padding simetris atas-bawah → nominal vertical-centered
-                          • marginTop negatif untuk merapatkan ke DP DIBAYAR */}
+                          • Warna merah agar customer langsung fokus ke nominal
+                            yang harus dibayar — lebih mencolok daripada amber */}
                       <div style={{
-                        background: 'linear-gradient(135deg, rgba(245,158,11,0.2), rgba(234,88,12,0.1))',
-                        border: '1px solid rgba(245,158,11,0.45)',
+                        background: 'linear-gradient(135deg, rgba(239,68,68,0.18), rgba(220,38,38,0.10))',
+                        border: '1px solid rgba(239,68,68,0.45)',
                         borderRadius: 12,
-                        padding: '20px',                        // ← symmetric all-sides
+                        padding: '20px',
                         display: 'flex',
                         flexDirection: 'column',
                         justifyContent: 'center',
                         alignItems: 'flex-start',
-                        gap: 12,                                // ← lega antara label & nominal
+                        gap: 12,
                         marginTop: -2,
+                        boxShadow: '0 0 24px rgba(239,68,68,0.18)',
                       }}>
                         <div style={{
                           fontSize: 11,
                           fontWeight: 800,
-                          color: '#fbbf24',
+                          color: '#ef4444',
                           textTransform: 'uppercase',
                           letterSpacing: '0.14em',
                           fontFamily: 'Syne',
@@ -785,13 +786,12 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                           // ~24px = 19 × 1.26 (sesuai spec 15-25% bigger than TOTAL)
                           fontSize: 24,
                           fontWeight: 800,
-                          color: '#fbbf24',
-                          // Space Grotesk → digit tegas, modern
+                          color: '#ef4444',
                           fontFamily: '"Space Grotesk", "Sora", "Syne", sans-serif',
                           letterSpacing: '-0.02em',
                           lineHeight: 1,
                           whiteSpace: 'nowrap',
-                          textShadow: '0 0 20px rgba(245,158,11,0.5)',
+                          textShadow: '0 0 20px rgba(239,68,68,0.5)',
                           fontVariantNumeric: 'tabular-nums',
                         }}>
                           {formatRupiah(t.remaining)}
