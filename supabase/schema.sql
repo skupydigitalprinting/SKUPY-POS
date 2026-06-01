@@ -207,56 +207,14 @@ CREATE TRIGGER settings_updated_at
   BEFORE UPDATE ON public.settings
   FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
 
--- After insert on debt_payments → update debts.paid, remaining, status
--- AND propagate to the linked transaction (so Order page shows "Lunas").
-CREATE OR REPLACE FUNCTION public.tg_apply_debt_payment()
-RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-  d_total      numeric;
-  d_paid_new   numeric;
-  d_remaining  numeric;
-  d_status     text;
-  d_trx_id     uuid;
-BEGIN
-  SELECT total_debt, paid, transaction_id
-    INTO d_total, d_paid_new, d_trx_id
-    FROM public.debts WHERE id = NEW.debt_id;
-
-  d_paid_new  := COALESCE(d_paid_new, 0) + NEW.amount;
-  d_remaining := GREATEST(0, COALESCE(d_total, 0) - d_paid_new);
-  d_status    := CASE WHEN d_remaining <= 0 THEN 'lunas' ELSE 'aktif' END;
-
-  UPDATE public.debts
-    SET paid = d_paid_new,
-        remaining = d_remaining,
-        status = d_status
-    WHERE id = NEW.debt_id;
-
-  -- Propagate to linked transaction
-  IF d_trx_id IS NOT NULL THEN
-    IF d_status = 'lunas' THEN
-      UPDATE public.transactions
-        SET status = 'lunas',
-            remaining = 0,
-            paid = d_total,
-            dp = d_total
-        WHERE id = d_trx_id;
-    ELSE
-      UPDATE public.transactions
-        SET remaining = d_remaining,
-            paid = d_paid_new,
-            dp = d_paid_new
-        WHERE id = d_trx_id;
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END $$;
-
+-- NOTE: trigger tg_apply_debt_payment SENGAJA TIDAK DIBUAT.
+-- Sebelumnya trigger ini menambah debts.paid + NEW.amount setelah client
+-- sudah mengupdate debts.paid → pembayaran terpotong dobel.
+-- Sekarang client `processDebtPayment` di useStore.js adalah satu-satunya
+-- pemilik logika update (transactions + debts + customer_total_debt).
+-- Pastikan trigger lama (kalau ada dari install sebelumnya) ikut dihapus:
 DROP TRIGGER IF EXISTS debt_payments_apply ON public.debt_payments;
-CREATE TRIGGER debt_payments_apply
-  AFTER INSERT ON public.debt_payments
-  FOR EACH ROW EXECUTE FUNCTION public.tg_apply_debt_payment();
+DROP FUNCTION IF EXISTS public.tg_apply_debt_payment();
 
 -- After insert on transactions → bump customer stats
 CREATE OR REPLACE FUNCTION public.tg_bump_customer_stats()

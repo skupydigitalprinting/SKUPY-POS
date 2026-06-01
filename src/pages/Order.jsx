@@ -326,25 +326,31 @@ export default function Order({
           })}
         </div>
 
-        {/* Desktop Table */}
+        {/* Desktop Table — kolom dipisahkan vertical divider, header sticky,
+            numeric kolom (Total/Sisa) rata kanan agar align dengan body. */}
         <div className="hidden md:block rounded-2xl overflow-hidden"
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-          <div className="grid gap-2 px-4 py-3 text-xs font-semibold uppercase tracking-wider"
+          <div className="grid px-4 py-3 text-[11px] font-bold uppercase tracking-wider"
             style={{
-              gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 0.9fr 0.9fr auto',
+              gridTemplateColumns: 'minmax(140px, 1.2fr) minmax(140px, 1.4fr) minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(120px, 1fr) auto',
+              gap: 0,
               color: 'var(--text-muted)',
               fontFamily: 'Syne',
+              letterSpacing: '0.08em',
               borderBottom: '1px solid var(--border)',
               background: 'var(--bg-elevated)',
+              position: 'sticky',
+              top: 0,
+              zIndex: 1,
             }}>
-            <span>Invoice</span>
-            <span>Customer</span>
-            <span>Total</span>
-            <span>Sisa</span>
-            <span>Pembayaran</span>
-            <span>Status Bayar</span>
-            <span>Workflow</span>
-            <span className="text-right">Aksi</span>
+            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Invoice</span>
+            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Customer</span>
+            <span className="px-2 text-right truncate" style={{ borderRight: '1px solid var(--border)' }}>Total</span>
+            <span className="px-2 text-right truncate" style={{ borderRight: '1px solid var(--border)' }}>Sisa</span>
+            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Pembayaran</span>
+            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Status</span>
+            <span className="px-2 truncate" style={{ borderRight: '1px solid var(--border)' }}>Workflow</span>
+            <span className="px-2 text-right whitespace-nowrap">Aksi</span>
           </div>
 
           {filtered.length === 0 ? (
@@ -360,19 +366,20 @@ export default function Order({
               return (
                 <div
                   key={t.id}
-                  className="grid gap-2 px-4 py-3 items-center hover:bg-white/[0.02] transition-all"
+                  className="grid px-4 py-3 items-center hover:bg-white/[0.02] transition-all"
                   style={{
-                    gridTemplateColumns: '1.2fr 1.4fr 1fr 1fr 1fr 0.9fr 0.9fr auto',
+                    gridTemplateColumns: 'minmax(140px, 1.2fr) minmax(140px, 1.4fr) minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(120px, 1fr) auto',
+                    gap: 0,
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  <div className="min-w-0">
+                  <div className="px-2 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
                     <p className="text-xs font-bold truncate"
                       style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
                       {t.invoiceNo}
                     </p>
                     {t.orderNo && (
-                      <p className="text-xs" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                      <p className="text-xs truncate" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
                         {t.orderNo}
                       </p>
                     )}
@@ -380,7 +387,7 @@ export default function Order({
                       {timeAgo(t.date)}
                     </p>
                   </div>
-                  <div className="min-w-0">
+                  <div className="px-2 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
                     <p className="text-xs font-semibold truncate"
                       style={{ color: 'var(--text-primary)' }}>
                       {t.customer}
@@ -389,18 +396,28 @@ export default function Order({
                       {(t.items || []).length} item
                     </p>
                   </div>
-                  <p className="text-xs font-bold"
-                    style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+                  <p className="px-2 text-xs font-bold text-right truncate"
+                    style={{
+                      color: 'var(--text-primary)', fontFamily: 'Syne',
+                      fontVariantNumeric: 'tabular-nums',
+                      borderRight: '1px solid var(--border)',
+                    }}>
                     {formatRupiah(t.total)}
                   </p>
-                  <p className="text-xs font-semibold"
-                    style={{ color: t.remaining > 0 ? 'var(--red)' : '#10d98a' }}>
+                  <p className="px-2 text-xs font-semibold text-right truncate"
+                    style={{
+                      color: t.remaining > 0 ? 'var(--red)' : '#10d98a',
+                      fontFamily: 'Syne',
+                      fontVariantNumeric: 'tabular-nums',
+                      borderRight: '1px solid var(--border)',
+                    }}>
                     {formatRupiah(t.remaining)}
                   </p>
-                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  <p className="px-2 text-xs truncate"
+                    style={{ color: 'var(--text-secondary)', borderRight: '1px solid var(--border)' }}>
                     {pm.icon} {pm.label}
                   </p>
-                  <div>
+                  <div className="px-2" style={{ borderRight: '1px solid var(--border)' }}>
                     {(() => {
                       // Derive Pending/Lunas from remaining (single source of truth)
                       const isLunas = (t.remaining || 0) <= 0 || t.status === 'lunas'
@@ -420,12 +437,12 @@ export default function Order({
                       )
                     })()}
                   </div>
-                  <div>
+                  <div className="px-2" style={{ borderRight: '1px solid var(--border)' }}>
                     {updateOrderStatus ? (
                       <select
                         value={t.orderStatus || 'menunggu'}
                         onChange={(e) => updateOrderStatus(t.id, e.target.value)}
-                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer"
+                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer w-full"
                         style={{
                           background: 'transparent',
                           color: wf.color,
@@ -447,7 +464,7 @@ export default function Order({
                       </span>
                     )}
                   </div>
-                  <div className="flex gap-1.5 justify-end">
+                  <div className="px-2 flex gap-1.5 justify-end">
                     {t.remaining > 0 && (
                       <button
                         onClick={() => openPay(t)}
