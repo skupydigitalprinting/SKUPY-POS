@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import {
   Search, ShoppingCart, Plus, Minus, Trash2, Tag, Receipt, Printer,
   CheckCircle2, X, Package, User, Calendar,
@@ -10,6 +10,115 @@ import {
 } from '../utils/helpers'
 import { Button, ProductImage, EmptyState } from '../components/ui'
 import Invoice from '../components/Invoice'
+
+// ---------- QtyInput ----------
+// Decimal-safe quantity input with a LOCAL draft string.
+// Why local draft: when user types "1," the comma must remain visible —
+// if we re-derive `value` from the numeric qty every keystroke, the comma
+// disappears immediately ("1," → 1 → "1"). Local draft lets the keystroke
+// survive while still bubbling parsed numeric qty up to the cart store.
+//
+// Rules:
+//   • PCS  → integer only (1, 2, 3 …)
+//   • Meter/Yard → decimals allowed, comma (1,5) OR dot (1.5)
+//   • minimum 0,1  •  never negative  •  empty allowed while editing
+//   • on blur, empty/invalid resets to "1"
+function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
+  // Format a number back into the local display string.
+  const fmt = (n) => {
+    const num = Number(n) || 0
+    if (!allowDecimal) return String(Math.round(num))
+    if (Number.isInteger(num)) return String(num)
+    // Trim trailing zeros: 1.50 → "1,5"; 2.25 → "2,25"
+    return num.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')
+  }
+  const [draft, setDraft] = useState(() => fmt(qty))
+
+  // If qty changes externally (e.g. +/- buttons), refresh the draft.
+  // But DON'T overwrite the draft if it already parses to the same value —
+  // otherwise the cursor jumps while the user is still typing.
+  useEffect(() => {
+    const draftNum = parseFloat(String(draft).replace(',', '.'))
+    if (Number.isFinite(draftNum) && Math.abs(draftNum - (Number(qty) || 0)) < 0.001) {
+      return
+    }
+    setDraft(fmt(qty))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qty, allowDecimal])
+
+  const handleChange = (e) => {
+    let raw = e.target.value
+    if (allowDecimal) {
+      // Keep only digits + ONE separator. Preserve trailing "1," etc.
+      raw = raw.replace(/[^\d.,]/g, '')
+      // If both . and , appear, keep the LAST one as the separator
+      const lastDot = raw.lastIndexOf('.')
+      const lastComma = raw.lastIndexOf(',')
+      const lastSep = Math.max(lastDot, lastComma)
+      if (lastSep !== -1) {
+        const before = raw.slice(0, lastSep).replace(/[.,]/g, '')
+        const sep = raw[lastSep]
+        const after = raw.slice(lastSep + 1).replace(/[.,]/g, '')
+        raw = before + sep + after
+      }
+    } else {
+      raw = raw.replace(/[^\d]/g, '')
+    }
+    setDraft(raw)
+    // Parse & bubble up — but if the draft is empty or ends in a separator,
+    // do NOT clobber the cart with 0 (user is mid-typing).
+    if (raw === '' || raw === ',' || raw === '.' || raw.endsWith(',') || raw.endsWith('.')) {
+      return
+    }
+    const normalized = raw.replace(',', '.')
+    const n = allowDecimal ? parseFloat(normalized) : parseInt(normalized, 10)
+    if (Number.isFinite(n) && n > 0) {
+      onChange(allowDecimal ? Math.round(n * 100) / 100 : Math.round(n))
+    }
+  }
+
+  const handleBlur = () => {
+    const cleaned = draft.replace(',', '.').replace(/[^\d.]/g, '')
+    let n = allowDecimal ? parseFloat(cleaned) : parseInt(cleaned, 10)
+    // Enforce minimum 0.1 (decimal) / 1 (pcs); empty/invalid → 1
+    if (!Number.isFinite(n) || n <= 0) n = 1
+    if (allowDecimal) {
+      if (n < 0.1) n = 0.1
+      n = Math.round(n * 100) / 100
+    } else {
+      n = Math.round(n)
+      if (n < 1) n = 1
+    }
+    setDraft(fmt(n))
+    onChange(n)
+    if (onCommit) onCommit(n)
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={allowDecimal ? 'decimal' : 'numeric'}
+      pattern={allowDecimal ? '[0-9.,]*' : '[0-9]*'}
+      value={draft}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      onFocus={(e) => e.target.select()}
+      aria-label="Jumlah"
+      className="qty-input text-center text-base font-bold"
+      style={{
+        // Auto-size 56–88px so "1,5" or "2,75" never gets cropped
+        width: 72, minWidth: 56, maxWidth: 88,
+        minHeight: 44,
+        background: 'transparent',
+        border: 'none',
+        color: 'var(--text-primary)',
+        fontFamily: 'Syne',
+        outline: 'none',
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    />
+  )
+}
 
 export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy }) {
   const [search, setSearch] = useState('')
@@ -91,21 +200,20 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
     )
   }
 
-  // Set exact qty (from manual input). Empty/0/invalid → coerce to 1.
-  // Caps at item.stock if known.
-  // setQtyExact — supports decimals for meter/yard, integer for PCS.
-  // Accepts Indonesian comma format: "1,5" → 1.5
-  const setQtyExact = (productId, raw) => {
+  // Set exact qty from a numeric value (QtyInput already handles parsing
+  // + comma/dot normalization). Caps at item.stock if tracked.
+  const setQtyExact = (productId, n) => {
     setCart((prev) => prev.map((i) => {
       if (i.productId !== productId) return i
       const allowDecimal = i.unit === 'meter' || i.unit === 'yard'
-      // Normalize comma → dot, strip non-numeric (except dot)
-      const cleaned = String(raw ?? '').trim().replace(',', '.').replace(/[^\d.]/g, '')
-      let n = allowDecimal ? parseFloat(cleaned) : parseInt(cleaned, 10)
-      if (!Number.isFinite(n) || n <= 0) n = allowDecimal ? 1 : 1
-      // Round decimal to 2 places to avoid floating-point glitches
-      if (allowDecimal) n = Math.round(n * 100) / 100
-      return { ...i, qty: n }
+      let qty = Number(n)
+      if (!Number.isFinite(qty) || qty <= 0) qty = allowDecimal ? 0.1 : 1
+      if (allowDecimal) qty = Math.round(qty * 100) / 100
+      else qty = Math.round(qty)
+      if (i.stock != null && Number(i.stock) > 0 && qty > Number(i.stock)) {
+        qty = Number(i.stock)
+      }
+      return { ...i, qty }
     }))
   }
 
@@ -362,19 +470,19 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                 </button>
               </div>
 
-              {/* Row 2: Qty controls + Unit badge + Subtotal */}
+              {/* Row 2: Qty controls — full-width row */}
               {(() => {
                 const u = getUnit(item.unit)
                 const allowDecimal = u.decimal
-                // Display string: "1,5" for decimals or "3" for pcs
                 const qtyNum = Number(item.qty) || 0
-                const qtyText = allowDecimal
-                  ? (Number.isInteger(qtyNum) ? String(qtyNum) : qtyNum.toFixed(2).replace(/\.?0+$/, '')).replace('.', ',')
-                  : String(Math.round(qtyNum))
+                // +/- step for fabric units = 0.5 (practical for printing/sablon).
+                // Minimum allowed value is 0.1 (enforced in QtyInput.handleBlur).
+                const stepSize = allowDecimal ? 0.5 : 1
+                const minQty = allowDecimal ? 0.1 : 1
                 return (
-                  <div className="flex items-center justify-between gap-2">
+                  <>
                     <div
-                      className="flex items-center gap-1 rounded-xl p-1"
+                      className="flex items-center justify-center gap-1 rounded-xl p-1 mb-2"
                       style={{
                         background: 'var(--bg-elevated)',
                         border: '1px solid var(--border)',
@@ -382,16 +490,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                     >
                       <button
                         onClick={() => {
-                          if (qtyNum <= 1) {
+                          if (qtyNum <= minQty + 0.001) {
                             if (window.confirm(`Hapus "${item.name}" dari keranjang?`)) {
                               removeItem(item.productId)
                             }
                           } else {
-                            updateQty(item.productId, -1)
+                            updateQty(item.productId, -stepSize)
                           }
                         }}
                         aria-label="Kurangi"
-                        className="flex items-center justify-center btn-press"
+                        className="flex items-center justify-center btn-press flex-shrink-0"
                         style={{
                           width: 44, height: 44, minWidth: 44, minHeight: 44,
                           borderRadius: 10,
@@ -401,32 +509,13 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                       >
                         <Minus size={16} />
                       </button>
-                      <input
-                        type="text"
-                        inputMode={allowDecimal ? 'decimal' : 'numeric'}
-                        pattern={allowDecimal ? '[0-9.,]*' : '[0-9]*'}
-                        value={qtyText}
-                        onChange={(e) => setQtyExact(item.productId, e.target.value)}
-                        onBlur={(e) => {
-                          const cleaned = String(e.target.value).replace(',', '.').replace(/[^\d.]/g, '')
-                          const n = allowDecimal ? parseFloat(cleaned) : parseInt(cleaned, 10)
-                          if (!Number.isFinite(n) || n <= 0) setQtyExact(item.productId, '1')
-                        }}
-                        onFocus={(e) => e.target.select()}
-                        aria-label="Jumlah"
-                        className="qty-input text-center text-base font-bold"
-                        style={{
-                          width: 64, minHeight: 44,
-                          background: 'transparent',
-                          border: 'none',
-                          color: 'var(--text-primary)',
-                          fontFamily: 'Syne',
-                          outline: 'none',
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
+                      <QtyInput
+                        qty={qtyNum}
+                        allowDecimal={allowDecimal}
+                        onChange={(n) => setQtyExact(item.productId, n)}
                       />
                       <span
-                        className="text-[10px] font-bold uppercase tracking-wider px-2"
+                        className="text-[10px] font-bold uppercase tracking-wider px-2 flex-shrink-0"
                         style={{
                           color: 'var(--accent-light)',
                           fontFamily: 'Syne',
@@ -437,9 +526,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                         {u.label}
                       </span>
                       <button
-                        onClick={() => updateQty(item.productId, 1)}
+                        onClick={() => updateQty(item.productId, minStep)}
                         aria-label="Tambah"
-                        className="flex items-center justify-center btn-press"
+                        className="flex items-center justify-center btn-press flex-shrink-0"
                         style={{
                           width: 44, height: 44, minWidth: 44, minHeight: 44,
                           borderRadius: 10,
@@ -450,17 +539,40 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                         <Plus size={16} />
                       </button>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[10px] uppercase tracking-wider"
-                        style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                        {formatQty(qtyNum, item.unit)}
-                      </p>
-                      <p className="text-sm font-bold"
-                        style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
+
+                    {/* Row 3: Subtotal — own row so price NEVER gets clipped */}
+                    <div
+                      className="flex items-center justify-between gap-2 px-1"
+                      style={{
+                        borderTop: '1px dashed var(--border)',
+                        paddingTop: 8,
+                      }}
+                    >
+                      <span
+                        className="text-[10px] uppercase tracking-wider flex-shrink-0"
+                        style={{
+                          color: 'var(--text-muted)',
+                          fontFamily: 'Syne',
+                          letterSpacing: '0.08em',
+                        }}
+                      >
+                        Subtotal · {formatQty(qtyNum, item.unit)}
+                      </span>
+                      <span
+                        className="font-bold text-right"
+                        style={{
+                          fontSize: 15,
+                          color: 'var(--accent-light)',
+                          fontFamily: 'Syne',
+                          fontVariantNumeric: 'tabular-nums',
+                          whiteSpace: 'nowrap',
+                          minWidth: 96,
+                        }}
+                      >
                         {formatRupiah(item.price * qtyNum)}
-                      </p>
+                      </span>
                     </div>
-                  </div>
+                  </>
                 )
               })()}
             </div>
