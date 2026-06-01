@@ -237,12 +237,25 @@ export function useStore() {
 
   useEffect(() => { refreshAll() }, [refreshAll])
 
-  // Realtime subscriptions (optional — refresh on insert/update/delete)
+  // Realtime subscriptions — semua tabel yang dipakai UI ikut listen agar
+  // dashboard / order / piutang / customers refresh tanpa reload browser
+  // ketika ada device lain (mobile/desktop) yang mengubah data.
   useEffect(() => {
     if (!isSupabaseConfigured) return
     const channel = supabase.channel('skupy-pos-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => refreshCustomers())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => refreshTransactions())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' }, () => refreshDebts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'debt_payments' }, () => {
+        // Payment trigger updates debts + transactions in DB; sync both locally
+        refreshDebts(); refreshTransactions(); refreshCustomers()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => refreshCustomers())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
+        // Refresh products list (mostly for stock decrement after checkout)
+        const { data } = await supabase
+          .from('products').select('*').order('created_at', { ascending: false })
+        if (mounted.current) setProducts((data || []).map(productFromDB))
+      })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -443,20 +456,74 @@ export function useStore() {
   }), [wrap])
 
   // ---------- TRANSACTIONS ----------
+  // Daily-reset invoice & order numbering (sesuai spec):
+  //   invoice_no : DDMMYYYY-001 → 01062026-001
+  //   order_no   : ORD-DDMMYYYY-001 → ORD-01062026-001
+  // No urut reset setiap hari, ditentukan dari COUNT(*) baris yang sudah ada
+  // dengan prefix tanggal yang sama. Format lama (INV-YYYY-NNNN) tetap dibaca
+  // (sudah tersimpan di DB) — hanya format BARU yang dipakai untuk insert.
+  const todayPrefix = () => {
+    const d = new Date()
+    const dd = String(d.getDate()).padStart(2, '0')
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const yyyy = d.getFullYear()
+    return `${dd}${mm}${yyyy}`
+  }
+
   const nextInvoiceNumber = useCallback(async () => {
-    const year = new Date().getFullYear()
+    const prefix = todayPrefix()
     const { count } = await supabase
       .from('transactions').select('*', { count: 'exact', head: true })
-      .like('invoice_no', `INV-${year}-%`)
-    return `INV-${year}-${String((count || 0) + 1).padStart(4, '0')}`
+      .like('invoice_no', `${prefix}-%`)
+    return `${prefix}-${String((count || 0) + 1).padStart(3, '0')}`
   }, [])
 
   const nextOrderNumber = useCallback(async () => {
-    const year = new Date().getFullYear()
+    const prefix = todayPrefix()
     const { count } = await supabase
       .from('transactions').select('*', { count: 'exact', head: true })
-      .like('order_no', `ORD-${year}-%`)
-    return `ORD-${year}-${String((count || 0) + 1).padStart(4, '0')}`
+      .like('order_no', `ORD-${prefix}-%`)
+    return `ORD-${prefix}-${String((count || 0) + 1).padStart(3, '0')}`
+  }, [])
+
+  // ---------- CUSTOMER RECALCULATION ----------
+  // Hitung ulang total_transactions, total_spent, dan total_debt dari tabel
+  // transactions + debts. Dipanggil setelah checkout / payDebt / delete agar
+  // tidak ada drift antar tabel (trigger DB hanya menambah saat INSERT, tidak
+  // mengurangi saat DELETE).
+  const recalculateCustomerSummary = useCallback(async (customerId) => {
+    if (!customerId) return
+    try {
+      const [trxRes, debtRes] = await Promise.all([
+        supabase.from('transactions')
+          .select('total, remaining, status')
+          .eq('customer_id', customerId),
+        supabase.from('debts')
+          .select('remaining, status')
+          .eq('customer_id', customerId)
+          .eq('status', 'aktif'),
+      ])
+      const trxs = trxRes.data || []
+      const activeDebts = debtRes.data || []
+      const totalTransactions = trxs.length
+      const totalSpent = trxs.reduce((s, t) => s + (+t.total || 0), 0)
+      const totalDebt = activeDebts.reduce((s, d) => s + (+d.remaining || 0), 0)
+      const { error: e } = await supabase
+        .from('customers')
+        .update({
+          total_transactions: totalTransactions,
+          total_spent: totalSpent,
+          total_debt: totalDebt,
+        })
+        .eq('id', customerId)
+      if (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[useStore] recalculateCustomerSummary update gagal:', e)
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[useStore] recalculateCustomerSummary error:', err)
+    }
   }, [])
 
   const addTransaction = useCallback(async (trx) => wrap(async () => {
@@ -538,11 +605,15 @@ export function useStore() {
           return { ...p, stock: Math.max(0, p.stock - it.qty) }
         }))
       }
-      // Refresh customer stats (driven by trigger)
-      if (trx.customerId) await refreshCustomers()
+      // Refresh customer stats — use recalculate to keep numbers honest
+      // (the INSERT trigger only adds; we want canonical values).
+      if (trx.customerId) {
+        await recalculateCustomerSummary(trx.customerId)
+        await refreshCustomers()
+      }
       return { ok: true, data: newTrx }
     } catch (err) { return { ok: false, error: err.message || String(err) } }
-  }), [products, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts])
+  }), [products, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary])
 
   const updateOrderStatus = useCallback(async (id, newStatus) => wrap(async () => {
     const current = transactions.find(t => t.id === id)
@@ -590,64 +661,123 @@ export function useStore() {
   }), [transactions, wrap])
 
   const deleteTransaction = useCallback(async (id) => wrap(async () => {
+    // Capture customerId BEFORE deleting so we can recalc afterwards.
+    const trx = transactions.find(t => t.id === id)
+    const customerId = trx?.customerId || null
+    // FK CASCADE on debts.transaction_id + debt_payments.debt_id (set up in
+    // the migration) ensures related rows die alongside this row.
     const { error: e } = await supabase.from('transactions').delete().eq('id', id)
     if (e) return { ok: false, error: e.message }
-    if (mounted.current) setTransactions(prev => prev.filter(t => t.id !== id))
+    if (mounted.current) {
+      setTransactions(prev => prev.filter(t => t.id !== id))
+      setDebts(prev => prev.filter(d => d.transactionId !== id))
+    }
+    // Recompute customer totals so total_debt + total_spent stay honest.
+    if (customerId) {
+      await recalculateCustomerSummary(customerId)
+      await refreshCustomers()
+    }
     return { ok: true }
-  }), [wrap])
+  }), [transactions, wrap, recalculateCustomerSummary, refreshCustomers])
 
   // ---------- DEBTS ----------
+  // Bayar hutang — atomic flow yang mengupdate KEEMPAT tabel sekaligus
+  // (debt_payments, debts, transactions, customers). Tidak hanya bergantung
+  // pada SQL trigger; client-side update juga eksplisit agar:
+  //   1. UI bisa update langsung sebelum realtime echo datang.
+  //   2. Kalau trigger DB gagal/tidak terpasang, data tetap konsisten.
   const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '') => wrap(async () => {
-    if (!amount || amount <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const amt = Number(amount)
+    if (!amt || amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const cashier = currentUser?.name || currentUser?.username || ''
     const cashierId = currentUser?.id || null
-    const { error: e } = await supabase.from('debt_payments').insert({
-      debt_id: debtId, amount: Number(amount),
-      payment_method: paymentMethod, notes,
-      cashier, cashier_id: cashierId,
+
+    // 1. Snapshot the debt BEFORE inserting payment (to compute new totals)
+    const { data: debtBefore, error: debtFetchErr } = await supabase
+      .from('debts').select('*').eq('id', debtId).maybeSingle()
+    if (debtFetchErr || !debtBefore) {
+      return { ok: false, error: debtFetchErr?.message || 'Hutang tidak ditemukan' }
+    }
+
+    const newPaid = (+debtBefore.paid || 0) + amt
+    const newRemaining = Math.max(0, (+debtBefore.total_debt || 0) - newPaid)
+    const newStatus = newRemaining <= 0 ? 'lunas' : 'aktif'
+    const trxId = debtBefore.transaction_id
+
+    // 2. Insert debt_payment history row (with invoice_no for cross-link)
+    const { error: payErr } = await supabase.from('debt_payments').insert({
+      debt_id: debtId,
+      amount: amt,
+      payment_method: paymentMethod,
+      notes,
+      cashier,
+      cashier_id: cashierId,
+      // Note: invoice_no on this table is optional; older schemas may not have it.
+      // The defensive retry below strips it if Supabase reports a missing col.
+      invoice_no: debtBefore.invoice_no || null,
+      paid_at: new Date().toISOString(),
     })
-    if (e) {
-      // eslint-disable-next-line no-console
-      console.error('[useStore] Gagal insert debt_payment:', e)
-      return { ok: false, error: e.message }
-    }
-
-    // After the SQL trigger has updated debts.remaining/status,
-    // fetch the debt + sync the linked transaction.status if needed.
-    try {
-      const { data: debt } = await supabase
-        .from('debts').select('*').eq('id', debtId).maybeSingle()
-      if (debt) {
-        if (debt.status === 'lunas' && debt.transaction_id) {
-          // Mark transaction as lunas + zero out remaining
-          await supabase
-            .from('transactions')
-            .update({ status: 'lunas', remaining: 0, paid: debt.total_debt, dp: debt.total_debt })
-            .eq('id', debt.transaction_id)
-        } else if (debt.transaction_id) {
-          // Partial payment — keep status pending but sync remaining
-          await supabase
-            .from('transactions')
-            .update({ remaining: debt.remaining, paid: debt.paid, dp: debt.paid })
-            .eq('id', debt.transaction_id)
+    if (payErr) {
+      // Retry without invoice_no if column missing (legacy schema)
+      if (isSchemaCacheError(payErr, 'invoice_no')) {
+        const retry = await supabase.from('debt_payments').insert({
+          debt_id: debtId,
+          amount: amt,
+          payment_method: paymentMethod,
+          notes,
+          cashier,
+          cashier_id: cashierId,
+        })
+        if (retry.error) {
+          // eslint-disable-next-line no-console
+          console.error('[useStore] Gagal insert debt_payment (retry):', retry.error)
+          return { ok: false, error: retry.error.message }
         }
+      } else {
+        // eslint-disable-next-line no-console
+        console.error('[useStore] Gagal insert debt_payment:', payErr)
+        return { ok: false, error: payErr.message }
       }
-    } catch (syncErr) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] sync transaksi setelah debt payment gagal:', syncErr)
     }
 
-    // Refresh everything so dashboard / orders are up to date
+    // 3. Update debts row (explicit, in case trigger didn't fire)
+    await supabase.from('debts').update({
+      paid: newPaid,
+      remaining: newRemaining,
+      status: newStatus,
+    }).eq('id', debtId)
+
+    // 4. Update linked transaction — paid+, remaining-, status sync
+    if (trxId) {
+      const trxUpdates = newStatus === 'lunas'
+        ? { paid: +debtBefore.total_debt || 0, dp: +debtBefore.total_debt || 0, remaining: 0, status: 'lunas' }
+        : { paid: newPaid, dp: newPaid, remaining: newRemaining, status: 'pending' }
+      await supabase.from('transactions').update(trxUpdates).eq('id', trxId)
+    }
+
+    // 5. Recompute customer summary (total_debt, total_spent, total_transactions)
+    if (debtBefore.customer_id) {
+      await recalculateCustomerSummary(debtBefore.customer_id)
+    }
+
+    // 6. Refresh local state so all pages see the change immediately
     await Promise.all([refreshDebts(), refreshCustomers(), refreshTransactions()])
     return { ok: true }
-  }), [currentUser, wrap, refreshDebts, refreshCustomers])
+  }), [currentUser, wrap, refreshDebts, refreshCustomers, refreshTransactions, recalculateCustomerSummary])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
+    const debt = debts.find(d => d.id === id)
+    const customerId = debt?.customerId || null
+    // FK CASCADE on debt_payments.debt_id wipes history rows automatically.
     const { error: e } = await supabase.from('debts').delete().eq('id', id)
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setDebts(prev => prev.filter(d => d.id !== id))
+    if (customerId) {
+      await recalculateCustomerSummary(customerId)
+      await refreshCustomers()
+    }
     return { ok: true }
-  }), [wrap])
+  }), [debts, wrap, recalculateCustomerSummary, refreshCustomers])
 
   const getDebtPayments = useCallback(async (debtId) => {
     const { data, error: e } = await supabase

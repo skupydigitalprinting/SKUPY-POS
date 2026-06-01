@@ -143,7 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_transactions_order_no     ON public.transactions 
 CREATE TABLE IF NOT EXISTS public.debts (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   customer_id     uuid NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
-  transaction_id  uuid REFERENCES public.transactions(id) ON DELETE SET NULL,
+  -- ON DELETE CASCADE: hapus invoice → piutang ikut hilang (no orphan)
+  transaction_id  uuid REFERENCES public.transactions(id) ON DELETE CASCADE,
   invoice_no      text,
   total_debt      numeric NOT NULL DEFAULT 0,
   paid            numeric DEFAULT 0,
@@ -165,12 +166,20 @@ CREATE TABLE IF NOT EXISTS public.debt_payments (
   amount       numeric NOT NULL,
   payment_method text DEFAULT 'cash',
   notes        text DEFAULT '',
+  invoice_no   text,                              -- cross-link ke invoice/order
   paid_at      timestamptz DEFAULT now(),
   cashier      text DEFAULT '',
   cashier_id   uuid REFERENCES public.admins(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_debt_payments_debt ON public.debt_payments (debt_id);
+ALTER TABLE public.debt_payments ADD COLUMN IF NOT EXISTS invoice_no text;
+
+CREATE INDEX IF NOT EXISTS idx_debt_payments_debt        ON public.debt_payments (debt_id);
+CREATE INDEX IF NOT EXISTS idx_debt_payments_invoice_no  ON public.debt_payments (invoice_no);
+CREATE INDEX IF NOT EXISTS idx_debt_payments_paid_at     ON public.debt_payments (paid_at DESC);
+CREATE INDEX IF NOT EXISTS idx_debts_transaction_id      ON public.debts (transaction_id);
+CREATE INDEX IF NOT EXISTS idx_debts_invoice_no          ON public.debts (invoice_no);
+CREATE INDEX IF NOT EXISTS idx_transactions_invoice_no   ON public.transactions (invoice_no);
 
 -- ---------- TRIGGERS ----------
 
