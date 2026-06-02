@@ -221,6 +221,7 @@ function AppShell() {
     />,
     produk: <Produk
       products={store.products}
+      currentUser={store.currentUser}
       addProduct={store.addProduct}
       updateProduct={store.updateProduct}
       deleteProduct={store.deleteProduct}

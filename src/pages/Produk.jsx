@@ -25,7 +25,9 @@ const CAT_COLOR = {
   kaos: 'green', hoodie: 'accent', banner: 'red',
 }
 
-export default function Produk({ products, addProduct, updateProduct, deleteProduct, busy }) {
+export default function Produk({ products, currentUser, addProduct, updateProduct, deleteProduct, busy }) {
+  // Harga modal (cost) hanya boleh dilihat & diubah oleh Owner.
+  const isOwner = currentUser?.role === 'owner'
   const { categories, addCategory, updateCategory, deleteCategory } = useCategories()
   const filterCats = [ALL_CATEGORY, ...categories]
 
@@ -252,7 +254,7 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
                       style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
                       {formatRupiah(p.price)}
                     </span>
-                    {margin(p) > 0 && (
+                    {isOwner && margin(p) > 0 && (
                       <span className="text-xs px-2 py-0.5 rounded-lg font-semibold"
                         style={{
                           background: 'rgba(16,217,138,0.1)',
@@ -266,7 +268,7 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
                   </div>
                   <div className="flex justify-between text-xs mb-3"
                     style={{ color: 'var(--text-muted)' }}>
-                    <span>Modal: {formatRupiah(p.modal)}</span>
+                    {isOwner && <span>Modal: {formatRupiah(p.modal)}</span>}
                     <span>
                       Satuan: <strong style={{ color: 'var(--text-secondary)' }}>
                         {p.unit === 'meter' ? 'Meter' : p.unit === 'yard' ? 'Yard' : 'PCS'}
@@ -434,7 +436,7 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className={isOwner ? 'grid grid-cols-2 gap-3' : ''}>
             <div>
               <Input
                 label="Harga Jual"
@@ -449,16 +451,19 @@ export default function Produk({ products, addProduct, updateProduct, deleteProd
                 <p className="text-xs mt-1" style={{ color: 'var(--red)' }}>{errors.price}</p>
               )}
             </div>
-            <div>
-              <Input
-                label="Harga Modal"
-                type="number"
-                value={form.modal}
-                onChange={(e) => setForm((p) => ({ ...p, modal: e.target.value }))}
-                placeholder="0"
-                prefix="Rp"
-              />
-            </div>
+            {/* Harga Modal — OWNER ONLY */}
+            {isOwner && (
+              <div>
+                <Input
+                  label="Harga Modal"
+                  type="number"
+                  value={form.modal}
+                  onChange={(e) => setForm((p) => ({ ...p, modal: e.target.value }))}
+                  placeholder="0"
+                  prefix="Rp"
+                />
+              </div>
+            )}
           </div>
 
           {/* Unit/Satuan selector */}
