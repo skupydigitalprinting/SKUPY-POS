@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react'
 import {
   Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2,
 } from 'lucide-react'
-import { formatRupiah, toBase64 } from '../utils/helpers'
+import { formatRupiah, compressImage } from '../utils/helpers'
 import { Input, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import CategoryManager from '../components/CategoryManager'
@@ -84,7 +84,8 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
       alert('Ukuran maksimal 4MB')
       return
     }
-    const b64 = await toBase64(file)
+    // Kompres dulu supaya ukuran kecil → simpan ke database cepat.
+    const b64 = await compressImage(file, { maxSize: 800, quality: 0.72 })
     setImagePreview(b64)
     setForm((prev) => ({ ...prev, image: b64 }))
   }

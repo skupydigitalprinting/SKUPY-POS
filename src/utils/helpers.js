@@ -65,6 +65,50 @@ export function toBase64(file) {
 }
 
 /**
+ * Kompres & resize gambar di sisi browser sebelum disimpan.
+ * Tujuan: foto 2–4MB jadi puluhan KB → insert ke database jauh lebih cepat.
+ *
+ * @param {File} file        file gambar dari input
+ * @param {object} opts      { maxSize: sisi terpanjang (px), quality: 0..1 }
+ * @returns {Promise<string>} data URL (JPEG) terkompres
+ */
+export function compressImage(file, { maxSize = 800, quality = 0.72 } = {}) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const img = new Image()
+      img.onload = () => {
+        let { width, height } = img
+        if (width > maxSize || height > maxSize) {
+          if (width >= height) {
+            height = Math.round((height * maxSize) / width)
+            width = maxSize
+          } else {
+            width = Math.round((width * maxSize) / height)
+            height = maxSize
+          }
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, width, height)
+        try {
+          resolve(canvas.toDataURL('image/jpeg', quality))
+        } catch (err) {
+          // Kalau canvas gagal (mis. gambar CORS), pakai data URL asli.
+          resolve(reader.result)
+        }
+      }
+      img.onerror = () => resolve(reader.result)
+      img.src = reader.result
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
  * Generates a stylized QR-like pattern SVG (deterministic from input string).
  * Not a real QR code, but visually represents a payment QR for invoice printing.
  */
