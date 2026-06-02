@@ -182,6 +182,21 @@ export function useStore() {
   // initial paint dashboard. Detail tetap bisa diambil via fetch lazy.
   const TRX_LIMIT = 500
   const DEBT_LIMIT = 500
+  // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
+  const PRODUCT_LIGHT_COLS = 'id,name,category,price,modal,stock,unit,description,created_at'
+
+  // Ambil gambar produk di latar belakang & gabungkan ke state.
+  // Best-effort: kalau gagal/timeout, gambar tetap pakai fallback.
+  const hydrateProductImages = useCallback(async () => {
+    try {
+      const { data, error: e } = await supabase
+        .from('products').select('id,image')
+        .order('created_at', { ascending: false }).limit(500)
+      if (e || !data || !mounted.current) return
+      const map = new Map(data.map(r => [r.id, r.image || '']))
+      setProducts(prev => prev.map(x => (map.has(x.id) ? { ...x, image: map.get(x.id) } : x)))
+    } catch { /* abaikan — biarkan gambar fallback */ }
+  }, [])
 
   const refreshAll = useCallback(async () => {
     setLoading(true); setError(null)
@@ -189,7 +204,11 @@ export function useStore() {
       const [s, a, p, t, c, d] = await Promise.all([
         supabase.from('settings').select('*').eq('id', 1).maybeSingle(),
         supabase.from('admins').select('*').order('created_at', { ascending: true }),
-        supabase.from('products').select('*').order('created_at', { ascending: false }),
+        // PENTING: jangan ambil kolom `image` di sini. Gambar produk lama
+        // tersimpan sebagai base64 besar (bisa MB), dan SELECT * tanpa batas
+        // bikin statement timeout saat boot. Kolom ringan dulu → app cepat
+        // hidup, gambar di-hydrate di latar belakang (lihat bawah).
+        supabase.from('products').select(PRODUCT_LIGHT_COLS).order('created_at', { ascending: false }).limit(500),
         // Limit transactions + debts agar query selalu cepat
         supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT),
         supabase.from('customers').select('*').order('created_at', { ascending: false }),
@@ -211,6 +230,8 @@ export function useStore() {
         if (mounted.current) setCurrentUser(null)
       }
       setProducts((p.data || []).map(productFromDB))
+      // Hydrate gambar di latar belakang — tidak memblok tampilan awal.
+      hydrateProductImages()
       const trxList = (t.data || []).map(trxFromDB)
       setTransactions(trxList)
       setCustomers((c.data || []).map(customerFromDB))
@@ -278,12 +299,14 @@ export function useStore() {
       if (tables.includes('debts'))         refreshDebts()
       if (tables.includes('customers'))     refreshCustomers()
       if (tables.includes('products')) {
-        // products jarang berubah; pakai inline query supaya tidak
-        // butuh helper terpisah, dan tetap di-LIMIT.
-        supabase.from('products').select('*')
+        // Kolom ringan dulu (anti-timeout), lalu hydrate gambar di belakang.
+        supabase.from('products').select(PRODUCT_LIGHT_COLS)
           .order('created_at', { ascending: false }).limit(500)
           .then(({ data }) => {
-            if (mounted.current && data) setProducts(data.map(productFromDB))
+            if (mounted.current && data) {
+              setProducts(data.map(productFromDB))
+              hydrateProductImages()
+            }
           })
       }
     }
