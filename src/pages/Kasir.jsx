@@ -3,11 +3,12 @@ import {
   Search, ShoppingCart, Plus, Minus, Trash2, Tag, Receipt, Printer,
   CheckCircle2, X, Package, User, Calendar,
 } from 'lucide-react'
-import { CATEGORIES, PAYMENT_METHODS } from '../data/dummyData'
+import { PAYMENT_METHODS } from '../data/dummyData'
 import {
   formatRupiah, toDateInputValue,
   getUnit, formatQty,
 } from '../utils/helpers'
+import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
 import { Button, ProductImage, EmptyState } from '../components/ui'
 import Invoice from '../components/Invoice'
 
@@ -129,6 +130,8 @@ function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
 }
 
 export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy }) {
+  const { categories } = useCategories()
+  const categoryFilters = [ALL_CATEGORY, ...categories]
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const [cart, setCart] = useState([])
@@ -898,7 +901,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           </div>
           {/* Categories */}
           <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
-            {CATEGORIES.map((c) => (
+            {categoryFilters.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setCategory(c.id)}

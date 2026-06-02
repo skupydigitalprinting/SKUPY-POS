@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import { CATEGORIES } from '../data/dummyData'
+import { getCatLabel } from '../hooks/useCategories'
 import { getUnit } from './helpers'
 
 const PAYMENT_LABEL = {
@@ -8,7 +8,7 @@ const PAYMENT_LABEL = {
 const STATUS_LABEL = {
   pending: 'Pending', proses: 'Proses', selesai: 'Selesai', lunas: 'Lunas',
 }
-const catLabel = (id) => CATEGORIES.find(c => c.id === id)?.label || id || '-'
+const catLabel = (id) => getCatLabel(id)
 
 const RP_FORMAT = '"Rp"#,##0;[Red]"-Rp"#,##0;"Rp"0'
 

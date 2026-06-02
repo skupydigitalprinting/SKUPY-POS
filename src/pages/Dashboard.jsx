@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
-import { CATEGORIES } from '../data/dummyData'
+import { getCatLabel } from '../hooks/useCategories'
 import Logo from '../components/Logo'
 
 const COLORS = ['#8b5cf6', '#10d98a', '#f59e0b', '#3b82f6', '#ff4d6a', '#a78bfa']
@@ -197,7 +197,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     }).sort((a, b) => b.totalOmzet - a.totalOmzet)
   }, [admins, transactions, debts])
   const recentTrx = transactions.slice(0, 6)
-  const catLabel = (id) => CATEGORIES.find(c => c.id === id)?.label || id
+  const catLabel = (id) => getCatLabel(id)
 
   const pieData = stats.categoryData.map((d) => ({ ...d, name: catLabel(d.name) }))
 
