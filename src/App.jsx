@@ -152,29 +152,32 @@ function AppShell() {
   // (Dashboard digated untuk owner saja).
   const store = useStore()
   const toast = useToast()
-  const isOwner = store.currentUser?.role === 'owner'
-  const [activePage, setActivePageRaw] = useState(isOwner ? 'dashboard' : 'kasir')
+  const role = store.currentUser?.role
+  const isOwner = role === 'owner'
+  // Owner & Staff Admin boleh melihat dashboard; Staff Kasir tidak.
+  const canSeeDashboard = role === 'owner' || role === 'admin'
+  const [activePage, setActivePageRaw] = useState(canSeeDashboard ? 'dashboard' : 'kasir')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  // Wrap setActivePage: kalau non-owner mencoba membuka 'dashboard',
+  // Wrap setActivePage: kalau Staff Kasir mencoba membuka 'dashboard',
   // tampilkan toast dan redirect ke 'kasir'. Tidak ada cara akses tersembunyi.
   const setActivePage = (next) => {
-    if (next === 'dashboard' && !isOwner) {
-      toast.warning('Dashboard hanya dapat diakses oleh Admin Utama')
+    if (next === 'dashboard' && !canSeeDashboard) {
+      toast.warning('Dashboard hanya dapat diakses oleh Owner & Staff Admin')
       setActivePageRaw('kasir')
       return
     }
     setActivePageRaw(next)
   }
 
-  // Saat role berubah (mis. user logout lalu login lagi sebagai admin biasa),
+  // Saat role berubah (mis. user logout lalu login lagi sebagai Staff Kasir),
   // pastikan tidak nyangkut di Dashboard.
   useEffect(() => {
-    if (!isOwner && activePage === 'dashboard') {
+    if (!canSeeDashboard && activePage === 'dashboard') {
       setActivePageRaw('kasir')
     }
-  }, [isOwner, activePage])
+  }, [canSeeDashboard, activePage])
 
   if (store.loading) return <LoadingSplash />
   if (store.error) return <ErrorScreen error={store.error} onRetry={store.refreshAll} />
@@ -202,6 +205,7 @@ function AppShell() {
     dashboard: <Dashboard
       stats={store.stats}
       transactions={store.transactions}
+      products={store.products}
       debts={store.debts}
       admins={store.admins}
       storeInfo={store.storeInfo}

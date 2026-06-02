@@ -5,6 +5,7 @@ import {
   Users, Wallet, LogOut,
 } from 'lucide-react'
 import Logo from './Logo'
+import { canViewDashboard, roleLabel } from '../utils/helpers'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, hint: 'Statistik & ringkasan' },
@@ -26,6 +27,7 @@ export default function Sidebar({
   }
 
   const isOwner = currentUser?.role === 'owner'
+  const showDashboard = canViewDashboard(currentUser?.role)
 
   const content = (
     <>
@@ -64,7 +66,7 @@ export default function Sidebar({
           style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
           Menu Utama
         </div>
-        {NAV.filter(({ id }) => isOwner || id !== 'dashboard').map(({ id, label, icon: Icon, hint }) => {
+        {NAV.filter(({ id }) => showDashboard || id !== 'dashboard').map(({ id, label, icon: Icon, hint }) => {
           const active = activePage === id
           return (
             <button
@@ -115,7 +117,7 @@ export default function Sidebar({
                 {isOwner && <Crown size={10} style={{ color: '#f59e0b' }} />}
               </div>
               <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
-                @{currentUser.username}
+                @{currentUser.username} · {roleLabel(currentUser.role)}
               </div>
             </div>
           </div>

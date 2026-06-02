@@ -7,6 +7,7 @@ import {
 import Modal from './Modal'
 import { Input, Button } from './ui'
 import Logo from './Logo'
+import { ROLE_OPTIONS, roleLabel } from '../utils/helpers'
 
 const TABS = [
   { id: 'toko', label: 'Toko', icon: Store },
@@ -374,7 +375,7 @@ export default function Settings({
                           )}
                         </div>
                         <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          @{a.username} · {a.role}
+                          @{a.username} · {roleLabel(a.role)}
                         </div>
                       </div>
                       {!isMe && (
@@ -427,9 +428,13 @@ export default function Settings({
                         color: 'var(--text-primary)',
                       }}
                     >
-                      <option value="staff">Staff Kasir</option>
-                      <option value="owner">Owner</option>
+                      {ROLE_OPTIONS.map(r => (
+                        <option key={r.id} value={r.id}>{r.label}</option>
+                      ))}
                     </select>
+                    <p className="text-[11px] mt-1.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+                      Owner: akses penuh + laba-rugi · Staff Admin: lihat dashboard · Staff Kasir: hanya kasir
+                    </p>
                   </div>
                 </div>
                 <Button variant="primary" className="w-full" onClick={handleAddAdmin} disabled={addingAdmin}>

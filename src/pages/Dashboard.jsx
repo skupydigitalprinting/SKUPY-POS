@@ -6,8 +6,9 @@ import {
 import {
   TrendingUp, ShoppingBag, Users, Clock, Receipt,
   ArrowUpRight, Star, Zap, ArrowRight, Activity,
+  Scale, Wallet, TrendingDown, PackageOpen,
 } from 'lucide-react'
-import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP } from '../utils/helpers'
+import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { CATEGORIES } from '../data/dummyData'
 import Logo from '../components/Logo'
@@ -100,7 +101,40 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, debts = [], admins = [], setActivePage, storeInfo, currentUser }) {
+export default function Dashboard({ stats, transactions, products = [], debts = [], admins = [], setActivePage, storeInfo, currentUser }) {
+  const isOwner = currentUser?.role === 'owner'
+
+  // ─── Owner-only Laba-Rugi: rentang tanggal terpisah ───
+  // Laba = total penjualan (transaksi lunas) − modal barang (qty × modal produk).
+  const [labaFrom, setLabaFrom] = useState('')
+  const [labaTo, setLabaTo] = useState('')
+
+  const modalById = useMemo(() => {
+    const m = {}
+    ;(products || []).forEach(p => { m[p.id] = Number(p.modal) || 0 })
+    return m
+  }, [products])
+
+  const labaRugi = useMemo(() => {
+    let list = (transactions || []).filter(t => t.status === 'lunas')
+    if (labaFrom) {
+      const f = new Date(labaFrom + 'T00:00:00').getTime()
+      list = list.filter(t => new Date(t.date).getTime() >= f)
+    }
+    if (labaTo) {
+      const tt = new Date(labaTo + 'T23:59:59').getTime()
+      list = list.filter(t => new Date(t.date).getTime() <= tt)
+    }
+    let revenue = 0, modal = 0
+    list.forEach(t => {
+      revenue += Number(t.total) || 0
+      ;(t.items || []).forEach(i => {
+        modal += (Number(i.qty) || 0) * (modalById[i.productId] || 0)
+      })
+    })
+    return { revenue, modal, profit: revenue - modal, count: list.length }
+  }, [transactions, modalById, labaFrom, labaTo])
+
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
   // - <adminId>  → hanya transaksi cashier_id == adminId
@@ -245,7 +279,7 @@ export default function Dashboard({ stats, transactions, debts = [], admins = []
               <option value="all">Semua Admin</option>
               {admins.map(a => (
                 <option key={a.id} value={a.id}>
-                  {(a.name || a.username || '—')} ({a.role || 'cashier'})
+                  {(a.name || a.username || '—')} ({roleLabel(a.role)})
                 </option>
               ))}
             </select>
@@ -376,6 +410,130 @@ export default function Dashboard({ stats, transactions, debts = [], admins = []
           />
         </div>
 
+        {/* Laba-Rugi — OWNER ONLY (penjualan − modal barang, rentang tanggal sendiri) */}
+        {isOwner && (
+          <div className="rounded-2xl p-5 mb-5 animate-slideUp relative overflow-hidden"
+            style={{
+              background: 'linear-gradient(135deg, rgba(16,217,138,0.06), rgba(139,92,246,0.05))',
+              border: '1px solid var(--border-strong)',
+            }}>
+            <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full pointer-events-none"
+              style={{ background: 'radial-gradient(circle, rgba(16,217,138,0.18), transparent 70%)', filter: 'blur(30px)' }} />
+
+            <div className="relative flex items-center justify-between flex-wrap gap-3 mb-4">
+              <div className="flex items-center gap-2">
+                <Scale size={15} style={{ color: '#10d98a' }} />
+                <h2 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                  Laba / Rugi
+                </h2>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
+                  style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontFamily: 'Syne' }}>
+                  Owner
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="date"
+                  value={labaFrom}
+                  onChange={(e) => setLabaFrom(e.target.value)}
+                  className="px-3 py-2 rounded-xl text-xs"
+                  style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }}
+                  title="Dari tanggal"
+                />
+                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                <input
+                  type="date"
+                  value={labaTo}
+                  onChange={(e) => setLabaTo(e.target.value)}
+                  className="px-3 py-2 rounded-xl text-xs"
+                  style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }}
+                  title="Sampai tanggal"
+                />
+                {(labaFrom || labaTo) && (
+                  <button
+                    onClick={() => { setLabaFrom(''); setLabaTo('') }}
+                    className="px-3 py-2 rounded-xl text-xs font-semibold"
+                    style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', color: 'var(--accent-light)', fontFamily: 'Syne' }}
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Penjualan */}
+              <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)' }}>
+                    <Wallet size={15} style={{ color: '#a78bfa' }} />
+                  </div>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Penjualan</span>
+                </div>
+                <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                  {formatRupiah(labaRugi.revenue)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {labaRugi.count} transaksi lunas
+                </div>
+              </div>
+
+              {/* Modal */}
+              <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                    <PackageOpen size={15} style={{ color: '#f59e0b' }} />
+                  </div>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Modal Barang</span>
+                </div>
+                <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: '#f59e0b' }}>
+                  {formatRupiah(labaRugi.modal)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Harga modal terjual
+                </div>
+              </div>
+
+              {/* Laba / Rugi */}
+              <div className="rounded-xl p-4"
+                style={{
+                  background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
+                  border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
+                }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(255,77,106,0.15)',
+                      border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(255,77,106,0.4)'}`,
+                    }}>
+                    {labaRugi.profit >= 0
+                      ? <TrendingUp size={15} style={{ color: '#10d98a' }} />
+                      : <TrendingDown size={15} style={{ color: '#ff4d6a' }} />}
+                  </div>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                    {labaRugi.profit >= 0 ? 'Laba Bersih' : 'Rugi'}
+                  </span>
+                </div>
+                <div className="text-lg sm:text-xl font-bold"
+                  style={{ fontFamily: 'Syne', color: labaRugi.profit >= 0 ? '#10d98a' : '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.profit)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {labaRugi.revenue > 0 ? `Margin ${Math.round((labaRugi.profit / labaRugi.revenue) * 100)}%` : 'Belum ada penjualan'}
+                </div>
+              </div>
+            </div>
+
+            <p className="relative text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>
+              {(labaFrom || labaTo)
+                ? `Periode: ${labaFrom || '…'} s/d ${labaTo || '…'}`
+                : 'Periode: semua waktu (atur tanggal untuk memfilter)'}
+            </p>
+          </div>
+        )}
+
         {/* Performa per Admin — owner view */}
         {adminPerformance.length > 0 && (
           <div className="rounded-2xl p-5 mb-5 animate-slideUp"
@@ -441,7 +599,7 @@ export default function Dashboard({ stats, transactions, debts = [], admins = []
                           </div>
                           <div className="min-w-0">
                             <div className="font-semibold leading-tight truncate" style={{ fontFamily: 'Syne' }}>{a.name}</div>
-                            <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{a.role}</div>
+                            <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{roleLabel(a.role)}</div>
                           </div>
                         </div>
                       </td>

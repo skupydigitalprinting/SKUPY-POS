@@ -2,6 +2,7 @@ import React from 'react'
 import {
   LayoutDashboard, ShoppingCart, Users, Wallet, MoreHorizontal,
 } from 'lucide-react'
+import { canViewDashboard } from '../utils/helpers'
 
 const ITEMS = [
   { id: 'dashboard', label: 'Home', icon: LayoutDashboard },
@@ -15,8 +16,8 @@ const ITEMS = [
  * Visible on `< md` viewport only.
  */
 export default function BottomNav({ activePage, onChange, onMore, currentUser }) {
-  const isOwner = currentUser?.role === 'owner'
-  const items = ITEMS.filter(it => isOwner || it.id !== 'dashboard')
+  const showDashboard = canViewDashboard(currentUser?.role)
+  const items = ITEMS.filter(it => showDashboard || it.id !== 'dashboard')
   return (
     <nav
       className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around"

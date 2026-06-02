@@ -114,6 +114,34 @@ export const STATUS_MAP = {
   lunas: { label: 'Lunas', color: 'accent', hex: '#a78bfa' },
 }
 
+// ---------- ROLE (Owner / Staff Admin / Staff Kasir) ----------
+
+// Daftar role yang valid di aplikasi. Disimpan di DB sebagai string pendek.
+//   owner → akses penuh (dashboard + laba-rugi + pengaturan)
+//   admin → Staff Admin (lihat seluruh dashboard, tanpa laba-rugi & pengaturan)
+//   staff → Staff Kasir (tanpa dashboard)
+export const ROLE_OPTIONS = [
+  { id: 'owner', label: 'Owner' },
+  { id: 'admin', label: 'Staff Admin' },
+  { id: 'staff', label: 'Staff Kasir' },
+]
+
+export const ROLE_LABELS = {
+  owner: 'Owner',
+  admin: 'Staff Admin',
+  staff: 'Staff Kasir',
+  cashier: 'Staff Kasir', // kompatibilitas data lama
+}
+
+export function roleLabel(role) {
+  return ROLE_LABELS[role] || 'Staff Kasir'
+}
+
+// Role yang boleh membuka halaman Dashboard.
+export function canViewDashboard(role) {
+  return role === 'owner' || role === 'admin'
+}
+
 // ---------- UNIT (PCS / Meter / Yard) ----------
 
 export const UNIT_OPTIONS = [
