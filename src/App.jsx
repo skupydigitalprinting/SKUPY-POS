@@ -252,6 +252,7 @@ function AppShell() {
       transactions={scopedTransactions}
       stats={store.stats}
       payDebt={store.payDebt}
+      payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}
     />,

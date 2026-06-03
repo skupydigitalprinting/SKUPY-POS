@@ -901,6 +901,7 @@ export function useStore() {
     paymentAmount,
     paymentMethod = 'cash',
     notes = '',
+    skipRefresh = false,   // FIFO loop refresh sekali di akhir, bukan per-invoice
   }) => wrap(async () => {
     // Uang = integer rupiah. Bulatkan untuk hindari floating drift.
     const amount = Math.round(Number(paymentAmount) || 0)
@@ -1014,7 +1015,9 @@ export function useStore() {
     }
 
     // 13. Refresh state lokal: Order + Piutang + Customers
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+    if (!skipRefresh) {
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+    }
 
     return {
       ok: true,
@@ -1093,6 +1096,78 @@ export function useStore() {
       notes,
     })
   }, [processDebtPayment])
+
+  // ═══════════════════════════════════════════════════════════════════
+  // payCustomerDebtsFIFO — pembayaran GABUNGAN untuk semua hutang 1 customer.
+  // Alokasi memakai FIFO: invoice paling lama (created_at ASC) dilunasi dulu.
+  //   • Uang dialokasikan per invoice (Math.min(sisaUang, sisaInvoice)).
+  //   • Tiap invoice yang kebagian → 1 INSERT debt_payments (lewat
+  //     processDebtPayment, jadi debts + transactions + customers ikut update).
+  //   • Refresh state lokal HANYA sekali di akhir (skipRefresh per-invoice).
+  //   • Clamp: kalau nominal > total sisa hutang customer, dipotong ke total.
+  // ═══════════════════════════════════════════════════════════════════
+  const payCustomerDebtsFIFO = useCallback(async ({
+    customerId,
+    amount,
+    paymentMethod = 'cash',
+    notes = '',
+  }) => wrap(async () => {
+    let pay = Math.round(Number(amount) || 0)
+    if (pay <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
+    if (!customerId) return { ok: false, error: 'Customer tidak valid' }
+
+    // Hutang aktif customer (sisa > 0), urut FIFO created_at ASC.
+    const list = debts
+      .filter(d => d.customerId === customerId
+        && Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0)) > 0)
+      .slice()
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+
+    if (!list.length) return { ok: false, error: 'Tidak ada hutang aktif untuk customer ini' }
+
+    const totalRemaining = list.reduce(
+      (s, d) => s + Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0)), 0)
+    if (pay > totalRemaining) pay = totalRemaining   // clamp
+
+    let left = pay
+    const results = []
+    for (const d of list) {
+      if (left <= 0) break
+      const rem = Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0))
+      if (rem <= 0) continue
+      const alloc = Math.min(left, rem)
+
+      // Resolve invoice_no (fallback ke transaction_id)
+      let inv = d.invoiceNo
+      if (!inv && d.transactionId) {
+        const { data: trx } = await supabase
+          .from('transactions').select('invoice_no').eq('id', d.transactionId).maybeSingle()
+        inv = trx?.invoice_no || null
+      }
+      if (!inv) {
+        results.push({ debtId: d.id, alloc, ok: false, error: 'invoice_no kosong' })
+        continue
+      }
+
+      const res = await processDebtPayment({
+        invoice_no: inv,
+        paymentAmount: alloc,
+        paymentMethod,
+        notes: notes || 'Pembayaran gabungan (FIFO)',
+        skipRefresh: true,
+      })
+      results.push({ debtId: d.id, invoiceNo: inv, alloc, ok: res.ok, error: res.error })
+      if (res.ok) left -= alloc
+    }
+
+    // Refresh sekali di akhir → Order, Piutang, Customers, Dashboard sinkron.
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+
+    const paidTotal = pay - left
+    const anyOk = results.some(r => r.ok)
+    if (!anyOk) return { ok: false, error: results[0]?.error || 'Pembayaran gagal' }
+    return { ok: true, paid: paidTotal, results }
+  }), [debts, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, wrap])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
     const debt = debts.find(d => d.id === id)
@@ -1216,6 +1291,6 @@ export function useStore() {
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, deleteAdmin, changePassword,
     addCustomer, updateCustomer, deleteCustomer,
-    payDebt, deleteDebt, getDebtPayments,
+    payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
   }
 }

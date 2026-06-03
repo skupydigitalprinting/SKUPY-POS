@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
-  CheckCircle2, History, Loader2, TrendingDown,
+  CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
+  Receipt, Layers,
 } from 'lucide-react'
-import { Input, Button, Badge, EmptyState } from '../components/ui'
+import { Button, Badge, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import WhatsAppButton from '../components/WhatsAppButton'
 import WhatsAppReminder from '../components/WhatsAppReminder'
@@ -17,77 +18,125 @@ const STATUS_OPTIONS = [
   { id: 'lunas', label: 'Lunas' },
 ]
 
+const remOf = (d) => Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid))
+
+// Alokasi pembayaran FIFO: invoice paling lama (urut ASC) dilunasi dulu.
+// Mengembalikan tiap invoice + { before, pay, after }.
+function allocateFIFO(invoicesAsc, amount) {
+  let left = Math.max(0, toMoney(amount))
+  return invoicesAsc.map((inv) => {
+    const before = remOf(inv)
+    const pay = Math.min(left, before)
+    left -= pay
+    const after = before - pay
+    return { inv, before, pay, after }
+  })
+}
+
 export default function Piutang({
   debts, customers, transactions, stats,
-  payDebt, deleteDebt, getDebtPayments,
+  payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
 }) {
   const toast = useToast()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('aktif')
-  const [payTarget, setPayTarget] = useState(null)
+  const [detailTarget, setDetailTarget] = useState(null)  // group
+  const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('cash')
   const [paying, setPaying] = useState(false)
-  const [delTarget, setDelTarget] = useState(null)
-  const [historyTarget, setHistoryTarget] = useState(null)
+  const [delTarget, setDelTarget] = useState(null)        // single debt
+  const [historyTarget, setHistoryTarget] = useState(null) // group
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
-  const enriched = useMemo(() => {
-    // Setiap card menampilkan SISA yang DIDERIVASI dari totalDebt - paid,
-    // bukan `debt.remaining` mentah. Ini mencegah card menampilkan angka
-    // salah kalau ada drift di DB antara remaining vs (totalDebt - paid).
-    return debts.map(d => {
-      const totalDebt = +d.totalDebt || 0
-      const paid = +d.paid || 0
-      const derivedRemaining = Math.max(0, totalDebt - paid)
-      return {
-        ...d,
-        // Override `remaining` dengan nilai yang konsisten secara matematis
-        remaining: derivedRemaining,
-        customer: customers.find(c => c.id === d.customerId) || { name: 'Customer dihapus', phone: '', whatsapp: '' },
-      }
-    })
-  }, [debts, customers])
+  // ── Enrich tiap hutang dengan customer + sisa yang diderivasi ──
+  const enriched = useMemo(() => debts.map(d => ({
+    ...d,
+    remaining: remOf(d),
+    customer: customers.find(c => c.id === d.customerId)
+      || { name: 'Customer dihapus', phone: '', whatsapp: '' },
+  })), [debts, customers])
 
-  const filtered = useMemo(() => {
+  // ── Grouping per customer (fallback ke nama kalau customerId kosong) ──
+  const groups = useMemo(() => {
+    const map = new Map()
+    enriched.forEach(d => {
+      const key = d.customerId || `name:${(d.customer.name || '').toLowerCase()}`
+      if (!map.has(key)) {
+        map.set(key, { key, customerId: d.customerId, customer: d.customer, invoices: [] })
+      }
+      map.get(key).invoices.push(d)
+    })
+    return [...map.values()].map(g => {
+      const invoices = g.invoices.slice()
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      const totalDebt = invoices.reduce((s, d) => s + toMoney(d.totalDebt), 0)
+      const totalPaid = invoices.reduce((s, d) => s + toMoney(d.paid), 0)
+      const totalRemaining = invoices.reduce((s, d) => s + remOf(d), 0)
+      const activeInvoices = invoices.filter(d => remOf(d) > 0)
+      const dueList = activeInvoices.map(d => d.dueDate).filter(Boolean).sort()
+      const nearestDue = dueList[0] || null
+      const status = totalRemaining > 0 ? 'aktif' : 'lunas'
+      const overdue = nearestDue && new Date(nearestDue) < new Date() && totalRemaining > 0
+      return {
+        ...g, invoices, activeInvoices,
+        count: invoices.length, activeCount: activeInvoices.length,
+        totalDebt, totalPaid, totalRemaining, nearestDue, status, overdue,
+      }
+    }).sort((a, b) => b.totalRemaining - a.totalRemaining || b.totalDebt - a.totalDebt)
+  }, [enriched])
+
+  const filteredGroups = useMemo(() => {
     const q = search.toLowerCase()
-    return enriched.filter(d => {
-      const matchQ = !q ||
-        (d.customer.name || '').toLowerCase().includes(q) ||
-        (d.invoiceNo || '').toLowerCase().includes(q)
-      const matchFilter = filter === 'all' ? true : d.status === filter
+    return groups.filter(g => {
+      const matchQ = !q
+        || (g.customer.name || '').toLowerCase().includes(q)
+        || g.invoices.some(d => (d.invoiceNo || '').toLowerCase().includes(q))
+      const matchFilter = filter === 'all' ? true : g.status === filter
       return matchQ && matchFilter
     })
-  }, [enriched, search, filter])
+  }, [groups, search, filter])
 
-  const handleOpenPay = (d) => {
-    setPayTarget(d)
-    // Integer rupiah — hindari float string ("…0000004") saat prefill full.
-    const derived = Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid))
-    setPayAmount(String(derived))
+  // Keep detail/pay modal data fresh after a payment (groups recomputes).
+  const liveGroup = (g) => groups.find(x => x.key === g?.key) || g
+
+  // ── Bayar Gabungan ──
+  const openPay = (g) => {
+    setPayTarget(g)
+    setPayAmount(String(g.totalRemaining))  // prefill full (integer)
     setPayMethod('cash')
   }
 
-  const handlePay = async () => {
-    if (paying) return
-    // Parse → integer rupiah (UI pakai formatted string)
+  const handlePayCombined = async () => {
+    if (paying || !payTarget) return
+    const g = liveGroup(payTarget)
+    if (!payAmount || String(payAmount).trim() === '') return toast.error('Masukkan nominal pembayaran')
     let amount = parseCurrency(payAmount)
-    if (!amount || amount <= 0) return toast.error('Nominal harus > 0')
-    // Validasi terhadap sisa yang DIDERIVASI (totalDebt - paid), bukan dari
-    // debt.remaining mentah yang bisa stale.
-    const derivedRemaining = Math.max(0, toMoney(payTarget.totalDebt) - toMoney(payTarget.paid))
-    // Clamp ke sisa hutang — jangan simpan lebih besar dari sisa.
-    if (amount > derivedRemaining) amount = derivedRemaining
-    if (amount <= 0) return toast.error('Nominal harus > 0')
+    if (amount <= 0) return toast.error('Nominal pembayaran harus lebih dari 0')
+    if (amount > g.totalRemaining) amount = g.totalRemaining   // clamp
+    if (amount <= 0) return toast.error('Tidak ada sisa hutang untuk dibayar')
+
     setPaying(true)
     try {
-      const res = await payDebt(payTarget.id, amount, payMethod, '')
+      let res
+      if (g.customerId && payCustomerDebtsFIFO) {
+        res = await payCustomerDebtsFIFO({ customerId: g.customerId, amount, paymentMethod: payMethod })
+      } else {
+        // Fallback (customerId kosong): loop payDebt sesuai alokasi FIFO
+        const alloc = allocateFIFO(g.activeInvoices, amount).filter(a => a.pay > 0)
+        let okAny = false
+        for (const a of alloc) {
+          const r = await payDebt(a.inv.id, a.pay, payMethod, 'Pembayaran gabungan (FIFO)')
+          okAny = okAny || r.ok
+        }
+        res = { ok: okAny }
+      }
       if (res.ok) {
-        toast.success('Pembayaran tercatat')
+        toast.success('Pembayaran gabungan tercatat')
         setPayTarget(null); setPayAmount('')
       } else {
-        toast.error(res.error || 'Gagal mencatat pembayaran')
+        toast.error(res.error || 'Gagal memproses pembayaran')
       }
     } finally { setPaying(false) }
   }
@@ -99,11 +148,16 @@ export default function Piutang({
     else toast.error(res.error || 'Gagal')
   }
 
-  const openHistory = async (d) => {
-    setHistoryTarget(d)
+  const openHistory = async (g) => {
+    setHistoryTarget(g)
     setLoadingHistory(true)
-    const res = await getDebtPayments(d.id)
-    setHistory(res.data || [])
+    const all = []
+    for (const inv of g.invoices) {
+      const res = await getDebtPayments(inv.id)
+      ;(res.data || []).forEach(p => all.push({ ...p, _invoiceNo: inv.invoiceNo }))
+    }
+    all.sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime())
+    setHistory(all)
     setLoadingHistory(false)
   }
 
@@ -115,7 +169,7 @@ export default function Piutang({
           <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Piutang Pelanggan</div>
           <h2 className="text-xl sm:text-2xl font-bold mt-0.5"
             style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-            {debts.length} catatan hutang
+            {groups.length} customer · {debts.length} nota hutang
           </h2>
         </div>
 
@@ -207,150 +261,134 @@ export default function Piutang({
           </div>
         </div>
 
-        {/* List */}
-        {filtered.length === 0 ? (
+        {/* Grouped customer list */}
+        {filteredGroups.length === 0 ? (
           <EmptyState icon={Wallet} title="Tidak ada piutang"
             description="Tidak ada data yang sesuai dengan filter saat ini" />
         ) : (
           <div className="space-y-3">
-            {filtered.map((d, idx) => {
-              const overdue = d.dueDate && new Date(d.dueDate) < new Date() && d.status === 'aktif'
-              const phoneForWA = d.customer.whatsapp || d.customer.phone
+            {filteredGroups.map((g, idx) => {
+              const phoneForWA = g.customer.whatsapp || g.customer.phone
               return (
-                <div key={d.id}
+                <div key={g.key}
                   className="rounded-2xl p-4 animate-fadeIn"
                   style={{
                     background: 'var(--bg-card)',
-                    border: `1px solid ${overdue ? 'rgba(255,77,106,0.35)' : 'var(--border)'}`,
+                    border: `1px solid ${g.overdue ? 'rgba(255,77,106,0.35)' : 'var(--border)'}`,
                     animationDelay: `${idx * 30}ms`,
                   }}>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold"
-                      style={{
-                        background: d.status === 'lunas'
-                          ? 'linear-gradient(135deg, #10d98a, #059669)'
-                          : overdue
-                          ? 'linear-gradient(135deg, #ff4d6a, #c2185b)'
-                          : 'linear-gradient(135deg, #f59e0b, #ea580c)',
-                        color: '#fff', fontFamily: 'Syne',
-                      }}>
-                      {d.customer.name[0]?.toUpperCase() || '?'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
-                        <p className="text-sm font-bold truncate"
-                          style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
-                          {d.customer.name}
-                        </p>
-                        {d.status === 'lunas' ? <Badge color="green">LUNAS</Badge> : <Badge color="amber">AKTIF</Badge>}
-                        {overdue && <Badge color="red">JATUH TEMPO</Badge>}
+                    {/* Avatar + name */}
+                    <button onClick={() => setDetailTarget(g)}
+                      className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                      <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold"
+                        style={{
+                          background: g.status === 'lunas'
+                            ? 'linear-gradient(135deg, #10d98a, #059669)'
+                            : g.overdue
+                            ? 'linear-gradient(135deg, #ff4d6a, #c2185b)'
+                            : 'linear-gradient(135deg, #f59e0b, #ea580c)',
+                          color: '#fff', fontFamily: 'Syne',
+                        }}>
+                        {g.customer.name[0]?.toUpperCase() || '?'}
                       </div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        {d.invoiceNo || '—'} · {timeAgo(d.createdAt)}
-                        {d.dueDate && <> · <CalendarDays size={9} className="inline" /> {formatDate(d.dueDate)}</>}
-                      </p>
-                    </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                          <p className="text-sm font-bold truncate"
+                            style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+                            {g.customer.name}
+                          </p>
+                          {g.status === 'lunas'
+                            ? <Badge color="green">LUNAS</Badge>
+                            : <Badge color="amber">AKTIF</Badge>}
+                          {g.overdue && <Badge color="red">JATUH TEMPO</Badge>}
+                        </div>
+                        <p className="text-xs flex items-center gap-1 flex-wrap" style={{ color: 'var(--text-muted)' }}>
+                          <Receipt size={10} /> {g.count} nota
+                          {g.activeCount > 0 && <> · {g.activeCount} aktif</>}
+                          {g.nearestDue && <> · <CalendarDays size={9} className="inline" /> Tempo {formatDate(g.nearestDue)}</>}
+                        </p>
+                      </div>
+                      <ChevronRight size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} className="hidden sm:block" />
+                    </button>
+
+                    {/* Totals */}
                     <div className="grid grid-cols-3 gap-3 sm:gap-4 flex-shrink-0 items-center">
                       <div className="text-right">
                         <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Total</p>
                         <p className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                          {formatRupiah(d.totalDebt)}
+                          {formatRupiah(g.totalDebt)}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Dibayar</p>
                         <p className="text-xs font-bold" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                          {formatRupiah(d.paid)}
+                          {formatRupiah(g.totalPaid)}
                         </p>
                       </div>
-                      {/* SISA HUTANG — red emphasis block (paling mencolok) */}
                       <div className="text-right rounded-xl px-3 py-2"
                         style={{
-                          background: d.remaining > 0
-                            ? 'rgba(239,68,68,0.10)'
-                            : 'rgba(16,217,138,0.10)',
-                          border: `1px solid ${d.remaining > 0 ? 'rgba(239,68,68,0.35)' : 'rgba(16,217,138,0.35)'}`,
-                          boxShadow: d.remaining > 0
-                            ? '0 0 12px rgba(239,68,68,0.18)'
-                            : '0 0 12px rgba(16,217,138,0.18)',
+                          background: g.totalRemaining > 0 ? 'rgba(239,68,68,0.10)' : 'rgba(16,217,138,0.10)',
+                          border: `1px solid ${g.totalRemaining > 0 ? 'rgba(239,68,68,0.35)' : 'rgba(16,217,138,0.35)'}`,
                         }}>
                         <p className="text-[10px] uppercase tracking-widest font-bold"
-                          style={{
-                            color: d.remaining > 0 ? '#ef4444' : '#10d98a',
-                            fontFamily: 'Syne',
-                            letterSpacing: '0.12em',
-                          }}>
-                          {d.remaining > 0 ? 'Sisa Hutang' : 'Lunas'}
+                          style={{ color: g.totalRemaining > 0 ? '#ef4444' : '#10d98a', fontFamily: 'Syne', letterSpacing: '0.12em' }}>
+                          {g.totalRemaining > 0 ? 'Sisa Hutang' : 'Lunas'}
                         </p>
                         <p className="text-base font-extrabold"
                           style={{
-                            color: d.remaining > 0 ? '#ef4444' : '#10d98a',
+                            color: g.totalRemaining > 0 ? '#ef4444' : '#10d98a',
                             fontFamily: '"Space Grotesk", "Syne", sans-serif',
-                            letterSpacing: '-0.01em',
                             fontVariantNumeric: 'tabular-nums',
-                            textShadow: d.remaining > 0
-                              ? '0 0 12px rgba(239,68,68,0.4)'
-                              : '0 0 12px rgba(16,217,138,0.35)',
                           }}>
-                          {formatRupiah(d.remaining)}
+                          {formatRupiah(g.totalRemaining)}
                         </p>
-                        {d.remaining > 0 && (
-                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-bold"
-                            style={{
-                              background: 'rgba(239,68,68,0.18)',
-                              color: '#ef4444',
-                              fontFamily: 'Syne',
-                              letterSpacing: '0.06em',
-                            }}>
-                            BELUM LUNAS
-                          </span>
-                        )}
                       </div>
                     </div>
                   </div>
 
+                  {/* Action buttons */}
                   <div className="flex gap-2 mt-3 flex-wrap">
-                    {d.status === 'aktif' && (
-                      <button onClick={() => handleOpenPay(d)}
+                    <button onClick={() => setDetailTarget(g)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
+                      style={{
+                        background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)',
+                        border: '1px solid rgba(139,92,246,0.2)', fontFamily: 'Syne',
+                      }}>
+                      <Layers size={11} /> Lihat Rincian
+                    </button>
+                    {g.totalRemaining > 0 && (
+                      <button onClick={() => openPay(g)}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
                         style={{
                           background: 'linear-gradient(135deg, #10d98a, #059669)',
-                          color: '#fff', boxShadow: '0 2px 12px rgba(16,217,138,0.3)',
-                          fontFamily: 'Syne',
+                          color: '#fff', boxShadow: '0 2px 12px rgba(16,217,138,0.3)', fontFamily: 'Syne',
                         }}>
-                        <Wallet size={11} /> Bayar Cicilan
+                        <Wallet size={11} /> Bayar Gabungan
                       </button>
                     )}
-                    {d.status === 'aktif' && (
+                    {g.totalRemaining > 0 && (
                       <WhatsAppReminder
-                        customer={d.customer}
-                        remaining={d.remaining}
-                        invoiceNo={d.invoiceNo}
-                        dueDate={d.dueDate ? formatDate(d.dueDate) : null}
+                        customer={g.customer}
+                        remaining={g.totalRemaining}
+                        invoiceNo={`${g.activeCount} nota`}
+                        dueDate={g.nearestDue ? formatDate(g.nearestDue) : null}
                         size="sm"
                         label="Kirim Reminder"
                       />
                     )}
                     <WhatsAppButton
                       phone={phoneForWA}
-                      text={TEMPLATES.chat({ name: d.customer.name })}
+                      text={TEMPLATES.chat({ name: g.customer.name })}
                       size="sm" variant="icon" tooltip="Chat Customer"
                     />
-                    <button onClick={() => openHistory(d)}
+                    <button onClick={() => openHistory(g)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
                       style={{
                         background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)',
                         border: '1px solid rgba(139,92,246,0.2)', fontFamily: 'Syne',
                       }}>
                       <History size={11} /> Riwayat
-                    </button>
-                    <button onClick={() => setDelTarget(d)}
-                      className="ml-auto w-7 h-7 rounded-xl flex items-center justify-center btn-press"
-                      style={{
-                        background: 'rgba(255,77,106,0.08)', color: 'var(--red)',
-                        border: '1px solid rgba(255,77,106,0.15)',
-                      }} title="Hapus">
-                      <Trash2 size={11} />
                     </button>
                   </div>
                 </div>
@@ -360,232 +398,218 @@ export default function Piutang({
         )}
       </div>
 
-      {/* Pay modal — realtime simulation preview */}
-      <Modal open={!!payTarget} onClose={() => setPayTarget(null)}
-        title="Bayar Cicilan"
-        subtitle={payTarget?.invoiceNo}
-        size="sm">
-        {payTarget && (() => {
-          // ─── CANONICAL MATH ─────────────────────────────────────────
-          // Sumber kebenaran adalah totalDebt - alreadyPaid (HASIL DIDERIVASI).
-          // Kita TIDAK pakai debt.remaining mentah dari DB karena kalau
-          // ada drift (mis. trigger lama belum update), nilainya bisa salah.
-          //   totalDebt              → utang awal (tidak berubah saat dicicil)
-          //   alreadyPaid            → akumulasi pembayaran sebelumnya
-          //   currentPayment         → nominal yang sedang diketik kasir
-          //   remainingBeforePayment = totalDebt - alreadyPaid
-          //   remainingAfterPayment  = remainingBeforePayment - currentPayment
-          const totalDebt = toMoney(payTarget.totalDebt)
-          const alreadyPaid = toMoney(payTarget.paid)
-          // currentPayment dari input → integer rupiah
-          const currentPayment = parseCurrency(payAmount)
-
-          const remainingBeforePayment = Math.max(0, totalDebt - alreadyPaid)
-          const remainingAfterPayment = remainingBeforePayment - currentPayment
-
-          const exceeds = currentPayment > remainingBeforePayment
-          const willBeLunas = currentPayment > 0 && remainingAfterPayment <= 0 && !exceeds
-          const willBePartial = currentPayment > 0 && remainingAfterPayment > 0 && !exceeds
-
-          // Formatted display untuk input: "3.000.000"
-          const formattedAmt = currentPayment > 0
-            ? new Intl.NumberFormat('id-ID').format(currentPayment)
-            : ''
-
+      {/* ─── DETAIL MODAL — daftar invoice hutang customer ─── */}
+      <Modal open={!!detailTarget} onClose={() => setDetailTarget(null)}
+        title={detailTarget?.customer?.name || 'Rincian Hutang'}
+        subtitle={detailTarget ? `${detailTarget.count} nota hutang` : ''} size="lg">
+        {detailTarget && (() => {
+          const g = liveGroup(detailTarget)
           return (
             <div className="space-y-4">
-              {/* TOP CARD — keadaan hutang saat ini (DIDERIVASI dari math) */}
-              <div className="rounded-xl p-4 space-y-2"
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      {['Invoice', 'Tanggal', 'Total', 'Dibayar', 'Sisa', 'Status', ''].map((h, i) => (
+                        <th key={i}
+                          className={`px-2 py-2 font-bold uppercase tracking-wider ${i >= 2 && i <= 4 ? 'text-right' : 'text-left'}`}
+                          style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, letterSpacing: '0.06em' }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.invoices.map(d => {
+                      const rem = remOf(d)
+                      const lunas = rem <= 0
+                      return (
+                        <tr key={d.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td className="px-2 py-2.5 font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+                            {d.invoiceNo || '—'}
+                          </td>
+                          <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>
+                            {formatDate(d.createdAt)}
+                          </td>
+                          <td className="px-2 py-2.5 text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                            {formatRupiah(toMoney(d.totalDebt))}
+                          </td>
+                          <td className="px-2 py-2.5 text-right" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>
+                            {formatRupiah(toMoney(d.paid))}
+                          </td>
+                          <td className="px-2 py-2.5 text-right font-bold" style={{ color: lunas ? '#10d98a' : '#ef4444', fontVariantNumeric: 'tabular-nums' }}>
+                            {formatRupiah(rem)}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            <Badge color={lunas ? 'green' : 'amber'}>{lunas ? 'Lunas' : 'Aktif'}</Badge>
+                          </td>
+                          <td className="px-2 py-2.5 text-right">
+                            <button onClick={() => setDelTarget(d)}
+                              className="w-7 h-7 rounded-lg inline-flex items-center justify-center btn-press"
+                              style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.15)' }}
+                              title="Hapus nota">
+                              <Trash2 size={11} />
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Footer totals */}
+              <div className="rounded-xl p-4 grid grid-cols-3 gap-3"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-                <div className="flex justify-between text-sm">
-                  <span style={{ color: 'var(--text-muted)' }}>Total Hutang</span>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRupiah(totalDebt)}
-                  </span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Total Hutang</p>
+                  <p className="text-sm font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{formatRupiah(g.totalDebt)}</p>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</span>
-                  <span style={{ color: '#10d98a', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRupiah(alreadyPaid)}
-                  </span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</p>
+                  <p className="text-sm font-bold" style={{ color: '#10d98a', fontFamily: 'Syne' }}>{formatRupiah(g.totalPaid)}</p>
                 </div>
-                <div className="flex justify-between items-center pt-2"
-                  style={{ borderTop: '1px dashed var(--border)' }}>
-                  <span className="text-xs uppercase tracking-wider font-bold"
-                    style={{ color: '#ef4444', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                    Sisa Sebelum Bayar
-                  </span>
-                  <span style={{
-                    color: '#ef4444', fontWeight: 800, fontFamily: 'Syne',
-                    fontSize: 18, fontVariantNumeric: 'tabular-nums',
-                    textShadow: '0 0 16px rgba(239,68,68,0.35)',
-                  }}>
-                    {formatRupiah(remainingBeforePayment)}
-                  </span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Sisa Hutang</p>
+                  <p className="text-sm font-bold" style={{ color: g.totalRemaining > 0 ? '#ef4444' : '#10d98a', fontFamily: 'Syne' }}>{formatRupiah(g.totalRemaining)}</p>
                 </div>
               </div>
 
-              {/* INPUT — formatted thousand-separator while typing */}
+              {g.totalRemaining > 0 && (
+                <Button variant="success" className="w-full"
+                  onClick={() => { setDetailTarget(null); openPay(g) }}>
+                  <Wallet size={14} /> Bayar Gabungan
+                </Button>
+              )}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* ─── BAYAR GABUNGAN MODAL — FIFO simulation ─── */}
+      <Modal open={!!payTarget} onClose={() => !paying && setPayTarget(null)}
+        title="Bayar Hutang Customer"
+        subtitle={payTarget?.customer?.name} size="md">
+        {payTarget && (() => {
+          const g = liveGroup(payTarget)
+          const totalRemaining = g.totalRemaining
+          const currentPayment = parseCurrency(payAmount)
+          const effective = Math.min(currentPayment, totalRemaining)
+          const exceeds = currentPayment > totalRemaining
+          const isEmpty = !payAmount || String(payAmount).trim() === ''
+          const isZero = !isEmpty && currentPayment === 0
+          const alloc = allocateFIFO(g.activeInvoices, effective)
+          const totalPay = alloc.reduce((s, a) => s + a.pay, 0)
+          const remainingAfter = Math.max(0, totalRemaining - totalPay)
+          const formattedAmt = currentPayment > 0 ? new Intl.NumberFormat('id-ID').format(currentPayment) : ''
+          const canSubmit = !paying && currentPayment > 0 && !isEmpty
+
+          return (
+            <div className="space-y-4">
+              {/* Total sisa */}
+              <div className="rounded-xl p-4 flex justify-between items-center"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <span className="text-xs uppercase tracking-wider font-bold"
+                  style={{ color: '#ef4444', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
+                  Total Sisa Hutang
+                </span>
+                <span style={{ color: '#ef4444', fontWeight: 800, fontFamily: 'Syne', fontSize: 18, fontVariantNumeric: 'tabular-nums' }}>
+                  {formatRupiah(totalRemaining)}
+                </span>
+              </div>
+
+              {/* Input */}
               <div>
-                <label className="block text-xs font-semibold mb-2"
-                  style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                <label className="block text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
                   Jumlah Bayar <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold"
-                    style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
-                    Rp
-                  </span>
+                    style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Rp</span>
                   <input
-                    type="text"
-                    inputMode="numeric"
-                    autoFocus
+                    type="text" inputMode="numeric" autoFocus
                     value={formattedAmt}
-                    onChange={(e) => {
-                      const digits = e.target.value.replace(/[^\d]/g, '')
-                      setPayAmount(digits)
-                    }}
+                    onChange={(e) => setPayAmount(e.target.value.replace(/[^\d]/g, ''))}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && canSubmit) { e.preventDefault(); handlePayCombined() } }}
                     placeholder="0"
                     className="w-full pl-10 pr-3 py-3 rounded-xl text-lg font-bold"
                     style={{
                       background: 'var(--bg-card)',
-                      border: `1px solid ${exceeds ? 'rgba(239,68,68,0.5)' : 'var(--border)'}`,
-                      color: 'var(--text-primary)',
-                      fontFamily: 'Syne',
-                      fontVariantNumeric: 'tabular-nums',
-                      outline: 'none',
-                    }}
-                  />
+                      border: `1px solid ${exceeds ? 'rgba(245,158,11,0.5)' : 'var(--border)'}`,
+                      color: 'var(--text-primary)', fontFamily: 'Syne',
+                      fontVariantNumeric: 'tabular-nums', outline: 'none',
+                    }} />
                 </div>
+                {exceeds && (
+                  <p className="text-xs mt-1.5" style={{ color: '#f59e0b' }}>
+                    Nominal melebihi total sisa — otomatis dipotong ke {formatRupiah(totalRemaining)}.
+                  </p>
+                )}
+                {isZero && (
+                  <p className="text-xs mt-1.5" style={{ color: '#ef4444' }}>Nominal pembayaran harus lebih dari 0</p>
+                )}
               </div>
 
-              {/* SIMULASI PEMBAYARAN — realtime panel */}
-              <div className="rounded-2xl overflow-hidden animate-fadeIn"
-                style={{
-                  background: 'linear-gradient(180deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04))',
-                  border: '1px solid rgba(139,92,246,0.25)',
-                }}>
+              {/* FIFO simulation */}
+              <div className="rounded-2xl overflow-hidden"
+                style={{ background: 'linear-gradient(180deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04))', border: '1px solid rgba(139,92,246,0.25)' }}>
                 <div className="px-4 py-2 text-[10px] uppercase tracking-widest font-bold text-center"
-                  style={{
-                    color: 'var(--accent-light)',
-                    fontFamily: 'Syne',
-                    letterSpacing: '0.16em',
-                    borderBottom: '1px solid rgba(139,92,246,0.18)',
-                    background: 'rgba(139,92,246,0.08)',
-                  }}>
-                  Simulasi Pembayaran
+                  style={{ color: 'var(--accent-light)', fontFamily: 'Syne', letterSpacing: '0.16em', borderBottom: '1px solid rgba(139,92,246,0.18)', background: 'rgba(139,92,246,0.08)' }}>
+                  Simulasi Pembayaran FIFO (nota terlama dulu)
                 </div>
-                <div className="p-4 space-y-3">
-                  <div className="flex justify-between items-baseline">
-                    <span className="text-xs uppercase tracking-wider"
-                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                      Sisa Sebelum Bayar
-                    </span>
-                    <span className="font-bold"
-                      style={{ color: '#ef4444', fontFamily: 'Syne', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
-                      {formatRupiah(remainingBeforePayment)}
-                    </span>
+                <div className="p-3 space-y-2 max-h-60 overflow-y-auto">
+                  {alloc.map(({ inv, before, pay, after }) => {
+                    const willLunas = after <= 0
+                    const label = pay <= 0 ? 'Belum Dibayar' : willLunas ? 'Akan Lunas' : 'Cicilan'
+                    const color = pay <= 0 ? 'var(--text-muted)' : willLunas ? '#10d98a' : '#f59e0b'
+                    return (
+                      <div key={inv.id} className="rounded-xl p-2.5"
+                        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+                            {inv.invoiceNo || '—'}
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg"
+                            style={{ color, background: 'rgba(255,255,255,0.04)', border: `1px solid ${color}`, fontFamily: 'Syne' }}>
+                            {label}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-[11px]" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          <div><span style={{ color: 'var(--text-muted)' }}>Sebelum</span><br /><span style={{ color: 'var(--text-secondary)' }}>{formatRupiah(before)}</span></div>
+                          <div><span style={{ color: 'var(--text-muted)' }}>Dibayar</span><br /><span style={{ color: '#10d98a', fontWeight: 700 }}>{formatRupiah(pay)}</span></div>
+                          <div className="text-right"><span style={{ color: 'var(--text-muted)' }}>Setelah</span><br /><span style={{ color: after <= 0 ? '#10d98a' : '#ef4444', fontWeight: 700 }}>{formatRupiah(after)}</span></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="px-4 py-3 space-y-1" style={{ borderTop: '1px solid rgba(139,92,246,0.18)' }}>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-muted)' }}>Total Bayar</span>
+                    <span style={{ color: '#10d98a', fontWeight: 700, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(totalPay)}</span>
                   </div>
                   <div className="flex justify-between items-baseline">
-                    <span className="text-xs uppercase tracking-wider"
-                      style={{ color: 'var(--text-muted)', fontFamily: 'Syne', letterSpacing: '0.08em' }}>
-                      Pembayaran Saat Ini
+                    <span className="text-xs uppercase tracking-wider font-bold" style={{ color: '#f59e0b', fontFamily: 'Syne' }}>Sisa Hutang Setelah</span>
+                    <span style={{ color: remainingAfter <= 0 ? '#10d98a' : '#f59e0b', fontWeight: 800, fontFamily: 'Syne', fontSize: 18, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatRupiah(remainingAfter)}
                     </span>
-                    <span className="font-bold"
-                      style={{ color: '#10d98a', fontFamily: 'Syne', fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
-                      {formatRupiah(currentPayment)}
-                    </span>
-                  </div>
-                  {/* Sisa Setelah Pembayaran — angka TERBESAR di modal */}
-                  <div className="pt-3"
-                    style={{ borderTop: '1px dashed rgba(245,158,11,0.3)' }}>
-                    <div className="text-[10px] uppercase tracking-widest font-bold mb-1"
-                      style={{ color: '#f59e0b', fontFamily: 'Syne', letterSpacing: '0.14em' }}>
-                      Sisa Setelah Pembayaran
-                    </div>
-                    <div
-                      key={Math.max(0, remainingAfterPayment)}
-                      className="animate-scaleIn"
-                      style={{
-                        fontSize: 28,
-                        fontWeight: 800,
-                        color: remainingAfterPayment <= 0 ? '#10d98a' : (exceeds ? '#ef4444' : '#fbbf24'),
-                        fontFamily: '"Space Grotesk", "Syne", sans-serif',
-                        letterSpacing: '-0.02em',
-                        textShadow: remainingAfterPayment <= 0
-                          ? '0 0 20px rgba(16,217,138,0.45)'
-                          : (exceeds ? '0 0 20px rgba(239,68,68,0.5)' : '0 0 20px rgba(251,191,36,0.45)'),
-                        fontVariantNumeric: 'tabular-nums',
-                        transition: 'color 0.2s ease',
-                      }}>
-                      {formatRupiah(Math.max(0, remainingAfterPayment))}
-                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* VALIDATION BADGES */}
-              {exceeds && (
-                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
-                  style={{
-                    background: 'rgba(239,68,68,0.12)',
-                    border: '1px solid rgba(239,68,68,0.4)',
-                    color: '#ef4444',
-                  }}>
-                  <AlertTriangle size={14} />
-                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
-                    Nominal melebihi sisa hutang
-                  </span>
-                </div>
-              )}
-              {willBeLunas && (
-                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
-                  style={{
-                    background: 'rgba(16,217,138,0.12)',
-                    border: '1px solid rgba(16,217,138,0.4)',
-                    color: '#10d98a',
-                  }}>
-                  <CheckCircle2 size={14} />
-                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne' }}>
-                    Hutang Akan Lunas
-                  </span>
-                </div>
-              )}
-              {willBePartial && (
-                <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl animate-fadeIn"
-                  style={{
-                    background: 'rgba(245,158,11,0.10)',
-                    border: '1px solid rgba(245,158,11,0.35)',
-                    color: '#f59e0b',
-                  }}>
-                  <span className="flex items-center gap-2 text-xs font-bold" style={{ fontFamily: 'Syne' }}>
-                    <AlertTriangle size={14} /> Sisa Setelah Pembayaran
-                  </span>
-                  <span className="text-xs font-bold" style={{ fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRupiah(remainingAfterPayment)}
-                  </span>
-                </div>
-              )}
-
-              {/* PAYMENT METHOD */}
+              {/* Payment method */}
               <div>
-                <label className="block text-xs font-semibold mb-2"
-                  style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                <label className="block text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
                   Metode Pembayaran
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: 'cash', label: 'Cash', icon: '💵' },
-                    { id: 'transfer', label: 'Transfer', icon: '🏦' },
-                    { id: 'qris', label: 'QRIS', icon: '📱' },
-                  ].map(m => (
+                  {[{ id: 'cash', label: 'Cash', icon: '💵' }, { id: 'transfer', label: 'Transfer', icon: '🏦' }, { id: 'qris', label: 'QRIS', icon: '📱' }].map(m => (
                     <button key={m.id} onClick={() => setPayMethod(m.id)}
                       className="flex flex-col items-center gap-1 py-2 rounded-xl text-xs font-medium"
                       style={{
                         background: payMethod === m.id ? 'rgba(139,92,246,0.15)' : 'var(--bg-card)',
                         border: `1px solid ${payMethod === m.id ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`,
-                        color: payMethod === m.id ? 'var(--accent-light)' : 'var(--text-muted)',
-                        fontFamily: 'Syne',
+                        color: payMethod === m.id ? 'var(--accent-light)' : 'var(--text-muted)', fontFamily: 'Syne',
                       }}>
                       <span>{m.icon}</span> {m.label}
                     </button>
@@ -593,16 +617,12 @@ export default function Piutang({
                 </div>
               </div>
 
-              {/* ACTIONS */}
+              {/* Actions */}
               <div className="flex gap-2">
-                <Button variant="secondary" className="flex-1" onClick={() => setPayTarget(null)} disabled={paying}>
-                  Batal
-                </Button>
-                <Button variant="success" className="flex-1"
-                  onClick={handlePay}
-                  disabled={paying || exceeds || currentPayment <= 0}>
+                <Button variant="secondary" className="flex-1" onClick={() => setPayTarget(null)} disabled={paying}>Batal</Button>
+                <Button variant="success" className="flex-1" onClick={handlePayCombined} disabled={!canSubmit}>
                   {paying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                  {paying ? 'Memproses...' : 'Konfirmasi'}
+                  {paying ? 'Memproses pembayaran...' : 'Konfirmasi'}
                 </Button>
               </div>
             </div>
@@ -610,17 +630,15 @@ export default function Piutang({
         })()}
       </Modal>
 
-      {/* History modal */}
+      {/* History modal — gabungan semua nota customer */}
       <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)}
-        title="Riwayat Pembayaran" subtitle={historyTarget?.invoiceNo} size="md">
+        title="Riwayat Pembayaran" subtitle={historyTarget?.customer?.name} size="md">
         {loadingHistory ? (
           <div className="flex items-center justify-center py-10">
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
           </div>
         ) : history.length === 0 ? (
-          <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>
-            Belum ada pembayaran
-          </p>
+          <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran</p>
         ) : (
           <div className="space-y-2">
             {history.map(p => (
@@ -629,7 +647,7 @@ export default function Piutang({
                 <CheckCircle2 size={14} style={{ color: '#10d98a' }} />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    {formatRupiah(p.amount)}
+                    {formatRupiah(p.amount)} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {p._invoiceNo || '—'}</span>
                   </p>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                     {timeAgo(p.paid_at)} · {p.payment_method} · oleh {p.cashier || '-'}
@@ -641,7 +659,7 @@ export default function Piutang({
         )}
       </Modal>
 
-      {/* Delete confirm */}
+      {/* Delete confirm — single nota */}
       <Modal open={!!delTarget} onClose={() => setDelTarget(null)} title="Hapus Catatan Hutang" size="sm">
         <div className="text-center py-2">
           <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
