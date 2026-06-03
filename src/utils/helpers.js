@@ -55,6 +55,24 @@ export function classNames(...classes) {
   return classes.filter(Boolean).join(' ')
 }
 
+// ─────────────────────────────────────────────────────────────
+// UANG — selalu integer rupiah. Jangan pernah pakai float untuk uang.
+//   • toMoney(n)        → bulatkan ke integer rupiah (hindari drift float)
+//   • parseCurrency(v)  → "Rp16.938.240" / 16938240.0000004 → 16938240
+// ─────────────────────────────────────────────────────────────
+export function toMoney(n) {
+  const v = Math.round(Number(n) || 0)
+  return Number.isFinite(v) ? v : 0
+}
+
+export function parseCurrency(value) {
+  // Angka (mungkin float drift) → langsung dibulatkan, JANGAN di-stringify
+  // lalu strip titik (itu yang bikin "16938240.0000004" → 16938240000000004).
+  if (typeof value === 'number') return toMoney(value)
+  // String berformat: ambil digit saja (titik = pemisah ribuan).
+  return Number(String(value).replace(/[^\d]/g, '')) || 0
+}
+
 export function toBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()

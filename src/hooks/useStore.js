@@ -696,8 +696,8 @@ export function useStore() {
         // Sebelumnya debt.paid disimpan 0 + total_debt = sisa-setelah-DP →
         // saat processDebtPayment menulis paidAfter ke transactions, DP
         // hilang (terpotong dobel). Sekarang kedua tabel selalu mirror.
-        const totalFinal = +trx.total || 0
-        const dpAmt = +trx.paid || +trx.dp || 0
+        const totalFinal = Math.round(+trx.total || 0)
+        const dpAmt = Math.round(+trx.paid || +trx.dp || 0)
         const remainingAmt = Math.max(0, totalFinal - dpAmt)
         const debtPayload = {
           customer_id: trx.customerId,
@@ -766,7 +766,7 @@ export function useStore() {
       if (trxErr || !trx) {
         return { ok: false, error: trxErr?.message || 'Transaksi tidak ditemukan' }
       }
-      const totalAmt = +trx.total || 0
+      const totalAmt = Math.round(+trx.total || 0)
 
       // 2. Debt by invoice_no OR transaction_id (whichever matches first)
       let { data: debt } = await supabase
@@ -785,11 +785,11 @@ export function useStore() {
         // 3. SUM debt_payments → authoritative source of paid
         const { data: payments } = await supabase
           .from('debt_payments').select('amount').eq('debt_id', debt.id)
-        const paidFromHistory = (payments || []).reduce((s, p) => s + (+p.amount || 0), 0)
+        const paidFromHistory = Math.round((payments || []).reduce((s, p) => s + (+p.amount || 0), 0))
         // If trx.paid is higher (e.g. user marked Lunas manually from Order
         // without going through payDebt), take the larger number — that
         // represents the actual settled amount.
-        newPaid = Math.max(paidFromHistory, +trx.paid || 0)
+        newPaid = Math.round(Math.max(paidFromHistory, +trx.paid || 0))
         newRemaining = Math.max(0, totalAmt - newPaid)
         newStatus = newRemaining <= 0 ? 'lunas' : 'aktif'
 
@@ -801,7 +801,7 @@ export function useStore() {
         }).eq('id', debt.id)
       } else {
         // No debt row — purely cash/transfer/qris transaction
-        newPaid = +trx.paid || 0
+        newPaid = Math.round(+trx.paid || 0)
         newRemaining = Math.max(0, totalAmt - newPaid)
         newStatus = newRemaining <= 0 ? 'lunas' : 'pending'
       }
@@ -854,7 +854,10 @@ export function useStore() {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
     const updates = { status }
-    if (status === 'lunas') { updates.paid = current.total; updates.dp = current.total; updates.remaining = 0 }
+    if (status === 'lunas') {
+      const totalInt = Math.round(+current.total || 0)
+      updates.paid = totalInt; updates.dp = totalInt; updates.remaining = 0
+    }
     const { data: row, error: e } = await supabase.from('transactions').update(updates).eq('id', id).select().single()
     if (e) return { ok: false, error: e.message }
     // ─── Sync the linked debt + customer summary if this trx has hutang ───
@@ -899,7 +902,8 @@ export function useStore() {
     paymentMethod = 'cash',
     notes = '',
   }) => wrap(async () => {
-    const amount = Number(paymentAmount) || 0
+    // Uang = integer rupiah. Bulatkan untuk hindari floating drift.
+    const amount = Math.round(Number(paymentAmount) || 0)
     if (amount <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
     if (!invoice_no) return { ok: false, error: 'invoice_no kosong' }
 
@@ -926,17 +930,19 @@ export function useStore() {
     // 3-6. Tentukan remainingBefore + paidBefore
     // PRIORITAS: TRANSACTIONS (karena selalu include DP awal). Fallback ke
     // debt kalau transaction.paid masih 0 untuk row legacy.
-    const total = Number(trxRow.total) || 0
-    const paidBefore = (Number(trxRow.paid) || 0) > 0
-      ? Number(trxRow.paid)
-      : (debtRow && Number(debtRow.paid) ? Number(debtRow.paid) : 0)
+    const total = Math.round(Number(trxRow.total) || 0)
+    const paidBefore = Math.round(
+      (Number(trxRow.paid) || 0) > 0
+        ? Number(trxRow.paid)
+        : (debtRow && Number(debtRow.paid) ? Number(debtRow.paid) : 0)
+    )
     const remainingBefore = Math.max(0, total - paidBefore)
 
     // 7. Hitung — kurangkan dari remainingBefore (BUKAN dari total - paidAfter
-    //    yang bisa salah kalau ada drift)
+    //    yang bisa salah kalau ada drift). Semua integer → remainingAfter===0
+    //    persis saat lunas.
     const paidAfter = paidBefore + amount
-    let remainingAfter = remainingBefore - amount
-    if (remainingAfter < 0) remainingAfter = 0
+    let remainingAfter = Math.max(0, remainingBefore - amount)
 
     // 8. Validasi paymentAmount <= remainingBefore
     if (amount > remainingBefore) {

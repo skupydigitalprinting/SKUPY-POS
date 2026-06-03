@@ -8,6 +8,7 @@ import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
   formatRupiah, formatDateTime, timeAgo, STATUS_MAP,
   toDateInputValue, monthRange, monthLabel,
+  parseCurrency, toMoney,
 } from '../utils/helpers'
 import { exportTransactionsXLSX } from '../utils/excelExport'
 import { Badge, Button, Input, ProductImage, EmptyState } from '../components/ui'
@@ -169,7 +170,9 @@ export default function Order({
     setPayTrx(t)
     // Pre-fill dengan sisa yang DIDERIVASI (total - paid), bukan dari
     // t.remaining mentah yang bisa stale.
-    const derivedRemaining = Math.max(0, (+t.total || 0) - (+t.paid || 0))
+    // Integer rupiah — JANGAN simpan float (drift "16938240.0000004" akan
+    // jadi "16938240000000004" saat titik desimal dibuang).
+    const derivedRemaining = Math.max(0, toMoney(t.total) - toMoney(t.paid))
     setPayAmount(String(derivedRemaining))
     setPaying(false)
   }
@@ -183,11 +186,13 @@ export default function Order({
   // Jika newRemaining  > 0 → status_bayar = 'pending', remaining = newRemaining
   const handlePay = async () => {
     if (!payTrx || paying) return
-    // Strip non-digit dari input (input pakai formatted "1.000.000")
-    const amount = Number(String(payAmount).replace(/[^\d]/g, ''))
+    // Parse → integer rupiah (input pakai formatted "1.000.000")
+    let amount = parseCurrency(payAmount)
     if (!amount || amount <= 0) return
-    const remainingBefore = Math.max(0, (+payTrx.total || 0) - (+payTrx.paid || 0))
-    if (amount > remainingBefore) return  // safety net; tombol Konfirmasi sudah disable
+    const remainingBefore = Math.max(0, toMoney(payTrx.total) - toMoney(payTrx.paid))
+    // Clamp: jangan pernah kirim lebih besar dari sisa tagihan.
+    if (amount > remainingBefore) amount = remainingBefore
+    if (amount <= 0) return
     setPaying(true)
     try {
       // updateTransactionPayment di useStore sudah handle:
@@ -891,9 +896,9 @@ export default function Order({
       >
         {payTrx && (() => {
           // ─── CANONICAL MATH (sama persis seperti Piutang.jsx) ───
-          const total = +payTrx.total || 0
-          const alreadyPaid = +payTrx.paid || 0
-          const currentPayment = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
+          const total = toMoney(payTrx.total)
+          const alreadyPaid = toMoney(payTrx.paid)
+          const currentPayment = parseCurrency(payAmount)
           const remainingBeforePayment = Math.max(0, total - alreadyPaid)
           const remainingAfterPayment = remainingBeforePayment - currentPayment
           const exceeds = currentPayment > remainingBeforePayment

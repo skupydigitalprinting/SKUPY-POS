@@ -7,7 +7,7 @@ import { Input, Button, Badge, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import WhatsAppButton from '../components/WhatsAppButton'
 import WhatsAppReminder from '../components/WhatsAppReminder'
-import { formatRupiah, formatDate, timeAgo } from '../utils/helpers'
+import { formatRupiah, formatDate, timeAgo, parseCurrency, toMoney } from '../utils/helpers'
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 
@@ -63,19 +63,23 @@ export default function Piutang({
 
   const handleOpenPay = (d) => {
     setPayTarget(d)
-    setPayAmount(String(d.remaining || 0))
+    // Integer rupiah — hindari float string ("…0000004") saat prefill full.
+    const derived = Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid))
+    setPayAmount(String(derived))
     setPayMethod('cash')
   }
 
   const handlePay = async () => {
     if (paying) return
-    // Strip non-digit dari payAmount (UI sekarang pakai formatted string)
-    const amount = Number(String(payAmount).replace(/[^\d]/g, ''))
+    // Parse → integer rupiah (UI pakai formatted string)
+    let amount = parseCurrency(payAmount)
     if (!amount || amount <= 0) return toast.error('Nominal harus > 0')
     // Validasi terhadap sisa yang DIDERIVASI (totalDebt - paid), bukan dari
     // debt.remaining mentah yang bisa stale.
-    const derivedRemaining = Math.max(0, (+payTarget.totalDebt || 0) - (+payTarget.paid || 0))
-    if (amount > derivedRemaining) return toast.error('Nominal pembayaran melebihi sisa hutang')
+    const derivedRemaining = Math.max(0, toMoney(payTarget.totalDebt) - toMoney(payTarget.paid))
+    // Clamp ke sisa hutang — jangan simpan lebih besar dari sisa.
+    if (amount > derivedRemaining) amount = derivedRemaining
+    if (amount <= 0) return toast.error('Nominal harus > 0')
     setPaying(true)
     try {
       const res = await payDebt(payTarget.id, amount, payMethod, '')
@@ -371,10 +375,10 @@ export default function Piutang({
           //   currentPayment         → nominal yang sedang diketik kasir
           //   remainingBeforePayment = totalDebt - alreadyPaid
           //   remainingAfterPayment  = remainingBeforePayment - currentPayment
-          const totalDebt = +payTarget.totalDebt || 0
-          const alreadyPaid = +payTarget.paid || 0
-          // currentPayment dari input — strip non-digit, parse ke number
-          const currentPayment = Number(String(payAmount).replace(/[^\d]/g, '')) || 0
+          const totalDebt = toMoney(payTarget.totalDebt)
+          const alreadyPaid = toMoney(payTarget.paid)
+          // currentPayment dari input → integer rupiah
+          const currentPayment = parseCurrency(payAmount)
 
           const remainingBeforePayment = Math.max(0, totalDebt - alreadyPaid)
           const remainingAfterPayment = remainingBeforePayment - currentPayment
