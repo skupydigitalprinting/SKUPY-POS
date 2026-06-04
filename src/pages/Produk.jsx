@@ -107,7 +107,12 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
       setImagePreview(url)
       setForm((prev) => ({ ...prev, image: url }))
     } catch (err) {
-      setSubmitError('Gagal upload foto: ' + (err?.message || err))
+      // eslint-disable-next-line no-console
+      console.error('Upload foto produk gagal', err)
+      // Form TIDAK crash — user tetap bisa isi data & simpan tanpa foto.
+      setSubmitError(
+        (err?.message ? `Upload foto gagal: ${err.message}` : 'Upload foto gagal, silakan coba lagi.')
+      )
     } finally {
       setUploadingImg(false)
       e.target.value = '' // izinkan pilih file sama lagi

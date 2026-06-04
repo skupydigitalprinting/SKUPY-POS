@@ -21,7 +21,46 @@ export const supabase = createClient(
 
 export const LOGOS_BUCKET = 'logos'
 export const INVOICES_BUCKET = 'invoices'
+// Satu sumber kebenaran nama bucket produk — jangan hard-code di tempat lain.
 export const PRODUCTS_BUCKET = 'products'
+
+// Pesan setup yang sama dipakai di beberapa tempat.
+const BUCKET_SETUP_HINT =
+  `Bucket "${PRODUCTS_BUCKET}" belum ada di Supabase. Buat dengan salah satu cara: ` +
+  `(1) jalankan supabase/migrations/2026_06_products_storage_bucket.sql di SQL Editor, atau ` +
+  `(2) Supabase Dashboard → Storage → New bucket → nama "${PRODUCTS_BUCKET}" → centang Public.`
+
+// Cache agar pengecekan bucket tidak diulang tiap upload.
+let _bucketReady = false
+
+/**
+ * Pastikan bucket `products` ada. Best-effort:
+ *   1. cek via getBucket
+ *   2. kalau belum ada, COBA buat (butuh privilege; di anon biasanya gagal)
+ * Mengembalikan { ok, error, hint }. TIDAK melempar — pemanggil yang memutuskan.
+ */
+export async function ensureProductsBucket() {
+  if (_bucketReady) return { ok: true }
+  try {
+    const { data: existing } = await supabase.storage.getBucket(PRODUCTS_BUCKET)
+    if (existing) { _bucketReady = true; return { ok: true } }
+
+    // Coba auto-create (hanya berhasil kalau key punya izin, mis. service role
+    // atau policy storage.buckets mengizinkan). Di anon umumnya 403 → fallback.
+    const { error: createErr } = await supabase.storage.createBucket(PRODUCTS_BUCKET, {
+      public: true,
+    })
+    if (!createErr) { _bucketReady = true; return { ok: true } }
+
+    // eslint-disable-next-line no-console
+    console.error('Storage ensureProductsBucket failed', createErr)
+    return { ok: false, error: createErr.message, hint: BUCKET_SETUP_HINT }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('Storage ensureProductsBucket exception', e)
+    return { ok: false, error: e?.message || String(e), hint: BUCKET_SETUP_HINT }
+  }
+}
 
 /**
  * Upload a product image (compressed WebP/JPEG blob) to the public
@@ -29,6 +68,9 @@ export const PRODUCTS_BUCKET = 'products'
  */
 export async function uploadProductImage(blob, name = 'produk') {
   if (!blob) throw new Error('Gambar kosong')
+  // Best-effort: pastikan bucket ada (auto-create kalau punya izin).
+  await ensureProductsBucket()
+
   const ext = (blob.type && blob.type.includes('webp')) ? 'webp' : 'jpg'
   const safe = String(name).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'produk'
   const filename = `${safe}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`
@@ -39,7 +81,19 @@ export async function uploadProductImage(blob, name = 'produk') {
       contentType: blob.type || `image/${ext}`,
       cacheControl: '31536000', // 1 tahun — gambar produk jarang berubah
     })
-  if (error) throw error
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('Storage upload failed', error)
+    if (/bucket not found/i.test(error.message || '') || error.statusCode === '404') {
+      throw new Error(BUCKET_SETUP_HINT)
+    }
+    if (/row-level security|rls|not authorized|403/i.test(error.message || '')) {
+      throw new Error(
+        `Upload ditolak oleh policy Storage. Pastikan policy publik untuk bucket "${PRODUCTS_BUCKET}" sudah dibuat (jalankan migration 2026_06_products_storage_bucket.sql).`
+      )
+    }
+    throw error
+  }
   const { data } = supabase.storage.from(PRODUCTS_BUCKET).getPublicUrl(filename)
   return data.publicUrl
 }
