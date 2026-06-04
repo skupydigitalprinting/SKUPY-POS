@@ -55,6 +55,10 @@ export function classNames(...classes) {
   return classes.filter(Boolean).join(' ')
 }
 
+// Gambar default produk: logo Skupy (bukan lagi foto Unsplash).
+// Dipakai untuk produk tanpa foto & sebagai fallback onError.
+export const DEFAULT_PRODUCT_IMAGE = '/skupy-logo.png'
+
 // ─────────────────────────────────────────────────────────────
 // UANG — selalu integer rupiah. Jangan pernah pakai float untuk uang.
 //   • toMoney(n)        → bulatkan ke integer rupiah (hindari drift float)

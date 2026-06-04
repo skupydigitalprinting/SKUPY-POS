@@ -1,4 +1,5 @@
 import React from 'react'
+import { DEFAULT_PRODUCT_IMAGE } from '../utils/helpers'
 
 export function Label({ children, required }) {
   return (
@@ -174,9 +175,14 @@ export function EmptyState({ icon: Icon, title, description, action }) {
 
 /** Falling back to a colored initial-based image if `src` fails */
 export function ProductImage({ src, alt, className = '', fallbackSize = 60 }) {
-  const [err, setErr] = React.useState(false)
+  // Fallback aman: image || DEFAULT_PRODUCT_IMAGE (logo Skupy).
+  // onError → ganti ke logo. Kalau logo pun gagal, baru tampilkan inisial
+  // (mencegah broken image & infinite loop).
+  const [failedLogo, setFailedLogo] = React.useState(false)
   const initial = (alt || 'P')[0].toUpperCase()
-  if (err || !src) {
+  const realSrc = src || DEFAULT_PRODUCT_IMAGE
+
+  if (failedLogo) {
     return (
       <div className={`flex items-center justify-center ${className}`}
         style={{
@@ -190,12 +196,20 @@ export function ProductImage({ src, alt, className = '', fallbackSize = 60 }) {
       </div>
     )
   }
+
   return (
     <img
-      src={src}
+      src={realSrc}
       alt={alt}
       className={className}
-      onError={() => setErr(true)}
+      onError={(e) => {
+        // Kalau sumber asli gagal → coba logo Skupy. Kalau logo juga gagal → inisial.
+        if (e.currentTarget.src.includes(DEFAULT_PRODUCT_IMAGE)) {
+          setFailedLogo(true)
+        } else {
+          e.currentTarget.src = DEFAULT_PRODUCT_IMAGE
+        }
+      }}
       loading="lazy"
       decoding="async"
     />

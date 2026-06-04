@@ -168,6 +168,7 @@ export function useStore() {
   const [admins, setAdmins] = useState([])
   const [customers, setCustomers] = useState([])
   const [debts, setDebts] = useState([])
+  const [debtPayments, setDebtPayments] = useState([])
   const [currentUser, setCurrentUser] = useState(() => loadSession())
   const mounted = useRef(true)
 
@@ -201,7 +202,7 @@ export function useStore() {
   const refreshAll = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const [s, a, p, t, c, d] = await Promise.all([
+      const [s, a, p, t, c, d, dp] = await Promise.all([
         supabase.from('settings').select('*').eq('id', 1).maybeSingle(),
         supabase.from('admins').select('*').order('created_at', { ascending: true }),
         // PENTING: jangan ambil kolom `image` di sini. Gambar produk lama
@@ -213,6 +214,8 @@ export function useStore() {
         supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT),
         supabase.from('customers').select('*').order('created_at', { ascending: false }),
         supabase.from('debts').select('*').order('created_at', { ascending: false }).limit(DEBT_LIMIT),
+        // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
+        supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id').order('paid_at', { ascending: false }).limit(2000),
       ])
       for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
       if (!mounted.current) return
@@ -236,6 +239,8 @@ export function useStore() {
       setTransactions(trxList)
       setCustomers((c.data || []).map(customerFromDB))
       setDebts((d.data || []).map(debtFromDB))
+      // debt_payments dipakai dashboard owner; kalau query gagal, biarkan kosong.
+      if (!dp.error) setDebtPayments(dp.data || [])
 
       // NOTE: Legacy "auto-fix stale=lunas" sync DIHAPUS karena bisa
       // mem-issue UPDATE bulk ke ratusan baris saat startup → potensi
@@ -262,6 +267,15 @@ export function useStore() {
       .order('created_at', { ascending: false })
       .limit(1000)
     if (!e && mounted.current) setCustomers((data || []).map(customerFromDB))
+  }, [])
+
+  const refreshDebtPayments = useCallback(async () => {
+    const { data, error: e } = await supabase
+      .from('debt_payments')
+      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id')
+      .order('paid_at', { ascending: false })
+      .limit(2000)
+    if (!e && mounted.current) setDebtPayments(data || [])
   }, [])
 
   const refreshDebts = useCallback(async () => {
@@ -298,6 +312,7 @@ export function useStore() {
       if (tables.includes('transactions')) refreshTransactions()
       if (tables.includes('debts'))         refreshDebts()
       if (tables.includes('customers'))     refreshCustomers()
+      if (tables.includes('debt_payments')) refreshDebtPayments()
       if (tables.includes('products')) {
         // Kolom ringan dulu (anti-timeout), lalu hydrate gambar di belakang.
         supabase.from('products').select(PRODUCT_LIGHT_COLS)
@@ -322,7 +337,7 @@ export function useStore() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' },
         () => schedule('debts'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'debt_payments' },
-        () => schedule('debts', 'transactions', 'customers'))
+        () => schedule('debts', 'transactions', 'customers', 'debt_payments'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' },
         () => schedule('customers'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' },
@@ -1014,16 +1029,16 @@ export function useStore() {
       await recalculateCustomerSummary(custId)
     }
 
-    // 13. Refresh state lokal: Order + Piutang + Customers
+    // 13. Refresh state lokal: Order + Piutang + Customers + Uang Masuk
     if (!skipRefresh) {
-      await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
     }
 
     return {
       ok: true,
       data: { paidAfter, remainingAfter, status: trxStatus, remainingBefore, paidBefore },
     }
-  }), [wrap, currentUser, refreshTransactions, refreshDebts, refreshCustomers, recalculateCustomerSummary])
+  }), [wrap, currentUser, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, recalculateCustomerSummary])
 
   // updateTransactionPayment (Order) — DELEGATE ke processDebtPayment.
   // Tidak ada wrap() outer karena processDebtPayment sudah pakai wrap sendiri.
@@ -1057,10 +1072,12 @@ export function useStore() {
     // Recompute customer totals so total_debt + total_spent stay honest.
     if (customerId) {
       await recalculateCustomerSummary(customerId)
-      await refreshCustomers()
     }
+    // Re-fetch dari DB supaya Dashboard TIDAK pernah membaca nota terhapus
+    // (FK CASCADE sudah menghapus debts + debt_payments terkait di server).
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
     return { ok: true }
-  }), [transactions, wrap, recalculateCustomerSummary, refreshCustomers])
+  }), [transactions, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   // ---------- DEBTS ----------
   // Bayar hutang — atomic flow yang mengupdate KEEMPAT tabel sekaligus
@@ -1161,13 +1178,13 @@ export function useStore() {
     }
 
     // Refresh sekali di akhir → Order, Piutang, Customers, Dashboard sinkron.
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers()])
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
 
     const paidTotal = pay - left
     const anyOk = results.some(r => r.ok)
     if (!anyOk) return { ok: false, error: results[0]?.error || 'Pembayaran gagal' }
     return { ok: true, paid: paidTotal, results }
-  }), [debts, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, wrap])
+  }), [debts, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, wrap])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
     const debt = debts.find(d => d.id === id)
@@ -1178,10 +1195,10 @@ export function useStore() {
     if (mounted.current) setDebts(prev => prev.filter(d => d.id !== id))
     if (customerId) {
       await recalculateCustomerSummary(customerId)
-      await refreshCustomers()
     }
+    await Promise.all([refreshDebts(), refreshDebtPayments(), refreshCustomers()])
     return { ok: true }
-  }), [debts, wrap, recalculateCustomerSummary, refreshCustomers])
+  }), [debts, wrap, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const getDebtPayments = useCallback(async (debtId) => {
     const { data, error: e } = await supabase
@@ -1199,9 +1216,11 @@ export function useStore() {
     const todayTrx = transactions.filter(t => new Date(t.date).toDateString() === today)
     const monthTrx = transactions.filter(t => new Date(t.date) >= monthStart)
 
-    const totalOmzet = transactions.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
-    const todayOmzet = todayTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
-    const monthOmzet = monthTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
+    // Transaksi batal (order_status 'dibatalkan') TIDAK dihitung sebagai omzet.
+    const notCanceled = (t) => (t.orderStatus || '') !== 'dibatalkan'
+    const totalOmzet = transactions.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
+    const todayOmzet = todayTrx.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
+    const monthOmzet = monthTrx.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
     const pendingCount = transactions.filter(t => t.status === 'pending').length
     const procesCount = transactions.filter(t => t.status === 'proses').length
     const todayOrders = todayTrx.length
@@ -1282,8 +1301,8 @@ export function useStore() {
   return {
     loading, busy, error,
     products, transactions, storeInfo, stats,
-    admins, currentUser, customers, debts,
-    refreshAll, refreshCustomers, refreshDebts, refreshTransactions,
+    admins, currentUser, customers, debts, debtPayments,
+    refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction,

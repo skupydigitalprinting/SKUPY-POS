@@ -6,9 +6,9 @@ import {
 import {
   TrendingUp, ShoppingBag, Users, Clock, Receipt,
   ArrowUpRight, Star, Zap, ArrowRight, Activity,
-  Scale, Wallet, TrendingDown, PackageOpen,
+  Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone, Repeat,
 } from 'lucide-react'
-import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel } from '../utils/helpers'
+import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { getCatLabel } from '../hooks/useCategories'
 import Logo from '../components/Logo'
@@ -101,8 +101,34 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, products = [], debts = [], admins = [], setActivePage, storeInfo, currentUser }) {
+export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser }) {
   const isOwner = currentUser?.role === 'owner'
+
+  // ─── Owner-only: Total Uang Masuk (uang yang BENAR-BENAR diterima) ───
+  // Total  = Σ paid transaksi valid (sudah termasuk DP + cicilan, karena
+  //          paid di-update tiap pembayaran). Bukan total invoice.
+  // Cash/Transfer/QRIS = pembayaran langsung (non-hutang) per metode
+  //          + pembayaran cicilan (debt_payments) per metode.
+  // Cicilan = Σ debt_payments.amount.
+  // Transaksi 'dibatalkan' & nota terhapus tidak ikut (sudah lenyap dari data).
+  const uangMasuk = useMemo(() => {
+    const valid = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
+    const total = valid.reduce((s, t) => s + toMoney(t.paid), 0)
+    const m = { cash: 0, transfer: 0, qris: 0 }
+    valid.forEach(t => {
+      if (t.paymentMethod && m[t.paymentMethod] !== undefined) {
+        m[t.paymentMethod] += toMoney(t.paid)
+      }
+    })
+    let cicilan = 0
+    ;(debtPayments || []).forEach(p => {
+      const amt = toMoney(p.amount)
+      cicilan += amt
+      const pm = p.payment_method
+      if (m[pm] !== undefined) m[pm] += amt
+    })
+    return { total, cash: m.cash, transfer: m.transfer, qris: m.qris, cicilan }
+  }, [transactions, debtPayments])
 
   // ─── Owner-only Laba-Rugi: rentang tanggal terpisah ───
   // Laba = total penjualan (transaksi lunas) − modal barang (qty × modal produk).
@@ -167,7 +193,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     const startOfDay = today.getTime()
 
     return admins.map(admin => {
-      const own = (transactions || []).filter(t => t.cashierId === admin.id)
+      // Hanya transaksi valid (bukan 'dibatalkan'); nota terhapus sudah lenyap dari data.
+      const own = (transactions || []).filter(t => t.cashierId === admin.id && (t.orderStatus || '') !== 'dibatalkan')
       const totalOmzet = own.reduce((s, t) => s + (+t.total || 0), 0)
       const omzetToday = own
         .filter(t => new Date(t.date).getTime() >= startOfDay)
@@ -410,6 +437,61 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           />
         </div>
 
+        {/* Total Uang Masuk — OWNER ONLY (uang yang benar-benar diterima) */}
+        {isOwner && (
+          <div className="mb-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Banknote size={15} style={{ color: '#38BDF8' }} />
+              <h2 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                Total Uang Masuk
+              </h2>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
+                style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontFamily: 'Syne' }}>
+                Owner
+              </span>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+              {[
+                { label: 'Total Uang Masuk', value: uangMasuk.total, icon: Banknote, hint: 'Cash + Transfer + QRIS + Cicilan' },
+                { label: 'Cash', value: uangMasuk.cash, icon: Banknote, hint: 'Pembayaran tunai' },
+                { label: 'Transfer', value: uangMasuk.transfer, icon: CreditCard, hint: 'Pembayaran transfer' },
+                { label: 'QRIS', value: uangMasuk.qris, icon: Smartphone, hint: 'Pembayaran QRIS' },
+                { label: 'Cicilan Hutang', value: uangMasuk.cicilan, icon: Repeat, hint: 'Dari bayar cicilan' },
+              ].map((c, i) => {
+                const Icon = c.icon
+                const primary = i === 0
+                return (
+                  <div key={c.label}
+                    className="rounded-2xl p-4 relative overflow-hidden animate-slideUp"
+                    style={{
+                      background: primary
+                        ? 'linear-gradient(135deg, rgba(14,165,233,0.14), rgba(56,189,248,0.06))'
+                        : 'var(--bg-card)',
+                      border: `1px solid ${primary ? 'rgba(56,189,248,0.35)' : 'var(--border)'}`,
+                      animationDelay: `${i * 50}ms`,
+                    }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)' }}>
+                        <Icon size={15} style={{ color: '#38BDF8' }} />
+                      </div>
+                      <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>{c.label}</span>
+                    </div>
+                    <div className="text-lg sm:text-xl font-bold truncate"
+                      style={{ fontFamily: 'Syne', color: '#38BDF8' }}>
+                      {formatRupiah(c.value)}
+                    </div>
+                    <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{c.hint}</div>
+                  </div>
+                )
+              })}
+            </div>
+            <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+              Uang yang benar-benar diterima (DP + cicilan), bukan total invoice. Sisa hutang tidak dihitung.
+            </p>
+          </div>
+        )}
+
         {/* Laba-Rugi — OWNER ONLY (penjualan − modal barang, rentang tanggal sendiri) */}
         {isOwner && (
           <div className="rounded-2xl p-5 mb-5 animate-slideUp relative overflow-hidden"
@@ -534,8 +616,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           </div>
         )}
 
-        {/* Performa per Admin — owner view */}
-        {adminPerformance.length > 0 && (
+        {/* Performa per Admin — OWNER ONLY (staff admin tidak melihat ini) */}
+        {isOwner && adminPerformance.length > 0 && (
           <div className="rounded-2xl p-5 mb-5 animate-slideUp"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
