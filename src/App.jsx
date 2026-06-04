@@ -1,20 +1,32 @@
-import React, { useState, useEffect } from 'react'
-import { AlertTriangle, Database, RefreshCw } from 'lucide-react'
+import React, { useState, useEffect, lazy, Suspense } from 'react'
+import { AlertTriangle, Database, RefreshCw, Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
-import Settings from './components/Settings'
 import BottomNav from './components/BottomNav'
 import ErrorBoundary from './components/ErrorBoundary'
-import Dashboard from './pages/Dashboard'
-import Kasir from './pages/Kasir'
-import Produk from './pages/Produk'
-import Order from './pages/Order'
-import Customers from './pages/Customers'
-import Piutang from './pages/Piutang'
 import Login from './pages/Login'
 import Logo from './components/Logo'
 import { ToastProvider, useToast } from './components/Toast'
 import { useStore } from './hooks/useStore'
+
+// ─── Code splitting ───────────────────────────────────────────
+// Halaman & modal besar di-lazy-load supaya bundle awal kecil & cepat
+// (penting di Safari iPhone). Hanya halaman aktif yang di-download.
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Kasir = lazy(() => import('./pages/Kasir'))
+const Produk = lazy(() => import('./pages/Produk'))
+const Order = lazy(() => import('./pages/Order'))
+const Customers = lazy(() => import('./pages/Customers'))
+const Piutang = lazy(() => import('./pages/Piutang'))
+const Settings = lazy(() => import('./components/Settings'))
+
+function PageLoader() {
+  return (
+    <div className="flex-1 flex items-center justify-center" style={{ minHeight: 200 }}>
+      <Loader2 size={26} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
+    </div>
+  )
+}
 
 function LoadingSplash() {
   const [showSlow, setShowSlow] = useState(false)
@@ -302,7 +314,9 @@ function AppShell() {
             key={activePage}
             title={`Halaman ${activePage} gagal dimuat`}
           >
-            {pages[activePage]}
+            <Suspense fallback={<PageLoader />}>
+              {pages[activePage]}
+            </Suspense>
           </ErrorBoundary>
         </div>
       </main>
@@ -314,21 +328,26 @@ function AppShell() {
         currentUser={store.currentUser}
       />
 
-      {/* Settings modal — OWNER ONLY (security: not just hidden, refuse to render) */}
-      <Settings
-        open={settingsOpen && isOwner}
-        onClose={() => setSettingsOpen(false)}
-        storeInfo={store.storeInfo}
-        admins={store.admins}
-        currentUser={store.currentUser}
-        busy={store.busy}
-        updateStoreInfo={store.updateStoreInfo}
-        updateLogo={store.updateLogo}
-        addAdmin={store.addAdmin}
-        deleteAdmin={store.deleteAdmin}
-        changePassword={store.changePassword}
-        logout={() => { setSettingsOpen(false); store.logout() }}
-      />
+      {/* Settings modal — OWNER ONLY (security: not just hidden, refuse to render).
+          Lazy: chunk hanya di-download saat owner benar-benar membuka Pengaturan. */}
+      {settingsOpen && isOwner && (
+        <Suspense fallback={null}>
+          <Settings
+            open
+            onClose={() => setSettingsOpen(false)}
+            storeInfo={store.storeInfo}
+            admins={store.admins}
+            currentUser={store.currentUser}
+            busy={store.busy}
+            updateStoreInfo={store.updateStoreInfo}
+            updateLogo={store.updateLogo}
+            addAdmin={store.addAdmin}
+            deleteAdmin={store.deleteAdmin}
+            changePassword={store.changePassword}
+            logout={() => { setSettingsOpen(false); store.logout() }}
+          />
+        </Suspense>
+      )}
     </div>
   )
 }

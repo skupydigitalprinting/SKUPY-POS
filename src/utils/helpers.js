@@ -127,6 +127,63 @@ export function compressImage(file, { maxSize = 800, quality = 0.72 } = {}) {
 }
 
 /**
+ * Kompres & resize gambar menjadi BLOB (untuk di-upload ke Supabase Storage).
+ * Default: WebP, lebar maks 1200px, kualitas 75% → target < ~200KB.
+ * Otomatis fallback ke JPEG kalau browser tidak mendukung WebP.
+ *
+ * @param {File|Blob} file
+ * @param {object} opts { maxSize, quality, type, cover }
+ *   - cover: kalau true, crop ke kotak maxSize×maxSize (dipakai untuk thumbnail)
+ * @returns {Promise<Blob>}
+ */
+export function compressImageToBlob(file, { maxSize = 1200, quality = 0.75, type = 'image/webp', cover = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+
+        if (cover) {
+          // Thumbnail kotak: crop tengah lalu skala ke maxSize×maxSize
+          const side = maxSize
+          canvas.width = side
+          canvas.height = side
+          const scale = Math.max(side / img.width, side / img.height)
+          const dw = img.width * scale
+          const dh = img.height * scale
+          ctx.drawImage(img, (side - dw) / 2, (side - dh) / 2, dw, dh)
+        } else {
+          let { width, height } = img
+          if (width > maxSize || height > maxSize) {
+            if (width >= height) { height = Math.round((height * maxSize) / width); width = maxSize }
+            else { width = Math.round((width * maxSize) / height); height = maxSize }
+          }
+          canvas.width = width
+          canvas.height = height
+          ctx.drawImage(img, 0, 0, width, height)
+        }
+
+        const done = (blob) => {
+          if (blob) return resolve(blob)
+          // Fallback JPEG kalau WebP tidak didukung
+          canvas.toBlob(
+            (b2) => b2 ? resolve(b2) : reject(new Error('Gagal mengompres gambar')),
+            'image/jpeg', quality,
+          )
+        }
+        canvas.toBlob(done, type, quality)
+      }
+      img.onerror = () => reject(new Error('Gagal memuat gambar'))
+      img.src = reader.result
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
  * Generates a stylized QR-like pattern SVG (deterministic from input string).
  * Not a real QR code, but visually represents a payment QR for invoice printing.
  */

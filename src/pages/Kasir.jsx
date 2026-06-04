@@ -10,7 +10,7 @@ import {
 } from '../utils/helpers'
 import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
 import { Button, ProductImage, EmptyState } from '../components/ui'
-import Invoice from '../components/Invoice'
+const Invoice = React.lazy(() => import('../components/Invoice'))
 
 // ---------- QtyInput ----------
 // Decimal-safe quantity input with a LOCAL draft string.
@@ -1200,14 +1200,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         })()
       )}
 
-      {/* Invoice Modal */}
+      {/* Invoice Modal — lazy (html2canvas chunk hanya saat cetak) */}
       {showInvoice && successTrx && (
-        <Invoice
-          transaction={successTrx}
-          storeInfo={storeInfo}
-          autoShare={autoShareWA}
-          onClose={() => { setShowInvoice(false); setAutoShareWA(false) }}
-        />
+        <React.Suspense fallback={null}>
+          <Invoice
+            transaction={successTrx}
+            storeInfo={storeInfo}
+            autoShare={autoShareWA}
+            onClose={() => { setShowInvoice(false); setAutoShareWA(false) }}
+          />
+        </React.Suspense>
       )}
     </div>
   )

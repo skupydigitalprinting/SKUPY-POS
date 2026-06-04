@@ -197,6 +197,7 @@ export function ProductImage({ src, alt, className = '', fallbackSize = 60 }) {
       className={className}
       onError={() => setErr(true)}
       loading="lazy"
+      decoding="async"
     />
   )
 }

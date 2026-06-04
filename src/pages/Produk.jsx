@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import {
-  Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2,
+  Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2, Loader2,
 } from 'lucide-react'
-import { formatRupiah, compressImage } from '../utils/helpers'
+import { formatRupiah, compressImageToBlob } from '../utils/helpers'
+import { uploadProductImage } from '../lib/supabase'
 import { Input, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import CategoryManager from '../components/CategoryManager'
@@ -39,18 +40,28 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
   const [form, setForm] = useState(EMPTY_FORM)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [imagePreview, setImagePreview] = useState('')
+  const [uploadingImg, setUploadingImg] = useState(false)
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [submitError, setSubmitError] = useState('')
 
+  const PAGE_SIZE = 50
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+
   const filtered = useMemo(() => {
+    const q = search.toLowerCase()
     return products.filter((p) => {
       const matchCat = filterCat === 'all' || p.category === filterCat
-      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase())
+      const matchSearch = p.name.toLowerCase().includes(q)
       return matchCat && matchSearch
     })
   }, [products, search, filterCat])
+
+  // Reset pagination saat filter/search berubah → tidak render ribuan DOM node.
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterCat])
+
+  const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
 
 
   const openAdd = () => {
@@ -80,14 +91,27 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.size > 4_000_000) {
-      alert('Ukuran maksimal 4MB')
+    if (file.size > 10_000_000) {
+      alert('Ukuran maksimal 10MB')
+      e.target.value = ''
       return
     }
-    // Kompres dulu supaya ukuran kecil → simpan ke database cepat.
-    const b64 = await compressImage(file, { maxSize: 800, quality: 0.72 })
-    setImagePreview(b64)
-    setForm((prev) => ({ ...prev, image: b64 }))
+    setUploadingImg(true)
+    setSubmitError('')
+    try {
+      // 1. Compress + resize → WebP (maks 1200px, ~75%) target < 200KB
+      const blob = await compressImageToBlob(file, { maxSize: 1200, quality: 0.75, type: 'image/webp' })
+      // 2. Upload ke Supabase Storage → dapat public URL
+      const url = await uploadProductImage(blob, form.name || 'produk')
+      // 3. Simpan URL + preview
+      setImagePreview(url)
+      setForm((prev) => ({ ...prev, image: url }))
+    } catch (err) {
+      setSubmitError('Gagal upload foto: ' + (err?.message || err))
+    } finally {
+      setUploadingImg(false)
+      e.target.value = '' // izinkan pilih file sama lagi
+    }
   }
 
   const validate = () => {
@@ -216,7 +240,7 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
           />
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {filtered.map((p, idx) => (
+            {visible.map((p, idx) => (
               <div
                 key={p.id}
                 className="product-card rounded-2xl overflow-hidden animate-fadeIn"
@@ -313,6 +337,20 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
             ))}
           </div>
         )}
+
+        {/* Pagination — load 50 per klik supaya DOM ringan walau produk ribuan */}
+        {filtered.length > visible.length && (
+          <div className="flex flex-col items-center gap-2 mt-5">
+            <Button variant="secondary" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
+              Muat lebih banyak ({visible.length}/{filtered.length})
+            </Button>
+          </div>
+        )}
+        {filtered.length > PAGE_SIZE && filtered.length === visible.length && (
+          <p className="text-center text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+            Menampilkan semua {filtered.length} produk
+          </p>
+        )}
       </div>
 
       {/* Product Form Modal */}
@@ -338,6 +376,12 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
                   className="w-full h-full object-cover"
                   fallbackSize={80}
                 />
+                {uploadingImg && (
+                  <div className="absolute inset-0 flex items-center justify-center"
+                    style={{ background: 'rgba(0,0,0,0.5)' }}>
+                    <Loader2 size={22} className="animate-spin" style={{ color: '#fff' }} />
+                  </div>
+                )}
                 <button
                   onClick={() => {
                     setImagePreview('')
@@ -350,45 +394,40 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
                 </button>
               </div>
             ) : (
-              <>
-                <label
-                  className="flex flex-col items-center justify-center gap-2 h-32 rounded-xl cursor-pointer transition-all"
-                  style={{
-                    background: 'var(--bg-card)',
-                    border: '2px dashed var(--border)',
-                  }}
-                >
-                  <ImagePlus size={26} style={{ color: 'var(--text-muted)' }} />
-                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    Klik untuk upload foto
-                  </span>
-                  <span className="text-xs" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-                    PNG, JPG · max 4MB
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleImageUpload}
-                  />
-                </label>
-                <div className="mt-2">
-                  <input
-                    value={form.image}
-                    onChange={(e) => {
-                      setForm((p) => ({ ...p, image: e.target.value }))
-                      setImagePreview(e.target.value)
-                    }}
-                    placeholder="atau paste URL gambar..."
-                    className="w-full px-3 py-2 rounded-xl text-xs"
-                    style={{
-                      background: 'var(--bg-card)',
-                      border: '1px solid var(--border)',
-                      color: 'var(--text-primary)',
-                    }}
-                  />
-                </div>
-              </>
+              <label
+                className="flex flex-col items-center justify-center gap-2 h-32 rounded-xl cursor-pointer transition-all"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '2px dashed var(--border)',
+                  opacity: uploadingImg ? 0.7 : 1,
+                }}
+              >
+                {uploadingImg ? (
+                  <>
+                    <Loader2 size={24} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Mengupload & mengompres...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <ImagePlus size={26} style={{ color: 'var(--text-muted)' }} />
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Klik untuk upload foto
+                    </span>
+                    <span className="text-xs" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+                      PNG, JPG · otomatis dikompres ke WebP
+                    </span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  disabled={uploadingImg}
+                  onChange={handleImageUpload}
+                />
+              </label>
             )}
           </div>
 
@@ -524,13 +563,13 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
               onClick={() => setModalOpen(false)} disabled={saving}>
               Batal
             </Button>
-            <Button variant="primary" className="flex-1" onClick={handleSave} disabled={saving}>
+            <Button variant="primary" className="flex-1" onClick={handleSave} disabled={saving || uploadingImg}>
               {saving ? (
                 <>
                   <div className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                   Menyimpan...
                 </>
-              ) : (editId ? 'Simpan Perubahan' : 'Tambah Produk')}
+              ) : uploadingImg ? 'Menunggu upload foto...' : (editId ? 'Simpan Perubahan' : 'Tambah Produk')}
             </Button>
           </div>
         </div>

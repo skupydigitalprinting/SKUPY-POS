@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
@@ -13,7 +13,7 @@ import {
 import { exportTransactionsXLSX } from '../utils/excelExport'
 import { Badge, Button, Input, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
-import Invoice from '../components/Invoice'
+const Invoice = React.lazy(() => import('../components/Invoice'))
 import { ORDER_STATUS } from '../data/dummyData'
 
 const ORDER_WORKFLOW = [
@@ -159,6 +159,14 @@ export default function Order({
       return matchStatus && matchWorkflow && matchSearch
     })
   }, [transactions, search, filterStatus, filterWorkflow])
+
+  // Pagination: render 50 transaksi terbaru dulu (DOM ringan), sisanya
+  // dimuat via tombol "Muat lebih banyak". Totals tetap dihitung dari
+  // seluruh hasil filter (akurat), hanya rendering yang dibatasi.
+  const PAGE_SIZE = 50
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterStatus, filterWorkflow])
+  const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
 
   const totalFiltered = filtered.reduce((s, t) => s + t.total, 0)
   const totalLunas = filtered
@@ -377,7 +385,7 @@ export default function Order({
               Tidak ada transaksi
             </div>
           ) : (
-            filtered.map((t) => {
+            visible.map((t) => {
               if (!t) return null
               const s = getStatus(t.status)
               const pm = getPayment(t.paymentMethod)
@@ -603,7 +611,7 @@ export default function Order({
               Tidak ada transaksi
             </div>
           ) : (
-            filtered.map((t) => {
+            visible.map((t) => {
               if (!t) return null
               const s = getStatus(t.status)
               const pm = getPayment(t.paymentMethod)
@@ -700,6 +708,15 @@ export default function Order({
           )}
         </div>
       </div>
+
+      {/* Pagination — muat 50 transaksi per klik (DOM ringan) */}
+      {filtered.length > visible.length && (
+        <div className="flex justify-center mt-5 px-4 sm:px-6">
+          <Button variant="secondary" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
+            Muat lebih banyak ({visible.length}/{filtered.length})
+          </Button>
+        </div>
+      )}
 
       {/* View Detail Modal */}
       <Modal
@@ -1323,8 +1340,12 @@ export default function Order({
         </div>
       </Modal>
 
-      {/* Print Invoice */}
-      {printTrx && <Invoice transaction={printTrx} storeInfo={storeInfo} onClose={() => setPrintTrx(null)} />}
+      {/* Print Invoice — lazy (html2canvas chunk hanya saat cetak) */}
+      {printTrx && (
+        <React.Suspense fallback={null}>
+          <Invoice transaction={printTrx} storeInfo={storeInfo} onClose={() => setPrintTrx(null)} />
+        </React.Suspense>
+      )}
     </div>
   )
 }

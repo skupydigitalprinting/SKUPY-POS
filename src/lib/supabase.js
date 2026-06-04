@@ -21,6 +21,37 @@ export const supabase = createClient(
 
 export const LOGOS_BUCKET = 'logos'
 export const INVOICES_BUCKET = 'invoices'
+export const PRODUCTS_BUCKET = 'products'
+
+/**
+ * Upload a product image (compressed WebP/JPEG blob) to the public
+ * `products` bucket. Returns the public URL to store in products.image.
+ */
+export async function uploadProductImage(blob, name = 'produk') {
+  if (!blob) throw new Error('Gambar kosong')
+  const ext = (blob.type && blob.type.includes('webp')) ? 'webp' : 'jpg'
+  const safe = String(name).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'produk'
+  const filename = `${safe}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`
+  const { error } = await supabase.storage
+    .from(PRODUCTS_BUCKET)
+    .upload(filename, blob, {
+      upsert: true,
+      contentType: blob.type || `image/${ext}`,
+      cacheControl: '31536000', // 1 tahun — gambar produk jarang berubah
+    })
+  if (error) throw error
+  const { data } = supabase.storage.from(PRODUCTS_BUCKET).getPublicUrl(filename)
+  return data.publicUrl
+}
+
+/** Delete a product image by its public URL (best-effort). */
+export async function deleteProductImage(publicUrl) {
+  if (!publicUrl) return
+  const m = String(publicUrl).match(/\/storage\/v1\/object\/public\/products\/(.+)$/)
+  if (!m) return
+  const path = decodeURIComponent(m[1])
+  try { await supabase.storage.from(PRODUCTS_BUCKET).remove([path]) } catch { /* ignore */ }
+}
 
 /**
  * Upload a logo image to the public `logos` bucket.
