@@ -224,6 +224,8 @@ function AppShell() {
       storeInfo={store.storeInfo}
       currentUser={store.currentUser}
       setActivePage={setActivePage}
+      deleteTransaction={store.deleteTransaction}
+      editTransaction={store.editTransaction}
     />,
     kasir: <Kasir
       products={store.products}
@@ -263,7 +265,8 @@ function AppShell() {
       debts={scopedDebts}
       customers={store.customers}
       transactions={scopedTransactions}
-      stats={store.stats}
+      admins={store.admins}
+      currentUser={store.currentUser}
       payDebt={store.payDebt}
       payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}

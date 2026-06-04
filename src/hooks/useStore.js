@@ -1057,6 +1057,54 @@ export function useStore() {
     })
   }, [transactions, processDebtPayment])
 
+  // editTransaction — koreksi data invoice dari Dashboard owner.
+  // Field yang bisa diubah: customer, total, discount, paid (DP/dibayar),
+  // paymentMethod, dueDate. remaining + status dihitung ulang (integer).
+  // Debt terkait di-mirror + customer di-recalc + refresh semua.
+  const editTransaction = useCallback(async (id, fields) => wrap(async () => {
+    const cur = transactions.find(t => t.id === id)
+    if (!cur) return { ok: false, error: 'Transaksi tidak ditemukan' }
+    const total = fields.total != null ? Math.round(Number(fields.total) || 0) : Math.round(+cur.total || 0)
+    const discount = fields.discount != null ? Math.round(Number(fields.discount) || 0) : Math.round(+cur.discount || 0)
+    let paid = fields.paid != null ? Math.round(Number(fields.paid) || 0) : Math.round(+cur.paid || 0)
+    if (paid > total) paid = total
+    if (paid < 0) paid = 0
+    const remaining = Math.max(0, total - paid)
+    const status = remaining <= 0 ? 'lunas' : 'pending'
+    const upd = {
+      total, discount, paid, dp: paid, remaining, status,
+      payment_method: fields.paymentMethod ?? cur.paymentMethod,
+      customer: fields.customer != null ? String(fields.customer) : cur.customer,
+      due_date: fields.dueDate !== undefined ? (fields.dueDate || null) : (cur.dueDate || null),
+    }
+    const { data: row, error } = await supabase
+      .from('transactions').update(upd).eq('id', id).select().single()
+    if (error) return { ok: false, error: error.message }
+
+    // Mirror ke debt terkait (kalau ada)
+    let debtRow = null
+    if (cur.invoiceNo) {
+      const r = await supabase.from('debts').select('id').eq('invoice_no', cur.invoiceNo).maybeSingle()
+      debtRow = r.data
+    }
+    if (!debtRow && cur.transactionId) { /* noop */ }
+    if (!debtRow) {
+      const r2 = await supabase.from('debts').select('id').eq('transaction_id', id).maybeSingle()
+      debtRow = r2.data
+    }
+    if (debtRow) {
+      await supabase.from('debts').update({
+        total_debt: total, paid, remaining,
+        status: remaining <= 0 ? 'lunas' : 'aktif',
+        due_date: upd.due_date,
+      }).eq('id', debtRow.id)
+    }
+
+    if (cur.customerId) await recalculateCustomerSummary(cur.customerId)
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+    return { ok: true, data: trxFromDB(row) }
+  }), [transactions, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+
   const deleteTransaction = useCallback(async (id) => wrap(async () => {
     // Capture customerId BEFORE deleting so we can recalc afterwards.
     const trx = transactions.find(t => t.id === id)
@@ -1305,7 +1353,7 @@ export function useStore() {
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct,
-    addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction,
+    addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, deleteAdmin, changePassword,

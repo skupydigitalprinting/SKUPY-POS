@@ -11,11 +11,12 @@ import {
 import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { getCatLabel } from '../hooks/useCategories'
+import DashboardCardDetail from '../components/DashboardCardDetail'
 import Logo from '../components/Logo'
 
 const COLORS = ['#8b5cf6', '#10d98a', '#f59e0b', '#3b82f6', '#ff4d6a', '#a78bfa']
 
-function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, delay = 0 }) {
+function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, delay = 0, onClick }) {
   const colors = {
     accent: { bg: 'rgba(139,92,246,0.12)', icon: '#a78bfa', glow: 'rgba(139,92,246,0.3)' },
     green: { bg: 'rgba(16,217,138,0.12)', icon: '#10d98a', glow: 'rgba(16,217,138,0.3)' },
@@ -25,7 +26,8 @@ function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, dela
   const c = colors[color] || colors.accent
   return (
     <div
-      className="animate-slideUp rounded-2xl p-5 relative overflow-hidden"
+      onClick={onClick}
+      className={`animate-slideUp rounded-2xl p-5 relative overflow-hidden ${onClick ? 'cursor-pointer hover:brightness-110 transition' : ''}`}
       style={{
         background: 'var(--bg-card)',
         border: '1px solid var(--border)',
@@ -101,7 +103,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser }) {
+export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction }) {
   const isOwner = currentUser?.role === 'owner'
 
   // ─── Owner-only: Total Uang Masuk (uang yang BENAR-BENAR diterima) ───
@@ -227,6 +229,103 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const catLabel = (id) => getCatLabel(id)
 
   const pieData = stats.categoryData.map((d) => ({ ...d, name: catLabel(d.name) }))
+
+  // ─── Owner: detail sumber data tiap kartu (klik untuk audit + edit/hapus) ───
+  const [detailCard, setDetailCard] = useState(null)
+  const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
+  const txRow = (t) => ({
+    id: t.id, invoiceNo: t.invoiceNo, date: t.date, customer: t.customer,
+    cashierName: adminName(t.cashierId) !== '—' ? adminName(t.cashierId) : (t.cashier || '—'),
+    paymentMethod: t.paymentMethod, total: toMoney(t.total), discount: toMoney(t.discount),
+    paid: toMoney(t.paid), remaining: toMoney(t.remaining), status: t.status, dueDate: t.dueDate,
+    editable: true,
+  })
+  const validTx = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
+  const today = new Date().toDateString()
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+  const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0)
+
+  const buildCard = (key) => {
+    switch (key) {
+      case 'omzet': {
+        const base = (adminFilter !== 'all' || dateFrom || dateTo) ? filteredTrx : validTx
+        const rows = base.filter(t => t.status === 'lunas').map(txRow)
+        return { title: 'Total Omzet', rows, total: sum(rows, r => r.total) }
+      }
+      case 'omzetToday': {
+        const rows = validTx.filter(t => t.status === 'lunas' && new Date(t.date).toDateString() === today).map(txRow)
+        return { title: 'Omzet Hari Ini', rows, total: sum(rows, r => r.total) }
+      }
+      case 'omzetMonth': {
+        const rows = validTx.filter(t => t.status === 'lunas' && new Date(t.date).getTime() >= monthStart).map(txRow)
+        return { title: 'Omzet Bulan Ini', rows, total: sum(rows, r => r.total) }
+      }
+      case 'orderToday': {
+        const rows = validTx.filter(t => new Date(t.date).toDateString() === today).map(txRow)
+        return { title: 'Order Hari Ini', rows, total: rows.length, isCount: true }
+      }
+      case 'orderMonth': {
+        const rows = validTx.filter(t => new Date(t.date).getTime() >= monthStart).map(txRow)
+        return { title: 'Order Bulan Ini', rows, total: rows.length, isCount: true }
+      }
+      case 'pending': {
+        const rows = validTx.filter(t => t.status === 'pending').map(txRow)
+        return { title: 'Pending Order', rows, total: rows.length, isCount: true }
+      }
+      case 'uangMasuk': {
+        const rows = validTx.filter(t => toMoney(t.paid) > 0).map(txRow)
+        return { title: 'Total Uang Masuk', rows, total: uangMasuk.total }
+      }
+      case 'cash': case 'transfer': case 'qris': {
+        const direct = validTx.filter(t => t.paymentMethod === key && toMoney(t.paid) > 0).map(txRow)
+        const fromCicilan = (debtPayments || []).filter(p => p.payment_method === key).map(p => ({
+          id: 'dp-' + p.id, invoiceNo: p.invoice_no, date: p.paid_at, customer: '(cicilan hutang)',
+          cashierName: adminName(p.cashier_id), paymentMethod: key,
+          total: toMoney(p.amount), paid: toMoney(p.amount), remaining: 0, status: 'lunas', editable: false,
+        }))
+        const rows = [...direct, ...fromCicilan]
+        return { title: key.toUpperCase(), rows, total: uangMasuk[key] }
+      }
+      case 'cicilan': {
+        const rows = (debtPayments || []).map(p => ({
+          id: 'dp-' + p.id, invoiceNo: p.invoice_no, date: p.paid_at, customer: '(cicilan hutang)',
+          cashierName: adminName(p.cashier_id), paymentMethod: p.payment_method,
+          total: toMoney(p.amount), paid: toMoney(p.amount), remaining: 0, status: 'lunas', editable: false,
+        }))
+        return { title: 'Cicilan Hutang', rows, total: uangMasuk.cicilan }
+      }
+      case 'piutang': {
+        const rows = (debts || []).filter(d => Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)) > 0).map(d => ({
+          id: d.transactionId || d.id, invoiceNo: d.invoiceNo, date: d.createdAt,
+          customer: customers.find(c => c.id === d.customerId)?.name || '—',
+          cashierName: '—', paymentMethod: 'hutang',
+          total: toMoney(d.totalDebt), paid: toMoney(d.paid),
+          remaining: Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)),
+          status: 'pending', editable: !!d.transactionId,
+        }))
+        return { title: 'Piutang Aktif', rows, total: sum(rows, r => r.remaining) }
+      }
+      case 'penjualan': case 'laba': case 'modal': {
+        let base = validTx.filter(t => t.status === 'lunas')
+        if (labaFrom) { const f = new Date(labaFrom + 'T00:00:00').getTime(); base = base.filter(t => new Date(t.date).getTime() >= f) }
+        if (labaTo) { const tt = new Date(labaTo + 'T23:59:59').getTime(); base = base.filter(t => new Date(t.date).getTime() <= tt) }
+        const rows = base.map(txRow)
+        const titles = { penjualan: 'Total Penjualan', laba: 'Laba Bersih', modal: 'Modal Barang' }
+        const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profit
+        return { title: titles[key], rows, total }
+      }
+      case 'pelanggan': {
+        const rows = (customers || []).map(c => ({
+          id: c.id, invoiceNo: '—', date: c.createdAt, customer: c.name, cashierName: '—',
+          paymentMethod: '—', total: 0, paid: 0, remaining: 0, status: '-', editable: false,
+        }))
+        return { title: 'Total Pelanggan', rows, total: rows.length, isCount: true }
+      }
+      default:
+        return { title: key, rows: [], total: 0 }
+    }
+  }
+  const openCard = (key) => { if (isOwner) setDetailCard(buildCard(key)) }
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0 }}>
@@ -373,6 +472,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             color="accent"
             trend="+12%"
             delay={0}
+            onClick={isOwner ? () => openCard('omzet') : undefined}
           />
           <StatCard
             icon={ShoppingBag}
@@ -382,6 +482,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             color="green"
             trend="+8%"
             delay={60}
+            onClick={isOwner ? () => openCard('omzetToday') : undefined}
           />
           <StatCard
             icon={Clock}
@@ -390,6 +491,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub={`+${stats.procesCount} sedang proses`}
             color="amber"
             delay={120}
+            onClick={isOwner ? () => openCard('pending') : undefined}
           />
           <StatCard
             icon={Users}
@@ -398,6 +500,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub={`${stats.totalTransactions} transaksi total`}
             color="blue"
             delay={180}
+            onClick={isOwner ? () => openCard('pelanggan') : undefined}
           />
         </div>
 
@@ -410,6 +513,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub={new Date().toLocaleDateString('id-ID', { month: 'long' })}
             color="accent"
             delay={0}
+            onClick={isOwner ? () => openCard('omzetMonth') : undefined}
           />
           <StatCard
             icon={Receipt}
@@ -418,6 +522,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub="Transaksi"
             color="green"
             delay={60}
+            onClick={isOwner ? () => openCard('orderToday') : undefined}
           />
           <StatCard
             icon={Receipt}
@@ -426,6 +531,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub={new Date().toLocaleDateString('id-ID', { month: 'long' })}
             color="blue"
             delay={120}
+            onClick={isOwner ? () => openCard('orderMonth') : undefined}
           />
           <StatCard
             icon={Star}
@@ -434,6 +540,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             sub={`${stats.activeDebtsCount} customer`}
             color="amber"
             delay={180}
+            onClick={isOwner ? () => openCard('piutang') : undefined}
           />
         </div>
 
@@ -452,17 +559,18 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
               {[
-                { label: 'Total Uang Masuk', value: uangMasuk.total, icon: Banknote, hint: 'Cash + Transfer + QRIS + Cicilan' },
-                { label: 'Cash', value: uangMasuk.cash, icon: Banknote, hint: 'Pembayaran tunai' },
-                { label: 'Transfer', value: uangMasuk.transfer, icon: CreditCard, hint: 'Pembayaran transfer' },
-                { label: 'QRIS', value: uangMasuk.qris, icon: Smartphone, hint: 'Pembayaran QRIS' },
-                { label: 'Cicilan Hutang', value: uangMasuk.cicilan, icon: Repeat, hint: 'Dari bayar cicilan' },
+                { key: 'uangMasuk', label: 'Total Uang Masuk', value: uangMasuk.total, icon: Banknote, hint: 'Cash + Transfer + QRIS + Cicilan' },
+                { key: 'cash', label: 'Cash', value: uangMasuk.cash, icon: Banknote, hint: 'Pembayaran tunai' },
+                { key: 'transfer', label: 'Transfer', value: uangMasuk.transfer, icon: CreditCard, hint: 'Pembayaran transfer' },
+                { key: 'qris', label: 'QRIS', value: uangMasuk.qris, icon: Smartphone, hint: 'Pembayaran QRIS' },
+                { key: 'cicilan', label: 'Cicilan Hutang', value: uangMasuk.cicilan, icon: Repeat, hint: 'Dari bayar cicilan' },
               ].map((c, i) => {
                 const Icon = c.icon
                 const primary = i === 0
                 return (
                   <div key={c.label}
-                    className="rounded-2xl p-4 relative overflow-hidden animate-slideUp"
+                    onClick={() => openCard(c.key)}
+                    className="rounded-2xl p-4 relative overflow-hidden animate-slideUp cursor-pointer hover:brightness-110 transition"
                     style={{
                       background: primary
                         ? 'linear-gradient(135deg, rgba(14,165,233,0.14), rgba(56,189,248,0.06))'
@@ -545,7 +653,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
 
             <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-3">
               {/* Penjualan */}
-              <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div onClick={() => openCard('penjualan')}
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                     style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)' }}>
@@ -562,7 +672,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
               </div>
 
               {/* Modal */}
-              <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div onClick={() => openCard('modal')}
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                     style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)' }}>
@@ -579,7 +691,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
               </div>
 
               {/* Laba / Rugi */}
-              <div className="rounded-xl p-4"
+              <div onClick={() => openCard('laba')}
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
                 style={{
                   background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
                   border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
@@ -1010,6 +1123,28 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           </div>
         </div>
       </div>
+
+      {/* Detail sumber data tiap kartu — OWNER ONLY */}
+      {isOwner && detailCard && (
+        <DashboardCardDetail
+          open
+          onClose={() => setDetailCard(null)}
+          title={detailCard.title}
+          rows={detailCard.rows}
+          total={detailCard.total}
+          isCount={detailCard.isCount}
+          onEdit={async (id, fields) => {
+            const r = await editTransaction?.(id, fields)
+            if (r?.ok) setDetailCard(null) // tutup → kartu refresh dgn data baru
+            return r
+          }}
+          onDelete={async (id) => {
+            const r = await deleteTransaction?.(id)
+            if (r?.ok) setDetailCard(null)
+            return r
+          }}
+        />
+      )}
     </div>
   )
 }

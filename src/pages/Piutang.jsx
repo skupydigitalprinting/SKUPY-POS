@@ -34,12 +34,16 @@ function allocateFIFO(invoicesAsc, amount) {
 }
 
 export default function Piutang({
-  debts, customers, transactions, stats,
+  debts, customers, transactions, admins = [], currentUser,
   payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
 }) {
   const toast = useToast()
+  const isOwner = currentUser?.role === 'owner'
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('aktif')
+  // Owner bisa filter per admin/kasir. Staff: debts sudah di-scope di App
+  // (hanya transaksi miliknya), jadi filter ini disembunyikan.
+  const [adminFilter, setAdminFilter] = useState('all')
   const [detailTarget, setDetailTarget] = useState(null)  // group
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
@@ -50,18 +54,56 @@ export default function Piutang({
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
+  // Peta debt → cashierId (lewat transaksi terkait) untuk filter per-admin owner.
+  const cashierOf = useMemo(() => {
+    const byId = new Map((transactions || []).map(t => [t.id, t.cashierId]))
+    return (d) => byId.get(d.transactionId)
+  }, [transactions])
+
   // ── Enrich tiap hutang dengan customer + sisa yang diderivasi ──
   const enriched = useMemo(() => debts.map(d => ({
     ...d,
     remaining: remOf(d),
+    cashierId: cashierOf(d),
     customer: customers.find(c => c.id === d.customerId)
       || { name: 'Customer dihapus', phone: '', whatsapp: '' },
-  })), [debts, customers])
+  })), [debts, customers, cashierOf])
+
+  // Owner filter per admin (staff: tidak ada efek karena data sudah di-scope).
+  const scopedEnriched = useMemo(() => (
+    adminFilter === 'all' ? enriched : enriched.filter(d => d.cashierId === adminFilter)
+  ), [enriched, adminFilter])
+
+  // ── Ringkasan piutang (dari data yang SUDAH di-scope) ──
+  //   Piutang Aktif = Σ sisa (remaining > 0)
+  //   Sudah Bayar   = Σ paid  (DP + cicilan + pelunasan) — bukan hanya invoice lunas
+  const summary = useMemo(() => {
+    let piutangAktif = 0, sudahBayar = 0, totalTagihan = 0
+    const activeCust = new Set()
+    scopedEnriched.forEach(d => {
+      const rem = remOf(d)
+      piutangAktif += rem
+      sudahBayar += toMoney(d.paid)
+      totalTagihan += toMoney(d.totalDebt)
+      if (rem > 0 && d.customerId) activeCust.add(d.customerId)
+    })
+    // Top debtors (per customer, sisa terbesar)
+    const map = new Map()
+    scopedEnriched.forEach(d => {
+      const rem = remOf(d)
+      if (rem <= 0) return
+      const cur = map.get(d.customer.name) || { name: d.customer.name, totalRemaining: 0 }
+      cur.totalRemaining += rem
+      map.set(d.customer.name, cur)
+    })
+    const topDebtors = [...map.values()].sort((a, b) => b.totalRemaining - a.totalRemaining).slice(0, 5)
+    return { piutangAktif, sudahBayar, totalTagihan, activeCount: activeCust.size, topDebtors }
+  }, [scopedEnriched])
 
   // ── Grouping per customer (fallback ke nama kalau customerId kosong) ──
   const groups = useMemo(() => {
     const map = new Map()
-    enriched.forEach(d => {
+    scopedEnriched.forEach(d => {
       const key = d.customerId || `name:${(d.customer.name || '').toLowerCase()}`
       if (!map.has(key)) {
         map.set(key, { key, customerId: d.customerId, customer: d.customer, invoices: [] })
@@ -85,7 +127,7 @@ export default function Piutang({
         totalDebt, totalPaid, totalRemaining, nearestDue, status, overdue,
       }
     }).sort((a, b) => b.totalRemaining - a.totalRemaining || b.totalDebt - a.totalDebt)
-  }, [enriched])
+  }, [scopedEnriched])
 
   const filteredGroups = useMemo(() => {
     const q = search.toLowerCase()
@@ -187,10 +229,10 @@ export default function Piutang({
             </div>
             <p className="text-base sm:text-lg font-bold truncate"
               style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
-              {formatRupiah(stats.totalActiveDebt)}
+              {formatRupiah(summary.piutangAktif)}
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {stats.activeDebtsCount} customer aktif
+              {summary.activeCount} customer aktif
             </p>
           </div>
           <div className="rounded-2xl p-4" style={{
@@ -200,15 +242,15 @@ export default function Piutang({
             <div className="flex items-center gap-2 mb-1">
               <CheckCircle2 size={13} style={{ color: '#10d98a' }} />
               <p className="text-xs font-semibold" style={{ color: '#10d98a', fontFamily: 'Syne' }}>
-                Sudah Lunas
+                Sudah Bayar
               </p>
             </div>
             <p className="text-base sm:text-lg font-bold truncate"
               style={{ color: '#10d98a', fontFamily: 'Syne' }}>
-              {formatRupiah(stats.totalPaidDebt)}
+              {formatRupiah(summary.sudahBayar)}
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Total hutang yang sudah dilunasi
+              Total uang yang sudah dibayar customer
             </p>
           </div>
           <div className="rounded-2xl p-4"
@@ -220,15 +262,15 @@ export default function Piutang({
               </p>
             </div>
             <div className="space-y-1">
-              {stats.topDebtors.slice(0, 2).map(d => (
-                <div key={d.id} className="flex justify-between text-xs">
+              {summary.topDebtors.slice(0, 2).map(d => (
+                <div key={d.name} className="flex justify-between text-xs">
                   <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{d.name}</span>
                   <span className="font-bold ml-2" style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
                     {formatRupiah(d.totalRemaining)}
                   </span>
                 </div>
               ))}
-              {stats.topDebtors.length === 0 && (
+              {summary.topDebtors.length === 0 && (
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Belum ada</p>
               )}
             </div>
@@ -244,6 +286,20 @@ export default function Piutang({
               className="w-full pl-9 pr-4 py-2.5 rounded-xl text-sm"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
           </div>
+          {/* Owner: filter per admin/kasir */}
+          {isOwner && admins.length > 0 && (
+            <select
+              value={adminFilter}
+              onChange={(e) => setAdminFilter(e.target.value)}
+              className="px-3 py-2 rounded-xl text-xs font-semibold"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontFamily: 'Syne', minWidth: 150 }}
+            >
+              <option value="all">Semua Admin</option>
+              {admins.map(a => (
+                <option key={a.id} value={a.id}>{a.name || a.username}</option>
+              ))}
+            </select>
+          )}
           <div className="flex gap-2">
             {STATUS_OPTIONS.map(s => (
               <button key={s.id} onClick={() => setFilter(s.id)}
