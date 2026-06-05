@@ -1264,11 +1264,14 @@ export function useStore() {
     const todayTrx = transactions.filter(t => new Date(t.date).toDateString() === today)
     const monthTrx = transactions.filter(t => new Date(t.date) >= monthStart)
 
-    // Transaksi batal (order_status 'dibatalkan') TIDAK dihitung sebagai omzet.
+    // OMZET = total NILAI seluruh invoice valid (Cash/Transfer/QRIS/Hutang/DP/
+    // Cicilan), TANPA melihat sudah dibayar atau belum. Hanya transaksi batal
+    // ('dibatalkan') yang dikecualikan; nota terhapus sudah lenyap dari data.
+    // (BUKAN SUM(paid) dan BUKAN hanya status 'lunas'.)
     const notCanceled = (t) => (t.orderStatus || '') !== 'dibatalkan'
-    const totalOmzet = transactions.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
-    const todayOmzet = todayTrx.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
-    const monthOmzet = monthTrx.filter(t => t.status === 'lunas' && notCanceled(t)).reduce((s, t) => s + t.total, 0)
+    const totalOmzet = transactions.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
+    const todayOmzet = todayTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
+    const monthOmzet = monthTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
     const pendingCount = transactions.filter(t => t.status === 'pending').length
     const procesCount = transactions.filter(t => t.status === 'proses').length
     const todayOrders = todayTrx.length

@@ -170,9 +170,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
-  // Apply filter to a copy of transactions
+  // Apply filter to a copy of transactions (kecualikan transaksi batal).
   const filteredTrx = useMemo(() => {
-    let list = transactions || []
+    let list = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
     if (adminFilter !== 'all') {
       list = list.filter(t => t.cashierId === adminFilter)
     }
@@ -248,18 +248,20 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const buildCard = (key) => {
     switch (key) {
       case 'omzet': {
+        // Omzet = total NILAI semua invoice valid (bukan hanya lunas, bukan paid).
         const base = (adminFilter !== 'all' || dateFrom || dateTo) ? filteredTrx : validTx
-        const rows = base.filter(t => t.status === 'lunas').map(txRow)
+        const rows = base.map(txRow)
         return { title: 'Total Omzet', rows, total: sum(rows, r => r.total) }
       }
       case 'omzetToday': {
-        const rows = validTx.filter(t => t.status === 'lunas' && new Date(t.date).toDateString() === today).map(txRow)
+        const rows = validTx.filter(t => new Date(t.date).toDateString() === today).map(txRow)
         return { title: 'Omzet Hari Ini', rows, total: sum(rows, r => r.total) }
       }
       case 'omzetMonth': {
-        const rows = validTx.filter(t => t.status === 'lunas' && new Date(t.date).getTime() >= monthStart).map(txRow)
+        const rows = validTx.filter(t => new Date(t.date).getTime() >= monthStart).map(txRow)
         return { title: 'Omzet Bulan Ini', rows, total: sum(rows, r => r.total) }
       }
+
       case 'orderToday': {
         const rows = validTx.filter(t => new Date(t.date).toDateString() === today).map(txRow)
         return { title: 'Order Hari Ini', rows, total: rows.length, isCount: true }
