@@ -8,7 +8,7 @@ import {
   ArrowUpRight, Star, Zap, ArrowRight, Activity,
   Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone, Repeat,
 } from 'lucide-react'
-import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney } from '../utils/helpers'
+import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { getCatLabel } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
@@ -187,6 +187,20 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     return list
   }, [transactions, adminFilter, dateFrom, dateTo])
 
+  // ─── Piutang Aktif (mengikuti filter admin + tanggal dashboard) ───
+  // Sumber: debts dengan sisa > 0. Admin via kasir transaksi terkait;
+  // tanggal pakai createdAt debt. Nota terhapus sudah lenyap dari data.
+  const piutangData = useMemo(() => {
+    const cashierByTrx = new Map((transactions || []).map(t => [t.id, t.cashierId]))
+    let list = (debts || []).filter(d => Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)) > 0)
+    if (adminFilter !== 'all') list = list.filter(d => cashierByTrx.get(d.transactionId) === adminFilter)
+    if (dateFrom) { const f = new Date(dateFrom + 'T00:00:00').getTime(); list = list.filter(d => new Date(d.createdAt).getTime() >= f) }
+    if (dateTo) { const tt = new Date(dateTo + 'T23:59:59').getTime(); list = list.filter(d => new Date(d.createdAt).getTime() <= tt) }
+    const value = list.reduce((s, d) => s + Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)), 0)
+    const custCount = new Set(list.map(d => d.customerId).filter(Boolean)).size
+    return { list, value, custCount, cashierByTrx }
+  }, [debts, transactions, adminFilter, dateFrom, dateTo])
+
   // Per-admin performance rows (calculated on every render — small list)
   const adminPerformance = useMemo(() => {
     const today = new Date()
@@ -297,15 +311,18 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: 'Cicilan Hutang', rows, total: uangMasuk.cicilan }
       }
       case 'piutang': {
-        const rows = (debts || []).filter(d => Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)) > 0).map(d => ({
+        const rows = piutangData.list.map(d => ({
           id: d.transactionId || d.id, invoiceNo: d.invoiceNo, date: d.createdAt,
           customer: customers.find(c => c.id === d.customerId)?.name || '—',
-          cashierName: '—', paymentMethod: 'hutang',
+          cashierName: adminName(piutangData.cashierByTrx.get(d.transactionId)),
+          paymentMethod: 'hutang',
           total: toMoney(d.totalDebt), paid: toMoney(d.paid),
           remaining: Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)),
+          dueDate: d.dueDate,
           status: 'pending', editable: !!d.transactionId,
         }))
-        return { title: 'Piutang Aktif', rows, total: sum(rows, r => r.remaining) }
+        // total cocok PERSIS dengan card Piutang Aktif (piutangData.value)
+        return { title: 'Piutang Aktif', rows, total: piutangData.value, manage: true }
       }
       case 'penjualan': case 'laba': case 'modal': {
         let base = validTx.filter(t => t.status === 'lunas')
@@ -511,7 +528,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           <StatCard
             icon={TrendingUp}
             label="Omzet Bulan Ini"
-            value={formatCompact(stats.monthOmzet)}
+            value={formatRupiah(stats.monthOmzet)}
             sub={new Date().toLocaleDateString('id-ID', { month: 'long' })}
             color="accent"
             delay={0}
@@ -538,8 +555,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           <StatCard
             icon={Star}
             label="Piutang Aktif"
-            value={formatCompact(stats.totalActiveDebt)}
-            sub={`${stats.activeDebtsCount} customer`}
+            value={formatRupiah(piutangData.value)}
+            sub={`${piutangData.custCount} customer`}
             color="amber"
             delay={180}
             onClick={isOwner ? () => openCard('piutang') : undefined}
@@ -804,19 +821,19 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                         {a.trxCount}
                       </td>
                       <td className="px-2 py-3 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                        {formatCompact(a.omzetToday)}
+                        {formatRupiah(a.omzetToday)}
                       </td>
                       <td className="px-2 py-3 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                        {formatCompact(a.omzetMonth)}
+                        {formatRupiah(a.omzetMonth)}
                       </td>
                       <td className="px-2 py-3 text-right font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
                         {formatRupiah(a.totalOmzet)}
                       </td>
                       <td className="px-2 py-3 text-right" style={{ color: '#f59e0b', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                        {formatCompact(a.debtCreated)}
+                        {formatRupiah(a.debtCreated)}
                       </td>
                       <td className="px-2 py-3 text-right" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
-                        {formatCompact(a.debtLunas)}
+                        {formatRupiah(a.debtLunas)}
                       </td>
                     </tr>
                   ))}
@@ -863,7 +880,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                       {c.name}
                     </p>
                     <p className="text-xs truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-                      {formatCompact(c.totalSpent)}
+                      {formatRupiah(c.totalSpent)}
                     </p>
                   </div>
                 </div>
@@ -960,11 +977,11 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                       {p.name}
                     </p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {p.sold} terjual
+                      {formatQty(p.sold, p.unit)} terjual
                     </p>
                   </div>
                   <div className="text-xs font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-                    {formatCompact(p.price * p.sold)}
+                    {formatRupiah(Math.round(p.price * p.sold))}
                   </div>
                 </div>
               ))}
@@ -1109,7 +1126,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>
-                        {formatCompact(t.total)}
+                        {formatRupiah(t.total)}
                       </p>
                       <Badge color={s.color}>{s.label}</Badge>
                     </div>
@@ -1135,6 +1152,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           rows={detailCard.rows}
           total={detailCard.total}
           isCount={detailCard.isCount}
+          showDue={detailCard.manage}
+          onManage={detailCard.manage ? () => { setDetailCard(null); setActivePage('piutang') } : undefined}
+          manageLabel="Bayar / Kelola di Piutang"
           onEdit={async (id, fields) => {
             const r = await editTransaction?.(id, fields)
             if (r?.ok) setDetailCard(null) // tutup → kartu refresh dgn data baru

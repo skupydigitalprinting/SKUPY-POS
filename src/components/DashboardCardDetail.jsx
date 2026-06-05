@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Pencil, Trash2, Check, X, AlertTriangle, Loader2 } from 'lucide-react'
+import { Pencil, Trash2, Check, X, AlertTriangle, Loader2, Wallet } from 'lucide-react'
 import Modal from './Modal'
 import { Button, Badge } from './ui'
 import { formatRupiah, formatDate, parseCurrency, STATUS_MAP } from '../utils/helpers'
@@ -19,7 +19,7 @@ const PAY_LABEL = { cash: 'Cash', transfer: 'Transfer', qris: 'QRIS', hutang: 'H
  *   isCount         true → tampilkan total sebagai jumlah baris, bukan rupiah
  *   onEdit(id, fields) / onDelete(id)  → async, owner only
  */
-export default function DashboardCardDetail({ open, onClose, title, rows = [], total = 0, isCount = false, onEdit, onDelete }) {
+export default function DashboardCardDetail({ open, onClose, title, rows = [], total = 0, isCount = false, onEdit, onDelete, showDue = false, onManage, manageLabel = 'Kelola' }) {
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -83,14 +83,14 @@ export default function DashboardCardDetail({ open, onClose, title, rows = [], t
         <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['Invoice', 'Tanggal', 'Customer', 'Admin', 'Metode', 'Total', 'Dibayar', 'Sisa', 'Status', ''].map((h, i) => (
-                <th key={i} className={`px-2 py-2 font-bold uppercase ${i >= 5 && i <= 7 ? 'text-right' : 'text-left'}`} style={th}>{h}</th>
+              {['Invoice', 'Tanggal', 'Customer', 'Admin', 'Metode', 'Total', 'Dibayar', 'Sisa', ...(showDue ? ['Jatuh Tempo'] : []), 'Status', ''].map((h, i) => (
+                <th key={i} className={`px-2 py-2 font-bold uppercase ${(h === 'Total' || h === 'Dibayar' || h === 'Sisa') ? 'text-right' : 'text-left'}`} style={th}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={10} className="px-2 py-6 text-center" style={{ color: 'var(--text-muted)' }}>Tidak ada data</td></tr>
+              <tr><td colSpan={showDue ? 11 : 10} className="px-2 py-6 text-center" style={{ color: 'var(--text-muted)' }}>Tidak ada data</td></tr>
             )}
             {rows.map(r => {
               const s = STATUS_MAP[r.status] || { label: r.status || '-', color: 'gray' }
@@ -98,7 +98,7 @@ export default function DashboardCardDetail({ open, onClose, title, rows = [], t
                 return (
                   <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', background: 'rgba(139,92,246,0.05)' }}>
                     <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{r.invoiceNo || '—'}</td>
-                    <td className="px-2 py-2" colSpan={8}>
+                    <td className="px-2 py-2" colSpan={showDue ? 9 : 8}>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         <input value={form.customer} onChange={e => setForm(p => ({ ...p, customer: e.target.value }))}
                           placeholder="Customer" className="px-2 py-1.5 rounded-lg text-xs"
@@ -141,7 +141,7 @@ export default function DashboardCardDetail({ open, onClose, title, rows = [], t
               if (delId === r.id) {
                 return (
                   <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', background: 'rgba(255,77,106,0.05)' }}>
-                    <td className="px-2 py-2.5" colSpan={9} style={{ color: 'var(--text-secondary)' }}>
+                    <td className="px-2 py-2.5" colSpan={showDue ? 10 : 9} style={{ color: 'var(--text-secondary)' }}>
                       Hapus invoice <strong>{r.invoiceNo || '—'}</strong>? Data piutang & pembayaran terkait ikut terhapus.
                     </td>
                     <td className="px-2 py-2.5 text-right whitespace-nowrap">
@@ -171,6 +171,7 @@ export default function DashboardCardDetail({ open, onClose, title, rows = [], t
                   <td className="px-2 py-2.5 text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(r.total)}</td>
                   <td className="px-2 py-2.5 text-right" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(r.paid)}</td>
                   <td className="px-2 py-2.5 text-right" style={{ color: r.remaining > 0 ? '#ef4444' : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(r.remaining)}</td>
+                  {showDue && <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>{r.dueDate ? formatDate(r.dueDate) : '—'}</td>}
                   <td className="px-2 py-2.5"><Badge color={s.color}>{s.label}</Badge></td>
                   <td className="px-2 py-2.5 text-right whitespace-nowrap">
                     {onEdit && onDelete && r.editable !== false && (
@@ -202,6 +203,12 @@ export default function DashboardCardDetail({ open, onClose, title, rows = [], t
           {isCount ? `${total} item` : formatRupiah(total)}
         </span>
       </div>
+
+      {onManage && (
+        <Button variant="success" className="w-full mt-4" onClick={onManage}>
+          <Wallet size={14} /> {manageLabel}
+        </Button>
+      )}
     </Modal>
   )
 }
