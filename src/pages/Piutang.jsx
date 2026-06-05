@@ -368,22 +368,23 @@ export default function Piutang({
                       <ChevronRight size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} className="hidden sm:block" />
                     </button>
 
-                    {/* Totals */}
-                    <div className="grid grid-cols-3 gap-3 sm:gap-4 flex-shrink-0 items-center">
-                      <div className="text-right">
+                    {/* Totals — responsif: desktop 3 kolom, iPhone portrait vertikal */}
+                    <div className="debt-summary-grid gap-3 sm:gap-4 flex-shrink-0">
+                      <div className="debt-cell text-right">
                         <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Total</p>
                         <p className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
                           {formatRupiah(g.totalDebt)}
                         </p>
                       </div>
-                      <div className="text-right">
+                      <div className="debt-cell text-right">
                         <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Dibayar</p>
                         <p className="text-xs font-bold" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>
                           {formatRupiah(g.totalPaid)}
                         </p>
                       </div>
-                      <div className="text-right rounded-xl px-3 py-2"
+                      <div className="debt-remaining-card text-right rounded-xl px-3 py-2"
                         style={{
+                          minWidth: 0,
                           background: g.totalRemaining > 0 ? 'rgba(239,68,68,0.10)' : 'rgba(16,217,138,0.10)',
                           border: `1px solid ${g.totalRemaining > 0 ? 'rgba(239,68,68,0.35)' : 'rgba(16,217,138,0.35)'}`,
                         }}>
@@ -391,11 +392,10 @@ export default function Piutang({
                           style={{ color: g.totalRemaining > 0 ? '#ef4444' : '#10d98a', fontFamily: 'Syne', letterSpacing: '0.12em' }}>
                           {g.totalRemaining > 0 ? 'Sisa Hutang' : 'Lunas'}
                         </p>
-                        <p className="text-base font-extrabold"
+                        <p className="debt-remaining-amount text-base font-extrabold"
                           style={{
                             color: g.totalRemaining > 0 ? '#ef4444' : '#10d98a',
                             fontFamily: '"Space Grotesk", "Syne", sans-serif',
-                            fontVariantNumeric: 'tabular-nums',
                           }}>
                           {formatRupiah(g.totalRemaining)}
                         </p>
@@ -403,8 +403,8 @@ export default function Piutang({
                     </div>
                   </div>
 
-                  {/* Action buttons */}
-                  <div className="flex gap-2 mt-3 flex-wrap">
+                  {/* Action buttons — mobile 2 kolom rapi */}
+                  <div className="debt-actions flex gap-2 mt-3 flex-wrap">
                     <button onClick={() => setDetailTarget(g)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
                       style={{

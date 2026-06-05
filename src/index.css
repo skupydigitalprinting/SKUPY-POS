@@ -289,3 +289,51 @@ input[type="number"].no-spin::-webkit-outer-spin-button,
   border-color: rgba(139,92,246,0.55) !important;
   box-shadow: 0 0 0 2px rgba(139,92,246,0.12);
 }
+
+/* ─── Card Piutang: ringkasan Total / Dibayar / Sisa Hutang ─── */
+/* Desktop & landscape: 3 kolom sejajar (default, tidak berubah). */
+.debt-summary-grid {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
+}
+/* Angka sisa hutang selalu aman dari overflow (tabular + ellipsis). */
+.debt-remaining-amount {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* iPhone portrait & layar kecil: layout vertikal anti-overflow. */
+@media (max-width: 480px) {
+  .debt-summary-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+  /* Total & Dibayar rata kiri biar tidak mepet kanan */
+  .debt-summary-grid .debt-cell {
+    text-align: left;
+  }
+  /* Sisa Hutang full width di bawah */
+  .debt-remaining-card {
+    grid-column: 1 / -1;
+    width: 100%;
+    text-align: left;
+  }
+  .debt-remaining-amount {
+    font-size: clamp(20px, 6vw, 30px);
+  }
+  /* Tombol aksi: 2 kolom rapi, masing-masing full width */
+  .debt-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .debt-actions > * {
+    width: 100%;
+    justify-content: center;
+  }
+}
