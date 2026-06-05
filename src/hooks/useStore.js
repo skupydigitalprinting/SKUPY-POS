@@ -1077,6 +1077,8 @@ export function useStore() {
       customer: fields.customer != null ? String(fields.customer) : cur.customer,
       due_date: fields.dueDate !== undefined ? (fields.dueDate || null) : (cur.dueDate || null),
     }
+    // Tanggal transaksi (created_at) opsional — dipakai saat edit pembayaran langsung.
+    if (fields.date) upd.created_at = new Date(fields.date).toISOString()
     const { data: row, error } = await supabase
       .from('transactions').update(upd).eq('id', id).select().single()
     if (error) return { ok: false, error: error.message }
@@ -1255,6 +1257,90 @@ export function useStore() {
     return { ok: true, data: data || [] }
   }, [])
 
+  // editDebtPayment — koreksi 1 baris pembayaran cicilan (debt_payments).
+  // Mengubah: metode, nominal, tanggal, admin, keterangan. TIDAK membuat baris
+  // baru (update by id). Kalau nominal berubah, debt.paid + transaction.paid
+  // disesuaikan dengan selisihnya (debt.paid = DP + Σ payments → cukup geser delta).
+  const editDebtPayment = useCallback(async (paymentId, fields) => wrap(async () => {
+    if (!paymentId) return { ok: false, error: 'Pembayaran tidak ditemukan' }
+    const { data: pay, error: e0 } = await supabase
+      .from('debt_payments')
+      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, notes')
+      .eq('id', paymentId).maybeSingle()
+    if (e0 || !pay) return { ok: false, error: e0?.message || 'Pembayaran tidak ditemukan' }
+
+    const oldAmount = Math.round(+pay.amount || 0)
+    const newAmount = fields.amount != null ? Math.max(0, Math.round(Number(fields.amount) || 0)) : oldAmount
+    const delta = newAmount - oldAmount
+
+    const upd = {
+      payment_method: fields.paymentMethod ?? pay.payment_method,
+      amount: newAmount,
+      paid_at: fields.paidAt ? new Date(fields.paidAt).toISOString() : pay.paid_at,
+      cashier_id: fields.cashierId !== undefined ? (fields.cashierId || null) : pay.cashier_id,
+    }
+    if (fields.notes !== undefined) upd.notes = String(fields.notes || '')
+    const { error: e1 } = await supabase.from('debt_payments').update(upd).eq('id', paymentId)
+    if (e1) return { ok: false, error: e1.message }
+
+    // Sesuaikan debt + transaction kalau nominal berubah.
+    if (delta !== 0 && pay.debt_id) {
+      const { data: debt } = await supabase.from('debts')
+        .select('id, customer_id, invoice_no, total_debt, paid').eq('id', pay.debt_id).maybeSingle()
+      if (debt) {
+        const total = Math.round(+debt.total_debt || 0)
+        const np = Math.max(0, Math.min(total, Math.round(+debt.paid || 0) + delta))
+        const nr = Math.max(0, total - np)
+        await supabase.from('debts').update({ paid: np, remaining: nr, status: nr <= 0 ? 'lunas' : 'aktif' }).eq('id', debt.id)
+        const inv = pay.invoice_no || debt.invoice_no
+        if (inv) {
+          const { data: trx } = await supabase.from('transactions').select('id, total, paid').eq('invoice_no', inv).maybeSingle()
+          if (trx) {
+            const t = Math.round(+trx.total || 0)
+            const tp = Math.max(0, Math.min(t, Math.round(+trx.paid || 0) + delta))
+            const tr = Math.max(0, t - tp)
+            await supabase.from('transactions').update({ paid: tp, dp: tp, remaining: tr, status: tr <= 0 ? 'lunas' : 'pending' }).eq('id', trx.id)
+          }
+        }
+        if (debt.customer_id) await recalculateCustomerSummary(debt.customer_id)
+      }
+    }
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+    return { ok: true }
+  }), [wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+
+  const deleteDebtPayment = useCallback(async (paymentId) => wrap(async () => {
+    const { data: pay } = await supabase.from('debt_payments')
+      .select('id, debt_id, invoice_no, amount').eq('id', paymentId).maybeSingle()
+    if (!pay) return { ok: false, error: 'Pembayaran tidak ditemukan' }
+    const amt = Math.round(+pay.amount || 0)
+    const { error } = await supabase.from('debt_payments').delete().eq('id', paymentId)
+    if (error) return { ok: false, error: error.message }
+    if (pay.debt_id) {
+      const { data: debt } = await supabase.from('debts')
+        .select('id, customer_id, invoice_no, total_debt, paid').eq('id', pay.debt_id).maybeSingle()
+      if (debt) {
+        const total = Math.round(+debt.total_debt || 0)
+        const np = Math.max(0, Math.round(+debt.paid || 0) - amt)
+        const nr = Math.max(0, total - np)
+        await supabase.from('debts').update({ paid: np, remaining: nr, status: nr <= 0 ? 'lunas' : 'aktif' }).eq('id', debt.id)
+        const inv = pay.invoice_no || debt.invoice_no
+        if (inv) {
+          const { data: trx } = await supabase.from('transactions').select('id, total, paid').eq('invoice_no', inv).maybeSingle()
+          if (trx) {
+            const t = Math.round(+trx.total || 0)
+            const tp = Math.max(0, Math.round(+trx.paid || 0) - amt)
+            const tr = Math.max(0, t - tp)
+            await supabase.from('transactions').update({ paid: tp, dp: tp, remaining: tr, status: tr <= 0 ? 'lunas' : 'pending' }).eq('id', trx.id)
+          }
+        }
+        if (debt.customer_id) await recalculateCustomerSummary(debt.customer_id)
+      }
+    }
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+    return { ok: true }
+  }), [wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+
   // ---------- STATS ----------
   const stats = useMemo(() => {
     const today = new Date().toDateString()
@@ -1362,5 +1448,6 @@ export function useStore() {
     login, logout, addAdmin, deleteAdmin, changePassword,
     addCustomer, updateCustomer, deleteCustomer,
     payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
+    editDebtPayment, deleteDebtPayment,
   }
 }

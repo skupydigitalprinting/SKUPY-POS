@@ -226,6 +226,8 @@ function AppShell() {
       setActivePage={setActivePage}
       deleteTransaction={store.deleteTransaction}
       editTransaction={store.editTransaction}
+      editDebtPayment={store.editDebtPayment}
+      deleteDebtPayment={store.deleteDebtPayment}
     />,
     kasir: <Kasir
       products={store.products}

@@ -103,7 +103,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction }) {
+export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction, editDebtPayment, deleteDebtPayment }) {
   const isOwner = currentUser?.role === 'owner'
 
   // ─── Owner-only: Total Uang Masuk (uang yang BENAR-BENAR diterima) ───
@@ -245,14 +245,27 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const pieData = stats.categoryData.map((d) => ({ ...d, name: catLabel(d.name) }))
 
   // ─── Owner: detail sumber data tiap kartu (klik untuk audit + edit/hapus) ───
-  const [detailCard, setDetailCard] = useState(null)
+  const [detailKey, setDetailKey] = useState(null)
   const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
   const txRow = (t) => ({
+    kind: 'transaction',
     id: t.id, invoiceNo: t.invoiceNo, date: t.date, customer: t.customer,
     cashierName: adminName(t.cashierId) !== '—' ? adminName(t.cashierId) : (t.cashier || '—'),
+    cashierId: t.cashierId,
     paymentMethod: t.paymentMethod, total: toMoney(t.total), discount: toMoney(t.discount),
     paid: toMoney(t.paid), remaining: toMoney(t.remaining), status: t.status, dueDate: t.dueDate,
     editable: true,
+  })
+  // Baris pembayaran cicilan (debt_payments) → kind 'payment'
+  const custByInvoice = new Map((transactions || []).map(t => [t.invoiceNo, t.customer]))
+  const payRow = (p) => ({
+    kind: 'payment',
+    id: 'dp-' + p.id, paymentId: p.id, invoiceNo: p.invoice_no, date: p.paid_at, paidAt: p.paid_at,
+    customer: custByInvoice.get(p.invoice_no) || '(cicilan hutang)',
+    cashierName: adminName(p.cashier_id), cashierId: p.cashier_id,
+    paymentMethod: p.payment_method,
+    total: toMoney(p.amount), paid: toMoney(p.amount), amount: toMoney(p.amount), remaining: 0,
+    notes: p.notes || '', status: 'lunas', editable: true,
   })
   const validTx = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
   const today = new Date().toDateString()
@@ -294,21 +307,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       }
       case 'cash': case 'transfer': case 'qris': {
         const direct = validTx.filter(t => t.paymentMethod === key && toMoney(t.paid) > 0).map(txRow)
-        const fromCicilan = (debtPayments || []).filter(p => p.payment_method === key).map(p => ({
-          id: 'dp-' + p.id, invoiceNo: p.invoice_no, date: p.paid_at, customer: '(cicilan hutang)',
-          cashierName: adminName(p.cashier_id), paymentMethod: key,
-          total: toMoney(p.amount), paid: toMoney(p.amount), remaining: 0, status: 'lunas', editable: false,
-        }))
+        const fromCicilan = (debtPayments || []).filter(p => p.payment_method === key).map(payRow)
         const rows = [...direct, ...fromCicilan]
-        return { title: key.toUpperCase(), rows, total: uangMasuk[key] }
+        return { title: key.toUpperCase(), rows, total: uangMasuk[key], payment: true }
       }
       case 'cicilan': {
-        const rows = (debtPayments || []).map(p => ({
-          id: 'dp-' + p.id, invoiceNo: p.invoice_no, date: p.paid_at, customer: '(cicilan hutang)',
-          cashierName: adminName(p.cashier_id), paymentMethod: p.payment_method,
-          total: toMoney(p.amount), paid: toMoney(p.amount), remaining: 0, status: 'lunas', editable: false,
-        }))
-        return { title: 'Cicilan Hutang', rows, total: uangMasuk.cicilan }
+        const rows = (debtPayments || []).map(payRow)
+        return { title: 'Cicilan Hutang', rows, total: uangMasuk.cicilan, payment: true }
       }
       case 'piutang': {
         const rows = piutangData.list.map(d => ({
@@ -344,7 +349,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: key, rows: [], total: 0 }
     }
   }
-  const openCard = (key) => { if (isOwner) setDetailCard(buildCard(key)) }
+  const openCard = (key) => { if (isOwner) setDetailKey(key) }
+  // Dihitung ulang tiap render → setelah edit/hapus (store refresh) modal
+  // langsung menampilkan angka terbaru tanpa reload manual.
+  const detailCard = detailKey ? buildCard(detailKey) : null
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0 }}>
@@ -1147,24 +1155,32 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       {isOwner && detailCard && (
         <DashboardCardDetail
           open
-          onClose={() => setDetailCard(null)}
+          onClose={() => setDetailKey(null)}
           title={detailCard.title}
           rows={detailCard.rows}
           total={detailCard.total}
           isCount={detailCard.isCount}
           showDue={detailCard.manage}
-          onManage={detailCard.manage ? () => { setDetailCard(null); setActivePage('piutang') } : undefined}
+          paymentMode={!!detailCard.payment}
+          admins={admins}
+          onManage={detailCard.manage ? () => { setDetailKey(null); setActivePage('piutang') } : undefined}
           manageLabel="Bayar / Kelola di Piutang"
-          onEdit={async (id, fields) => {
-            const r = await editTransaction?.(id, fields)
-            if (r?.ok) setDetailCard(null) // tutup → kartu refresh dgn data baru
-            return r
-          }}
-          onDelete={async (id) => {
-            const r = await deleteTransaction?.(id)
-            if (r?.ok) setDetailCard(null)
-            return r
-          }}
+          onEdit={async (id, fields) => editTransaction?.(id, fields)}
+          onDelete={async (id) => deleteTransaction?.(id)}
+          onSavePaymentRow={async (row, f) => (
+            // Edit pembayaran: cicilan → editDebtPayment; transaksi langsung → editTransaction
+            row.kind === 'payment'
+              ? editDebtPayment?.(row.paymentId, {
+                  paymentMethod: f.paymentMethod, amount: f.amount,
+                  paidAt: f.date, cashierId: f.cashierId, notes: f.customer,
+                })
+              : editTransaction?.(row.id, {
+                  paymentMethod: f.paymentMethod, paid: f.amount, date: f.date, customer: f.customer,
+                })
+          )}
+          onDeletePaymentRow={async (row) => (
+            row.kind === 'payment' ? deleteDebtPayment?.(row.paymentId) : deleteTransaction?.(row.id)
+          )}
         />
       )}
     </div>
