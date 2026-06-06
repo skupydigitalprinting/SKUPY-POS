@@ -159,6 +159,17 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  const updateExpense = useCallback(async (id, payload) => {
+    const patch = {}
+    if (payload.date !== undefined) patch.expense_date = payload.date
+    if (payload.category !== undefined) patch.category = payload.category
+    if (payload.amount !== undefined) patch.amount = Math.round(Number(payload.amount) || 0)
+    if (payload.method !== undefined) patch.method = payload.method
+    if (payload.note !== undefined) patch.note = payload.note
+    const { error } = await supabase.from('expenses').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   const addPurchase = useCallback(async (payload) => {
     setBusy(true)
     try {
@@ -179,6 +190,19 @@ export function useAccounting() {
 
   const deletePurchase = useCallback(async (id) => {
     const { error } = await supabase.from('purchases').delete().eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  const updatePurchase = useCallback(async (id, payload) => {
+    const patch = {}
+    if (payload.date !== undefined) patch.purchase_date = payload.date
+    if (payload.supplier !== undefined) patch.supplier = payload.supplier
+    if (payload.item !== undefined) patch.item = payload.item
+    if (payload.qty !== undefined) patch.qty = Number(payload.qty) || 0
+    if (payload.amount !== undefined) patch.amount = Math.round(Number(payload.amount) || 0)
+    if (payload.method !== undefined) patch.method = payload.method
+    if (payload.note !== undefined) patch.note = payload.note
+    const { error } = await supabase.from('purchases').update(patch).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -341,7 +365,7 @@ export function useAccounting() {
     busy, PAGE_SIZE, todayISO, monthStartISO,
     getSummary, getDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
     listTransactions, listCicilan, listCashMovements, listExpensesByBucket,
-    addExpense, deleteExpense, addPurchase, deletePurchase,
+    addExpense, deleteExpense, updateExpense, addPurchase, deletePurchase, updatePurchase,
     listSupplierDebts, addSupplierDebt, editSupplierDebt, paySupplierDebt, deleteSupplierDebt,
     listSupplierPayments, editSupplierPayment, deleteSupplierPayment,
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,

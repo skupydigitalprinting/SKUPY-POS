@@ -29,6 +29,38 @@ function MoneyInput({ value, onChange, placeholder, className, style }) {
     onChange={(e) => onChange(String(parseCurrency(e.target.value)))} className={className} style={style} />
 }
 
+// ── Form vertikal 1 kolom — komponen reusable ──
+// fieldCls: input full-width seragam, nyaman di iPhone (text-base hindari zoom iOS)
+const FIELD_CLS = 'w-full px-3.5 py-3 rounded-xl text-sm'
+function Field({ icon: Icon, label, required, error, hint, children }) {
+  return (
+    <div>
+      <label className="flex items-center gap-1.5 mb-1.5 text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+        {Icon && <Icon size={12} style={{ color: 'var(--accent-light)' }} />}
+        <span>{label}</span>{required && <span style={{ color: '#ef4444' }}>*</span>}
+      </label>
+      {children}
+      {error
+        ? <p className="mt-1 text-[11px] flex items-center gap-1" style={{ color: '#ef4444' }}><AlertTriangle size={10} /> {error}</p>
+        : hint ? <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>{hint}</p> : null}
+    </div>
+  )
+}
+function FormCard({ icon: Icon, title, subtitle, children }) {
+  return (
+    <div className="rounded-2xl p-5 sm:p-6 w-full" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', maxWidth: 760 }}>
+      <div className="flex items-start gap-3 mb-5">
+        {Icon && <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)' }}><Icon size={16} style={{ color: 'var(--accent-light)' }} /></div>}
+        <div className="min-w-0">
+          <h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>{title}</h3>
+          <p className="text-[11px] mt-0.5 leading-relaxed" style={{ color: 'var(--text-muted)' }}>{subtitle}</p>
+        </div>
+      </div>
+      <div className="space-y-4">{children}</div>
+    </div>
+  )
+}
+
 function Card({ icon: Icon, label, value, color = '#38BDF8', sub }) {
   return (
     <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -69,9 +101,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [sdForm, setSdForm] = useState({ supplier: '', item: '', total: '', dueDate: '' })
   const [payId, setPayId] = useState(null); const [payVal, setPayVal] = useState(''); const [payMethod, setPayMethod] = useState('transfer'); const [payNote, setPayNote] = useState('')
   const [loanForm, setLoanForm] = useState({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' })
+  // error inline per form (field → pesan)
+  const [expErr, setExpErr] = useState({}); const [purErr, setPurErr] = useState({})
+  const [supErr, setSupErr] = useState({}); const [sdErr, setSdErr] = useState({}); const [loanErr, setLoanErr] = useState({})
   const [bpay, setBpay] = useState(null) // {loanId, amount, pokok, bunga, method}
   // edit hutang supplier + riwayat
   const [editDebt, setEditDebt] = useState(null) // supplier_debt being edited
+  const [editExp, setEditExp] = useState(null) // expense being edited
+  const [editPur, setEditPur] = useState(null) // purchase being edited
   const [history, setHistory] = useState(null) // { kind:'supplier'|'bank', title, rows }
   const [hLoading, setHLoading] = useState(false)
   const [hEdit, setHEdit] = useState(null) // payment being edited
@@ -144,20 +181,33 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   }
 
   const inp = { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
+  const inpErr = (has) => has ? { ...inp, border: '1px solid #ef4444' } : inp
   const lastPage = Math.max(0, Math.ceil(entCount / acc.PAGE_SIZE) - 1)
 
   // ── submit handlers ──
   const submitExpense = async () => {
-    if (!(parseCurrency(expForm.amount) > 0)) return toast.error('Nominal harus > 0')
+    const e = {}
+    if (!expForm.date) e.date = 'Tanggal wajib diisi'
+    if (!expForm.category) e.category = 'Kategori wajib dipilih'
+    if (!expForm.method) e.method = 'Metode pembayaran wajib dipilih'
+    if (!(parseCurrency(expForm.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
+    setExpErr(e); if (Object.keys(e).length) return
     setSaving(true); const r = await acc.addExpense({ ...expForm, amount: parseCurrency(expForm.amount), cashierId: currentUser?.id }); setSaving(false)
-    if (r.ok) { toast.success('Pengeluaran dicatat'); setExpForm({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'cash', note: '' }); loadExpenses() } else toast.error(r.error || 'Gagal')
+    if (r.ok) { toast.success('Pengeluaran dicatat'); setExpForm({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'transfer', note: '' }); setExpErr({}); loadExpenses() } else toast.error(r.error || 'Gagal')
   }
-  const resetPur = () => setPurForm({ date: acc.todayISO(), supplier: '', item: '', qty: '', harga: '', paid: '', method: 'transfer', dueDate: '', dpMethod: 'transfer', note: '' })
+  const resetPur = () => { setPurForm({ date: acc.todayISO(), supplier: '', item: '', qty: '', harga: '', paid: '', method: 'transfer', dueDate: '', dpMethod: 'transfer', note: '' }); setPurErr({}) }
   const submitPurchase = async () => {
     const qty = parseCurrency(purForm.qty)
     const harga = parseCurrency(purForm.harga)
     const total = qty > 0 ? qty * harga : harga
-    if (total <= 0) return toast.error('Total pembelian harus > 0')
+    const e = {}
+    if (!purForm.date) e.date = 'Tanggal wajib diisi'
+    if (!purForm.supplier) e.supplier = 'Supplier wajib dipilih'
+    if (!purForm.item.trim()) e.item = 'Nama bahan wajib diisi'
+    if (!purForm.method) e.method = 'Metode pembayaran wajib dipilih'
+    if (total <= 0) e.harga = 'Total / harga harus lebih dari 0'
+    if (purForm.method === 'hutang' && !purForm.dueDate) e.dueDate = 'Isi tanggal jatuh tempo untuk pembelian tempo'
+    setPurErr(e); if (Object.keys(e).length) return
     setSaving(true)
     try {
       if (purForm.method === 'hutang') {
@@ -191,17 +241,20 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     loadDashboard()
   }
   const saveSupplier = async () => {
-    if (!supForm.name.trim()) return toast.error('Nama supplier wajib')
+    const e = {}; if (!supForm.name.trim()) e.name = 'Nama supplier wajib diisi'
+    setSupErr(e); if (Object.keys(e).length) return
     setSaving(true)
     const r = supForm.id ? await acc.updateSupplier(supForm.id, supForm) : await acc.addSupplier(supForm)
     setSaving(false)
-    if (r.ok) { toast.success('Supplier disimpan'); setSupForm({ id: null, name: '', phone: '', address: '', note: '' }); loadSuppliers() } else toast.error(r.error || 'Gagal')
+    if (r.ok) { toast.success('Supplier disimpan'); setSupForm({ id: null, name: '', phone: '', address: '', note: '' }); setSupErr({}); loadSuppliers() } else toast.error(r.error || 'Gagal')
   }
   const submitLoan = async () => {
-    if (!loanForm.namaBank.trim()) return toast.error('Nama bank wajib')
-    if (!(parseCurrency(loanForm.plafon) > 0)) return toast.error('Plafon harus > 0')
+    const e = {}
+    if (!loanForm.namaBank.trim()) e.namaBank = 'Nama bank wajib diisi'
+    if (!(parseCurrency(loanForm.plafon) > 0)) e.plafon = 'Plafon harus lebih dari 0'
+    setLoanErr(e); if (Object.keys(e).length) return
     setSaving(true); const r = await acc.addBankLoan(loanForm); setSaving(false)
-    if (r.ok) { toast.success('Hutang bank dicatat'); setLoanForm({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' }); loadBankLoans() } else toast.error(r.error || 'Gagal')
+    if (r.ok) { toast.success('Hutang bank dicatat'); setLoanForm({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' }); setLoanErr({}); loadBankLoans() } else toast.error(r.error || 'Gagal')
   }
 
   if (setupNeeded) {
@@ -228,9 +281,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
   return (
     <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={right}>
-      <div className="flex gap-1 mb-4 flex-wrap">
+      <div className="flex gap-1.5 mb-4 overflow-x-auto pb-1 acc-tabscroll" style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
         {TABS.map(t => { const Icon = t.icon; const a = tab === t.id; return (
-          <button key={t.id} onClick={() => setTab(t.id)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all"
+          <button key={t.id} onClick={() => setTab(t.id)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap"
             style={{ background: a ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: a ? '#fff' : 'var(--text-secondary)', border: `1px solid ${a ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}><Icon size={12} /> {t.label}</button>
         )})}
       </div>
@@ -313,16 +366,38 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── PENGELUARAN ── */}
       {tab === 'pengeluaran' && !loading && (
         <div className="space-y-4">
-          <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-3 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <input type="date" value={expForm.date} onChange={e => setExpForm(p => ({ ...p, date: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
-            <select value={expForm.category} onChange={e => setExpForm(p => ({ ...p, category: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
-            <MoneyInput value={expForm.amount} onChange={v => setExpForm(p => ({ ...p, amount: v }))} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <select value={expForm.method} onChange={e => setExpForm(p => ({ ...p, method: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
-            <input value={expForm.note} onChange={e => setExpForm(p => ({ ...p, note: e.target.value }))} placeholder="Keterangan" className="px-2 py-1.5 rounded-lg text-xs sm:col-span-2" style={inp} />
-            <Button variant="primary" size="sm" className="col-span-2 sm:col-span-3" onClick={submitExpense} disabled={saving}>{saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Catat Pengeluaran</Button>
-          </div>
-          <div className="space-y-2">{expenses.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada</p>}
-            {expenses.map(x => <div key={x.id} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="flex-1 min-w-0"><div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.category} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {x.note}</span></div><div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.expense_date)} · {x.method}</div></div><div className="text-xs font-bold" style={{ color: '#ef4444' }}>{fmt(x.amount)}</div><button onClick={async () => { const r = await acc.deleteExpense(x.id); if (r.ok) { toast.success('Dihapus'); loadExpenses() } }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button></div>)}
+          <FormCard icon={Receipt} title="Catat Pengeluaran Baru" subtitle="Isi data transaksi dengan lengkap agar laporan accounting akurat.">
+            <Field icon={Receipt} label="Tanggal" required error={expErr.date}>
+              <input type="date" value={expForm.date} onChange={e => setExpForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(expErr.date), colorScheme: 'dark' }} />
+            </Field>
+            <Field icon={BookOpen} label="Kategori" required error={expErr.category}>
+              <select value={expForm.category} onChange={e => setExpForm(p => ({ ...p, category: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.category)}>{EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
+            </Field>
+            <Field icon={Wallet} label="Metode Pembayaran" required error={expErr.method}>
+              <select value={expForm.method} onChange={e => setExpForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.method)}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+            </Field>
+            <Field icon={TrendingDown} label="Nominal" required error={expErr.amount}>
+              <MoneyInput value={expForm.amount} onChange={v => setExpForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(expErr.amount)} />
+            </Field>
+            <Field icon={Pencil} label="Keterangan">
+              <input value={expForm.note} onChange={e => setExpForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional — detail pengeluaran" className={FIELD_CLS} style={inp} />
+            </Field>
+            <Button variant="primary" className="w-full" onClick={submitExpense} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pengeluaran</Button>
+          </FormCard>
+          <div className="space-y-2">
+            <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pengeluaran</div>
+            {expenses.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pengeluaran tercatat</p>}
+            {expenses.map(x => (
+              <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.category}{x.note ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {x.note}</span> : null}</div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.expense_date)}</span><span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', textTransform: 'uppercase', fontSize: 9 }}>{x.method}</span></div>
+                </div>
+                <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{fmt(x.amount)}</div>
+                <button onClick={() => setEditExp({ id: x.id, date: x.expense_date, category: x.category || 'Pembelian Bahan', amount: String(Math.round(x.amount || 0)), method: x.method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
+                <button onClick={async () => { const r = await acc.deleteExpense(x.id); if (r.ok) { toast.success('Dihapus'); loadExpenses(); loadDashboard() } }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -330,30 +405,71 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── PEMBELIAN ── */}
       {tab === 'pembelian' && !loading && (
         <div className="space-y-4">
-          <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <input type="date" value={purForm.date} onChange={e => setPurForm(p => ({ ...p, date: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
-            <select value={purForm.supplier} onChange={e => setPurForm(p => ({ ...p, supplier: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>
-              <option value="">— Pilih Supplier —</option>
-              {suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-            </select>
-            <button onClick={() => setTab('supplier')} className="px-2 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Supplier</button>
-            <input value={purForm.item} onChange={e => setPurForm(p => ({ ...p, item: e.target.value }))} placeholder="Nama bahan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <MoneyInput value={purForm.qty} onChange={v => setPurForm(p => ({ ...p, qty: v }))} placeholder="Jumlah" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <MoneyInput value={purForm.harga} onChange={v => setPurForm(p => ({ ...p, harga: v }))} placeholder="Harga satuan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <select value={purForm.method} onChange={e => setPurForm(p => ({ ...p, method: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}<option value="hutang">Tempo (Hutang Supplier)</option></select>
-            {purForm.method === 'hutang' ? (
-              <>
-                <input type="date" value={purForm.dueDate} onChange={e => setPurForm(p => ({ ...p, dueDate: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} title="Tanggal jatuh tempo (wajib)" />
-                <MoneyInput value={purForm.paid} onChange={v => setPurForm(p => ({ ...p, paid: v }))} placeholder="DP (boleh 0)" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-                <select value={purForm.dpMethod} onChange={e => setPurForm(p => ({ ...p, dpMethod: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp} title="DP via">{METHODS.map(m => <option key={m.id} value={m.id}>DP {m.label}</option>)}</select>
-              </>
-            ) : null}
-            <input value={purForm.note} onChange={e => setPurForm(p => ({ ...p, note: e.target.value }))} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs sm:col-span-2" style={inp} />
-            <Button variant="primary" size="sm" className="col-span-2" onClick={submitPurchase} disabled={saving}>{saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Catat Pembelian</Button>
-            {purForm.method === 'hutang' && <p className="col-span-2 sm:col-span-4 text-[11px]" style={{ color: 'var(--text-muted)' }}>Tempo: sisa (total − DP) otomatis masuk Hutang Supplier; hanya DP yang jadi uang keluar.</p>}
-          </div>
-          <div className="space-y-2">{purchases.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada</p>}
-            {purchases.map(x => <div key={x.id} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="flex-1 min-w-0"><div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.item || '—'} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {x.supplier}</span></div><div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.purchase_date)} · {x.is_credit ? 'Kredit' : x.method}</div></div><div className="text-xs font-bold" style={{ color: '#f59e0b' }}>{fmt(x.amount)}</div><button onClick={async () => { const r = await acc.deletePurchase(x.id); if (r.ok) { toast.success('Dihapus'); loadPurchases() } }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button></div>)}
+          {(() => { const qn = parseCurrency(purForm.qty), hn = parseCurrency(purForm.harga); const totalP = qn > 0 ? qn * hn : hn; return (
+          <FormCard icon={ShoppingCart} title="Catat Pembelian Baru" subtitle="Isi data transaksi dengan lengkap agar laporan accounting akurat.">
+            <Field icon={Receipt} label="Tanggal" required error={purErr.date}>
+              <input type="date" value={purForm.date} onChange={e => setPurForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(purErr.date), colorScheme: 'dark' }} />
+            </Field>
+            <Field icon={Truck} label="Supplier" required error={purErr.supplier} hint="Belum ada? Tambah di tab Supplier.">
+              <div className="flex gap-2">
+                <select value={purForm.supplier} onChange={e => setPurForm(p => ({ ...p, supplier: e.target.value }))} className={FIELD_CLS} style={inpErr(purErr.supplier)}>
+                  <option value="">— Pilih Supplier —</option>
+                  {suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                </select>
+                <button onClick={() => setTab('supplier')} className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Baru</button>
+              </div>
+            </Field>
+            <Field icon={ShoppingCart} label="Nama Bahan" required error={purErr.item}>
+              <input value={purForm.item} onChange={e => setPurForm(p => ({ ...p, item: e.target.value }))} placeholder="Contoh: Kain Cotton Combed 30s" className={FIELD_CLS} style={inpErr(purErr.item)} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field icon={Plus} label="Jumlah">
+                <MoneyInput value={purForm.qty} onChange={v => setPurForm(p => ({ ...p, qty: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Field icon={Wallet} label="Harga Satuan" required error={purErr.harga}>
+                <MoneyInput value={purForm.harga} onChange={v => setPurForm(p => ({ ...p, harga: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(purErr.harga)} />
+              </Field>
+            </div>
+            <Field icon={Wallet} label="Metode Pembayaran" required error={purErr.method}>
+              <select value={purForm.method} onChange={e => setPurForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(purErr.method)}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}<option value="hutang">Tempo (Hutang Supplier)</option></select>
+            </Field>
+            {purForm.method === 'hutang' && (
+              <div className="rounded-xl p-3.5 space-y-4" style={{ background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.25)' }}>
+                <Field icon={Receipt} label="Tanggal Jatuh Tempo" required error={purErr.dueDate}>
+                  <input type="date" value={purForm.dueDate} onChange={e => setPurForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(purErr.dueDate), colorScheme: 'dark' }} />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field icon={TrendingDown} label="DP (Uang Muka)" hint="Boleh 0">
+                    <MoneyInput value={purForm.paid} onChange={v => setPurForm(p => ({ ...p, paid: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
+                  </Field>
+                  <Field icon={Wallet} label="DP via">
+                    <select value={purForm.dpMethod} onChange={e => setPurForm(p => ({ ...p, dpMethod: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+                  </Field>
+                </div>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Sisa (total − DP) otomatis masuk Hutang Supplier; hanya DP yang jadi uang keluar.</p>
+              </div>
+            )}
+            <Field icon={Pencil} label="Catatan">
+              <input value={purForm.note} onChange={e => setPurForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+            </Field>
+            {totalP > 0 && <div className="flex items-center justify-between px-3.5 py-2.5 rounded-xl" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Pembelian</span><span className="text-sm font-bold" style={{ color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>{fmt(totalP)}</span></div>}
+            <Button variant="primary" className="w-full" onClick={submitPurchase} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pembelian</Button>
+          </FormCard>
+          )})()}
+          <div className="space-y-2">
+            <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pembelian</div>
+            {purchases.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pembelian tercatat</p>}
+            {purchases.map(x => (
+              <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.item || '—'}{x.supplier ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {x.supplier}</span> : null}</div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.purchase_date)}</span><span className="px-1.5 py-0.5 rounded" style={{ background: x.is_credit ? 'rgba(251,146,60,0.12)' : 'rgba(139,92,246,0.1)', color: x.is_credit ? '#fb923c' : 'var(--accent-light)', textTransform: 'uppercase', fontSize: 9 }}>{x.is_credit ? 'Kredit' : x.method}</span></div>
+                </div>
+                <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#f59e0b', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{fmt(x.amount)}</div>
+                {!x.is_credit && <button onClick={() => setEditPur({ id: x.id, date: x.purchase_date, supplier: x.supplier || '', item: x.item || '', amount: String(Math.round(x.amount || 0)), method: x.method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>}
+                <button onClick={async () => { const r = await acc.deletePurchase(x.id); if (r.ok) { toast.success('Dihapus'); loadPurchases(); loadDashboard() } }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -361,18 +477,28 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── SUPPLIER MASTER ── */}
       {tab === 'supplier' && !loading && (
         <div className="space-y-4">
-          <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <input value={supForm.name} onChange={e => setSupForm(p => ({ ...p, name: e.target.value }))} placeholder="Nama supplier" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <input value={supForm.phone} onChange={e => setSupForm(p => ({ ...p, phone: e.target.value }))} placeholder="No. HP" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <input value={supForm.address} onChange={e => setSupForm(p => ({ ...p, address: e.target.value }))} placeholder="Alamat" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <input value={supForm.note} onChange={e => setSupForm(p => ({ ...p, note: e.target.value }))} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <Button variant="primary" size="sm" className="col-span-2" onClick={saveSupplier} disabled={saving}>{saving ? <Loader2 size={13} className="animate-spin" /> : (supForm.id ? <Check size={13} /> : <Plus size={13} />)} {supForm.id ? 'Simpan' : 'Tambah Supplier'}</Button>
-            {supForm.id && <Button variant="secondary" size="sm" onClick={() => setSupForm({ id: null, name: '', phone: '', address: '', note: '' })}>Batal</Button>}
+          <FormCard icon={UsersIcon} title={supForm.id ? 'Edit Supplier' : 'Tambah Supplier Baru'} subtitle="Simpan data supplier agar mudah dipilih saat mencatat pembelian.">
+            <Field icon={UsersIcon} label="Nama Supplier" required error={supErr.name}>
+              <input value={supForm.name} onChange={e => setSupForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Toko Kain Jaya" className={FIELD_CLS} style={inpErr(supErr.name)} />
+            </Field>
+            <Field icon={Receipt} label="No. HP">
+              <input inputMode="tel" value={supForm.phone} onChange={e => setSupForm(p => ({ ...p, phone: e.target.value }))} placeholder="08xxxxxxxxxx" className={FIELD_CLS} style={inp} />
+            </Field>
+            <Field icon={Landmark} label="Alamat">
+              <input value={supForm.address} onChange={e => setSupForm(p => ({ ...p, address: e.target.value }))} placeholder="Alamat supplier" className={FIELD_CLS} style={inp} />
+            </Field>
+            <Field icon={Pencil} label="Catatan">
+              <input value={supForm.note} onChange={e => setSupForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+            </Field>
+            <div className="flex gap-2">
+              <Button variant="primary" className="flex-1" onClick={saveSupplier} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : (supForm.id ? <Check size={14} /> : <Plus size={14} />)} {supForm.id ? 'Simpan Perubahan' : 'Tambah Supplier'}</Button>
+              {supForm.id && <Button variant="secondary" onClick={() => { setSupForm({ id: null, name: '', phone: '', address: '', note: '' }); setSupErr({}) }}>Batal</Button>}
+            </div>
+          </FormCard>
+          <div className="relative" style={{ maxWidth: 760 }}>
+            <input value={supSearch} onChange={e => setSupSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && loadSuppliers()} placeholder="Cari supplier... (Enter)" className="w-full px-3.5 py-3 rounded-xl text-sm" style={inp} />
           </div>
-          <div className="relative">
-            <input value={supSearch} onChange={e => setSupSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && loadSuppliers()} placeholder="Cari supplier... (Enter)" className="w-full px-3 py-2 rounded-xl text-sm" style={inp} />
-          </div>
-          <div className="space-y-2">{suppliers.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada supplier</p>}
+          <div className="space-y-2">{suppliers.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada supplier</p>}
             {suppliers.map(s => <div key={s.id} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="flex-1 min-w-0"><div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{s.name}</div><div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{s.phone} · {s.address}</div></div>
               <button onClick={() => setSupForm({ id: s.id, name: s.name, phone: s.phone || '', address: s.address || '', note: s.note || '' })} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={11} /></button>
               <button onClick={async () => { const r = await acc.deleteSupplier(s.id); if (r.ok) { toast.success('Supplier dihapus'); loadSuppliers() } }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button>
@@ -384,12 +510,28 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── HUTANG SUPPLIER ── */}
       {tab === 'hsupplier' && !loading && (
         <div className="space-y-4">
-          <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <input value={sdForm.supplier} onChange={e => setSdForm(p => ({ ...p, supplier: e.target.value }))} placeholder="Supplier" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <input value={sdForm.item} onChange={e => setSdForm(p => ({ ...p, item: e.target.value }))} placeholder="Barang" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <MoneyInput value={sdForm.total} onChange={v => setSdForm(p => ({ ...p, total: v }))} placeholder="Total hutang" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <Button variant="primary" size="sm" disabled={saving} onClick={async () => { if (!(parseCurrency(sdForm.total) > 0)) return toast.error('Total > 0'); setSaving(true); const r = await acc.addSupplierDebt({ ...sdForm, total: parseCurrency(sdForm.total) }); setSaving(false); if (r.ok) { toast.success('Dicatat'); setSdForm({ supplier: '', item: '', total: '', dueDate: '' }); loadSupDebts() } else toast.error(r.error) }}><Plus size={13} /> Catat</Button>
-          </div>
+          <FormCard icon={Truck} title="Catat Hutang Supplier Baru" subtitle="Isi data transaksi dengan lengkap agar laporan accounting akurat.">
+            <Field icon={UsersIcon} label="Supplier" required error={sdErr.supplier}>
+              <input value={sdForm.supplier} onChange={e => setSdForm(p => ({ ...p, supplier: e.target.value }))} placeholder="Nama supplier" className={FIELD_CLS} style={inpErr(sdErr.supplier)} />
+            </Field>
+            <Field icon={ShoppingCart} label="Barang" required error={sdErr.item}>
+              <input value={sdForm.item} onChange={e => setSdForm(p => ({ ...p, item: e.target.value }))} placeholder="Nama barang / bahan" className={FIELD_CLS} style={inpErr(sdErr.item)} />
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={TrendingDown} label="Total Hutang" required error={sdErr.total}>
+                <MoneyInput value={sdForm.total} onChange={v => setSdForm(p => ({ ...p, total: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(sdErr.total)} />
+              </Field>
+              <Field icon={Receipt} label="Jatuh Tempo">
+                <input type="date" value={sdForm.dueDate} onChange={e => setSdForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+            </div>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              const e = {}; if (!sdForm.supplier.trim()) e.supplier = 'Supplier wajib diisi'; if (!sdForm.item.trim()) e.item = 'Barang wajib diisi'; if (!(parseCurrency(sdForm.total) > 0)) e.total = 'Total harus lebih dari 0'
+              setSdErr(e); if (Object.keys(e).length) return
+              setSaving(true); const r = await acc.addSupplierDebt({ ...sdForm, total: parseCurrency(sdForm.total) }); setSaving(false)
+              if (r.ok) { toast.success('Hutang supplier dicatat'); setSdForm({ supplier: '', item: '', total: '', dueDate: '' }); setSdErr({}); loadSupDebts(); loadDashboard() } else toast.error(r.error)
+            }}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Hutang Supplier</Button>
+          </FormCard>
           {/* Ringkasan */}
           {supDebts.length > 0 && (() => {
             const tot = supDebts.reduce((s, x) => s + Math.round(x.total || 0), 0)
@@ -439,16 +581,34 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── HUTANG BANK ── */}
       {tab === 'hbank' && !loading && (
         <div className="space-y-4">
-          <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <input value={loanForm.namaBank} onChange={e => setLoanForm(p => ({ ...p, namaBank: e.target.value }))} placeholder="Nama Bank (BCA)" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <select value={loanForm.jenis} onChange={e => setLoanForm(p => ({ ...p, jenis: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{['KPR', 'Kredit Modal Kerja (KMK)', 'Pinjaman Investasi', 'Leasing Kendaraan', 'Leasing Mesin', 'Pinjaman Usaha Lainnya'].map(j => <option key={j} value={j}>{j}</option>)}</select>
-            <MoneyInput value={loanForm.plafon} onChange={v => setLoanForm(p => ({ ...p, plafon: v, sisaPokok: p.sisaPokok || v }))} placeholder="Plafon" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <MoneyInput value={loanForm.sisaPokok} onChange={v => setLoanForm(p => ({ ...p, sisaPokok: v }))} placeholder="Sisa pokok" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <MoneyInput value={loanForm.cicilan} onChange={v => setLoanForm(p => ({ ...p, cicilan: v }))} placeholder="Cicilan/bln" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-            <input type="date" value={loanForm.mulai} onChange={e => setLoanForm(p => ({ ...p, mulai: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} title="Tanggal mulai" />
-            <input type="date" value={loanForm.jatuhTempo} onChange={e => setLoanForm(p => ({ ...p, jatuhTempo: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} title="Jatuh tempo" />
-            <Button variant="primary" size="sm" onClick={submitLoan} disabled={saving}>{saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Tambah Pinjaman</Button>
-          </div>
+          <FormCard icon={Building2} title="Catat Hutang Bank Baru" subtitle="Isi data pinjaman dengan lengkap agar laporan accounting akurat.">
+            <Field icon={Building2} label="Nama Bank" required error={loanErr.namaBank}>
+              <input value={loanForm.namaBank} onChange={e => setLoanForm(p => ({ ...p, namaBank: e.target.value }))} placeholder="Contoh: BCA" className={FIELD_CLS} style={inpErr(loanErr.namaBank)} />
+            </Field>
+            <Field icon={BookOpen} label="Jenis Pinjaman" required>
+              <select value={loanForm.jenis} onChange={e => setLoanForm(p => ({ ...p, jenis: e.target.value }))} className={FIELD_CLS} style={inp}>{['KPR', 'Kredit Modal Kerja (KMK)', 'Pinjaman Investasi', 'Leasing Kendaraan', 'Leasing Mesin', 'Pinjaman Usaha Lainnya'].map(j => <option key={j} value={j}>{j}</option>)}</select>
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Landmark} label="Plafon Pinjaman" required error={loanErr.plafon}>
+                <MoneyInput value={loanForm.plafon} onChange={v => setLoanForm(p => ({ ...p, plafon: v, sisaPokok: p.sisaPokok || v }))} placeholder="0" className={FIELD_CLS} style={inpErr(loanErr.plafon)} />
+              </Field>
+              <Field icon={TrendingDown} label="Sisa Pokok" hint="Default = plafon">
+                <MoneyInput value={loanForm.sisaPokok} onChange={v => setLoanForm(p => ({ ...p, sisaPokok: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
+              </Field>
+            </div>
+            <Field icon={Wallet} label="Cicilan / Bulan">
+              <MoneyInput value={loanForm.cicilan} onChange={v => setLoanForm(p => ({ ...p, cicilan: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Receipt} label="Tanggal Mulai">
+                <input type="date" value={loanForm.mulai} onChange={e => setLoanForm(p => ({ ...p, mulai: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Receipt} label="Jatuh Tempo">
+                <input type="date" value={loanForm.jatuhTempo} onChange={e => setLoanForm(p => ({ ...p, jatuhTempo: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+            </div>
+            <Button variant="primary" className="w-full" onClick={submitLoan} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Tambah Pinjaman</Button>
+          </FormCard>
           <div className="space-y-2">{bankLoans.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada hutang bank</p>}
             {bankLoans.map(x => {
               const overdue7 = x.tanggal_jatuh_tempo && (new Date(x.tanggal_jatuh_tempo) - new Date()) / 86400000 <= 7 && (new Date(x.tanggal_jatuh_tempo) - new Date()) >= 0 && x.status === 'aktif'
@@ -551,14 +711,53 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           </div>
         )}
       </Modal>
+
+      {/* ── EDIT PENGELUARAN ── */}
+      <Modal open={!!editExp} onClose={() => setEditExp(null)} title="Edit Pengeluaran" size="sm">
+        {editExp && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal" required><input type="date" value={editExp.date} onChange={e => setEditExp(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={BookOpen} label="Kategori" required><select value={editExp.category} onChange={e => setEditExp(p => ({ ...p, category: e.target.value }))} className={FIELD_CLS} style={inp}>{EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+            <Field icon={Wallet} label="Metode Pembayaran" required><select value={editExp.method} onChange={e => setEditExp(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+            <Field icon={TrendingDown} label="Nominal" required><MoneyInput value={editExp.amount} onChange={v => setEditExp(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Pencil} label="Keterangan"><input value={editExp.note} onChange={e => setEditExp(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" onClick={async () => {
+              if (!(parseCurrency(editExp.amount) > 0)) return toast.error('Nominal harus > 0')
+              const r = await acc.updateExpense(editExp.id, { date: editExp.date, category: editExp.category, amount: parseCurrency(editExp.amount), method: editExp.method, note: editExp.note })
+              if (r.ok) { toast.success('Pengeluaran diperbarui'); setEditExp(null); loadExpenses(); loadDashboard() } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── EDIT PEMBELIAN ── */}
+      <Modal open={!!editPur} onClose={() => setEditPur(null)} title="Edit Pembelian" size="sm">
+        {editPur && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal" required><input type="date" value={editPur.date} onChange={e => setEditPur(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={Truck} label="Supplier"><input value={editPur.supplier} onChange={e => setEditPur(p => ({ ...p, supplier: e.target.value }))} placeholder="Supplier" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={ShoppingCart} label="Nama Bahan" required><input value={editPur.item} onChange={e => setEditPur(p => ({ ...p, item: e.target.value }))} placeholder="Nama bahan" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Wallet} label="Metode Pembayaran" required><select value={editPur.method} onChange={e => setEditPur(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+            <Field icon={TrendingDown} label="Total" required><MoneyInput value={editPur.amount} onChange={v => setEditPur(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Pencil} label="Catatan"><input value={editPur.note} onChange={e => setEditPur(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" onClick={async () => {
+              if (!(parseCurrency(editPur.amount) > 0)) return toast.error('Total harus > 0')
+              const r = await acc.updatePurchase(editPur.id, { date: editPur.date, supplier: editPur.supplier, item: editPur.item, amount: parseCurrency(editPur.amount), method: editPur.method, note: editPur.note })
+              if (r.ok) { toast.success('Pembelian diperbarui'); setEditPur(null); loadPurchases(); loadDashboard() } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
     </Page>
   )
 }
 
 function Page({ children, right }) {
   return (
-    <div className="flex-1 overflow-y-auto mesh-bg">
-      <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden mesh-bg"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="p-4 sm:p-6 max-w-7xl mx-auto"
+        style={{ paddingLeft: 'max(1rem, env(safe-area-inset-left))', paddingRight: 'max(1rem, env(safe-area-inset-right))', paddingBottom: 'calc(2rem + env(safe-area-inset-bottom))' }}>
         <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
           <div><div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Keuangan & Laporan</div><h2 className="text-xl sm:text-2xl font-bold mt-0.5" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Accounting</h2></div>
           {right}
