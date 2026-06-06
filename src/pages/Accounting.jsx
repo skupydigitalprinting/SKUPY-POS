@@ -161,7 +161,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
-  const laba = useMemo(() => d ? Math.round((d.penjualan || 0) - (d.modal_barang || 0) - (d.operasional || 0) - (d.gaji || 0) - (d.beban_bunga || 0)) : 0, [d])
+  // Laba Bersih = Omzet/Penjualan − Total Pengeluaran (uang keluar valid):
+  // pengeluaran manual + pembelian bahan + bayar hutang supplier + cicilan/bayar
+  // hutang bank + gaji + operasional + biaya lain. pengeluaran_total sudah mencakup
+  // semuanya (lihat acc_dashboard). Jadi bayar hutang bank 50jt → laba turun 50jt.
+  const laba = useMemo(() => d ? Math.round((d.penjualan || 0) - (d.pengeluaran_total || 0)) : 0, [d])
   const totalAset = useMemo(() => d ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0)) : 0, [d])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
 
@@ -330,30 +334,43 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {/* ── RINGKASAN ── */}
       {tab === 'ringkasan' && !loading && d && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingUp} label="Uang Masuk (Arus Kas)" value={fmt(d.uang_masuk_total)} color="#10d98a" onClick={() => openDetail('uang_masuk', 'Uang Masuk (Arus Kas)', '#10d98a')} />
-            <Card icon={TrendingDown} label="Uang Keluar" value={fmt(d.pengeluaran_total)} color="#ef4444" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
-            <Card icon={Wallet} label="Penjualan" value={fmt(d.penjualan)} color="#38BDF8" onClick={() => openDetail('penjualan', 'Penjualan', '#38BDF8')} />
-            <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#f59e0b" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#f59e0b')} />
-          </div>
-          {/* LABA BERSIH — OWNER ONLY (staff admin/kasir tidak boleh lihat) */}
+          {/* BARIS 1: LABA BERSIH — KPI utama, full width, OWNER ONLY */}
           {isOwner && (
-            <div className="rounded-2xl p-4" style={{ background: laba >= 0 ? 'rgba(167,139,250,0.10)' : 'rgba(239,68,68,0.10)', border: `1px solid ${laba >= 0 ? 'rgba(167,139,250,0.35)' : 'rgba(239,68,68,0.35)'}` }}>
-              <div className="flex justify-between items-center flex-wrap gap-2">
-                <div><div className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Laba Bersih (periode) <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9 }}>OWNER</span></div><div className="font-extrabold" style={{ fontFamily: 'Syne', color: laba >= 0 ? '#a78bfa' : '#ef4444', fontSize: 'clamp(20px,6vw,28px)' }}>{fmt(laba)}</div></div>
-                <div className="text-xs text-right" style={{ color: 'var(--text-muted)' }}>Penjualan {fmt(d.penjualan)} − Modal {fmt(d.modal_barang)} − Operasional {fmt((d.operasional || 0) + (d.gaji || 0))} − Bunga {fmt(d.beban_bunga)}</div>
+            <div onClick={() => openDetail('uang_keluar', 'Pengeluaran (pengurang Laba Bersih)', '#ef4444')}
+              className="rounded-2xl p-5 sm:p-6 cursor-pointer hover:brightness-110 transition"
+              style={{
+                background: laba >= 0 ? 'linear-gradient(135deg, rgba(16,217,138,0.12), rgba(16,217,138,0.04))' : 'linear-gradient(135deg, rgba(239,68,68,0.12), rgba(239,68,68,0.04))',
+                border: `1px solid ${laba >= 0 ? 'rgba(16,217,138,0.45)' : 'rgba(239,68,68,0.45)'}`,
+                boxShadow: laba >= 0 ? '0 0 28px rgba(16,217,138,0.18)' : '0 0 28px rgba(239,68,68,0.18)',
+              }}>
+              <div className="flex items-center gap-2 mb-1.5">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: laba >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(239,68,68,0.15)', border: `1px solid ${laba >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(239,68,68,0.4)'}` }}>{laba >= 0 ? <TrendingUp size={18} style={{ color: '#10d98a' }} /> : <TrendingDown size={18} style={{ color: '#ef4444' }} />}</div>
+                <span className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)', fontFamily: "'Inter', sans-serif" }}>Laba Bersih Periode</span>
+                <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
+              <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Total Pengeluaran {fmt(d.pengeluaran_total)}</div>
             </div>
           )}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0))} color={(d.uang_masuk_total - d.pengeluaran_total) >= 0 ? '#10d98a' : '#ef4444'} onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#10d98a')} />
-            <Card icon={TrendingUp} label="Piutang Usaha (=Piutang Aktif)" value={fmt(d.piutang_aktif)} color="#f59e0b" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
+
+          {/* BARIS 2: Penjualan · Uang Masuk · Uang Keluar · Beban */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#38BDF8" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#38BDF8')} />
+            <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
+            <Card icon={TrendingDown} label="Uang Keluar" value={fmt(d.pengeluaran_total)} color="#ef4444" sub="Semua pembayaran keluar" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
+            <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#f59e0b" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#f59e0b')} />
+          </div>
+
+          {/* BARIS 3: Arus Kas Bersih · Piutang Usaha · Hutang Supplier · Hutang Bank */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0))} color={(d.uang_masuk_total - d.pengeluaran_total) >= 0 ? '#10d98a' : '#ef4444'} sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#10d98a')} />
+            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
             <Card icon={TrendingDown} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#fb923c" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#fb923c')} />
             <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#ef4444" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#ef4444')} />
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Wallet} label="Saldo Kas" value={fmt(d.saldo_kas)} color="#38BDF8" onClick={() => openDetail('uang_keluar', 'Mutasi Kas (Uang Keluar)', '#38BDF8')} />
-            <Card icon={Landmark} label="Saldo Rekening" value={fmt(d.saldo_rekening)} color="#38BDF8" onClick={() => openDetail('uang_keluar', 'Mutasi Rekening (Uang Keluar)', '#38BDF8')} />
+
+          {/* BARIS 4: Sudah Bayar Piutang · Persediaan */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#10d98a" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#10d98a')} />
             <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />
           </div>
