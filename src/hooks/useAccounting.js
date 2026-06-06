@@ -221,6 +221,63 @@ export function useAccounting() {
     return { ok: true, data: data || [] }
   }, [])
 
+  // ── SUPPLIER MASTER ──
+  const listSuppliers = useCallback(async (q = '') => {
+    let query = supabase.from('suppliers').select('*').is('deleted_at', null).order('name', { ascending: true }).limit(500)
+    if (q) query = query.ilike('name', `%${q}%`)
+    const { data, error } = await query
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addSupplier = useCallback(async (p) => {
+    const { data, error } = await supabase.from('suppliers').insert({
+      name: p.name || '', phone: p.phone || '', address: p.address || '', note: p.note || '',
+    }).select().single()
+    return error ? { ok: false, error: error.message } : { ok: true, data }
+  }, [])
+  const updateSupplier = useCallback(async (id, p) => {
+    const { error } = await supabase.from('suppliers').update({
+      name: p.name, phone: p.phone, address: p.address, note: p.note, updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteSupplier = useCallback(async (id) => {
+    // soft delete
+    const { error } = await supabase.from('suppliers').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  // ── HUTANG BANK ──
+  const listBankLoans = useCallback(async () => {
+    const { data, error } = await supabase.from('bank_loans').select('*').order('created_at', { ascending: false }).limit(200)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addBankLoan = useCallback(async (p) => {
+    const plafon = Math.round(Number(p.plafon) || 0)
+    const { error } = await supabase.from('bank_loans').insert({
+      nama_bank: p.namaBank || '', jenis_pinjaman: p.jenis || '', nomor_kontrak: p.nomor || '',
+      tanggal_mulai: p.mulai || null, tanggal_jatuh_tempo: p.jatuhTempo || null,
+      plafon_pinjaman: plafon, sisa_pokok: p.sisaPokok != null ? Math.round(Number(p.sisaPokok) || 0) : plafon,
+      bunga: Number(p.bunga) || 0, cicilan_bulanan: Math.round(Number(p.cicilan) || 0),
+      keterangan: p.keterangan || '',
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteBankLoan = useCallback(async (id) => {
+    const { error } = await supabase.from('bank_loans').delete().eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const payBankLoan = useCallback(async (loanId, { amount, pokok, bunga, method, note, cashierId }) => {
+    const amt = Math.round(Number(amount) || 0)
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const { error } = await supabase.from('bank_loan_payments').insert({
+      loan_id: loanId, amount: amt, pokok: Math.round(Number(pokok) || 0), bunga: Math.round(Number(bunga) || 0),
+      method: method || 'cash', note: note || '', cashier_id: cashierId || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
   const fetchEntriesForExport = useCallback(async (from, to) => {
     const { data, error } = await supabase.from('accounting_entries')
@@ -237,6 +294,8 @@ export function useAccounting() {
     listTransactions, listCicilan, listCashMovements, listExpensesByBucket,
     addExpense, deleteExpense, addPurchase, deletePurchase,
     listSupplierDebts, addSupplierDebt, paySupplierDebt, deleteSupplierDebt,
+    listSuppliers, addSupplier, updateSupplier, deleteSupplier,
+    listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     getRecapAdmin, fetchEntriesForExport,
   }
 }

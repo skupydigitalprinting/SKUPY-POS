@@ -77,6 +77,13 @@ export function parseCurrency(value) {
   return Number(String(value).replace(/[^\d]/g, '')) || 0
 }
 
+// Format ribuan id-ID TANPA "Rp" (untuk value input uang).
+// 1000000 → "1.000.000". String berformat juga aman (di-parse dulu).
+export function formatCurrency(value) {
+  const n = parseCurrency(value)
+  return n ? new Intl.NumberFormat('id-ID').format(n) : ''
+}
+
 export function toBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
