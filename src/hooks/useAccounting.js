@@ -250,7 +250,12 @@ export function useAccounting() {
 
   // Soft delete supplier debt
   const deleteSupplierDebt = useCallback(async (id) => {
-    const { error } = await supabase.from('supplier_debts').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    const now = new Date().toISOString()
+    // Soft delete hutang + CASCADE soft delete semua pembayarannya → trigger
+    // pembayaran membuang jurnal/cash movement masing-masing, sehingga Uang
+    // Keluar, Arus Kas Bersih, dan Laba Bersih ikut sinkron.
+    await supabase.from('supplier_debt_payments').update({ deleted_at: now }).eq('supplier_debt_id', id).is('deleted_at', null)
+    const { error } = await supabase.from('supplier_debts').update({ deleted_at: now }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 

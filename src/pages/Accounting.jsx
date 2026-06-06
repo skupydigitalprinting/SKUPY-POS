@@ -21,7 +21,12 @@ const TABS = [
   { id: 'hbank', label: 'Hutang Bank', icon: Building2 },
 ]
 const METHODS = [{ id: 'cash', label: 'Cash' }, { id: 'transfer', label: 'Transfer' }, { id: 'qris', label: 'QRIS' }]
-const EXP_CATEGORIES = ['Pembelian Bahan', 'Gaji', 'Listrik', 'Internet', 'Transport', 'Sewa', 'Konsumsi', 'Perawatan Mesin', 'Pengeluaran Lainnya']
+// Kategori bawaan sistem (selalu tersedia walau tabel DB belum dimigrasi).
+const DEFAULT_EXP_CATEGORIES = [
+  'Pembelian Bahan', 'Gaji Karyawan', 'Operasional', 'Transportasi', 'Listrik', 'Air',
+  'Internet', 'Sewa', 'Cicilan Bank', 'Pembayaran Hutang Supplier', 'Peralatan',
+  'Maintenance', 'Marketing', 'Iklan', 'Konsumsi', 'Pajak', 'Pengeluaran Lainnya',
+]
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 // Input uang: hanya angka + titik ribuan
@@ -62,46 +67,64 @@ function FormCard({ icon: Icon, title, subtitle, children }) {
   )
 }
 
-// Dropdown kategori searchable yang andal (item bisa diklik, z-index tinggi).
-// onMouseDown+preventDefault pada item → pilihan terdaftar SEBELUM input blur.
-function CatSelect({ value, onChange, options, error, onManage, canManage, baseStyle, errStyle }) {
+// Combobox searchable yang andal (dark mode, item clickable, z-index tinggi).
+// - klik field / panah → tampilkan SEMUA opsi (buka penuh)
+// - mengetik → memfilter; klik item / Enter → memilih
+// - onMouseDown+preventDefault → pilihan terdaftar SEBELUM input blur
+// - allowCreate: tampilkan "+ Tambah baru: <text>" bila tidak ada yang cocok
+function Combo({ value, onChange, options, error, baseStyle, errStyle, placeholder = 'Pilih / cari', allowCreate = false, onCreate, rightButton }) {
   const [open, setOpen] = useState(false)
-  const q = (value || '').toLowerCase()
-  const matches = options.filter(c => c.name.toLowerCase().includes(q))
-  const list = matches.length ? matches : options
+  const [query, setQuery] = useState(null) // null = belum mengetik → tampilkan value
+  const text = query == null ? (value || '') : query
+  const ql = (query || '').toLowerCase()
+  const filtered = (query == null || query === '') ? options : options.filter(o => o.name.toLowerCase().includes(ql))
+  const exact = options.some(o => o.name.toLowerCase() === ql)
+  const showCreate = allowCreate && query && query.trim() && !exact
+  const choose = (name) => { onChange(name); setQuery(null); setOpen(false) }
+  const create = async () => { const n = query.trim(); if (onCreate) await onCreate(n); choose(n) }
   return (
     <div className="relative">
       <div className="flex gap-2">
-        <input
-          value={value}
-          onChange={e => { onChange(e.target.value); setOpen(true) }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
-          onKeyDown={e => {
-            if (e.key === 'Enter') { e.preventDefault(); if (list[0]) { onChange(list[0].name); setOpen(false) } }
-            else if (e.key === 'Escape') setOpen(false)
-          }}
-          placeholder="Pilih / ketik kategori"
-          className={FIELD_CLS}
-          style={error ? errStyle : baseStyle}
-        />
-        {canManage && (
-          <button type="button" onMouseDown={e => e.preventDefault()} onClick={onManage}
-            className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap"
-            style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Kategori</button>
-        )}
+        <div className="relative flex-1">
+          <input
+            value={text}
+            onChange={e => { setQuery(e.target.value); onChange(e.target.value); setOpen(true) }}
+            onFocus={() => { setQuery(''); setOpen(true) }}
+            onBlur={() => setTimeout(() => { setOpen(false); setQuery(null) }, 160)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); if (filtered[0]) choose(filtered[0].name); else if (showCreate) create() }
+              else if (e.key === 'Escape') setOpen(false)
+            }}
+            placeholder={placeholder}
+            className={FIELD_CLS}
+            style={{ ...(error ? errStyle : baseStyle), paddingRight: 34 }}
+          />
+          <button type="button" tabIndex={-1} onMouseDown={e => { e.preventDefault(); setOpen(o => !o); setQuery(o => o == null ? '' : o) }}
+            style={{ position: 'absolute', right: 8, top: 0, bottom: 0, display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>
+            <ChevronDown size={16} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+          </button>
+        </div>
+        {rightButton}
       </div>
-      {open && list.length > 0 && (
+      {open && (
         <div className="absolute left-0 right-0 mt-1 rounded-xl py-1"
-          style={{ zIndex: 9999, maxHeight: 220, overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
-          {list.map(c => (
-            <button type="button" key={c.id}
-              onMouseDown={e => { e.preventDefault(); onChange(c.name); setOpen(false) }}
+          style={{ zIndex: 9999, maxHeight: 240, overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+          {filtered.length === 0 && !showCreate && <div className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-muted)' }}>Tidak ada hasil</div>}
+          {filtered.map(o => (
+            <button type="button" key={o.id}
+              onMouseDown={e => { e.preventDefault(); choose(o.name) }}
               className="w-full text-left px-3 py-2 text-sm"
-              style={{ color: 'var(--text-primary)', background: c.name === value ? 'rgba(139,92,246,0.14)' : 'transparent', cursor: 'pointer' }}>
-              {c.name}
+              style={{ color: 'var(--text-primary)', background: o.name === value ? 'rgba(139,92,246,0.14)' : 'transparent', cursor: 'pointer' }}>
+              {o.name}
             </button>
           ))}
+          {showCreate && (
+            <button type="button" onMouseDown={e => { e.preventDefault(); create() }}
+              className="w-full text-left px-3 py-2 text-sm font-semibold"
+              style={{ color: 'var(--accent-light)', background: 'rgba(139,92,246,0.08)', cursor: 'pointer' }}>
+              + Tambah baru: “{query.trim()}”
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -157,6 +180,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [expCats, setExpCats] = useState([]); const [catMgr, setCatMgr] = useState(false)
   const [catNew, setCatNew] = useState(''); const [catEdit, setCatEdit] = useState(null); const [catSearch, setCatSearch] = useState('')
   const canManageCat = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  // Gabungan kategori bawaan sistem + kategori DB (dedup, urut). Selalu ada isi
+  // walau tabel expense_categories belum dimigrasi → dropdown tetap berfungsi.
+  const catOptions = useMemo(() => {
+    const map = new Map()
+    DEFAULT_EXP_CATEGORIES.forEach(n => map.set(n.toLowerCase(), { id: 'sys:' + n, name: n, system: true }))
+    ;(expCats || []).forEach(c => map.set(c.name.toLowerCase(), { id: c.id, name: c.name, system: false }))
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [expCats])
   const [supErr, setSupErr] = useState({}); const [sdErr, setSdErr] = useState({}); const [loanErr, setLoanErr] = useState({})
   const [bpay, setBpay] = useState(null) // {loanId, amount, pokok, bunga, method}
   const [expandLoan, setExpandLoan] = useState(null) // loan id yang di-expand
@@ -197,7 +228,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
       else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
       else if (tab === 'supplier') await loadSuppliers()
-      else if (tab === 'hsupplier') await loadSupDebts()
+      else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
       else if (tab === 'hbank') await loadBankLoans()
       setLoading(false)
     }
@@ -502,10 +533,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Field icon={Receipt} label="Tanggal" required error={expErr.date}>
               <input type="date" value={expForm.date} onChange={e => setExpForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(expErr.date), colorScheme: 'dark' }} />
             </Field>
-            <Field icon={BookOpen} label="Kategori" required error={expErr.category} hint="Ketik untuk mencari, klik untuk memilih">
-              <CatSelect value={expForm.category} onChange={v => setExpForm(p => ({ ...p, category: v }))} options={expCats} error={expErr.category}
-                canManage={canManageCat} onManage={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }}
-                baseStyle={inp} errStyle={inpErr(true)} />
+            <Field icon={BookOpen} label="Kategori" required error={expErr.category} hint="Klik untuk pilih, ketik untuk mencari">
+              <Combo value={expForm.category} onChange={v => setExpForm(p => ({ ...p, category: v }))} options={catOptions} error={expErr.category}
+                placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)}
+                rightButton={canManageCat ? <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }} className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Kategori</button> : null} />
             </Field>
             <Field icon={Wallet} label="Metode Pembayaran" required error={expErr.method}>
               <select value={expForm.method} onChange={e => setExpForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.method)}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -645,8 +676,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       {tab === 'hsupplier' && !loading && (
         <div className="space-y-4">
           <FormCard icon={Truck} title="Catat Hutang Supplier Baru" subtitle="Isi data transaksi dengan lengkap agar laporan accounting akurat.">
-            <Field icon={UsersIcon} label="Supplier" required error={sdErr.supplier}>
-              <input value={sdForm.supplier} onChange={e => setSdForm(p => ({ ...p, supplier: e.target.value }))} placeholder="Nama supplier" className={FIELD_CLS} style={inpErr(sdErr.supplier)} />
+            <Field icon={UsersIcon} label="Supplier" required error={sdErr.supplier} hint="Pilih supplier lama atau ketik nama baru">
+              <Combo value={sdForm.supplier} onChange={v => setSdForm(p => ({ ...p, supplier: v }))} options={(suppliers || []).map(s => ({ id: s.id, name: s.name }))} error={sdErr.supplier}
+                placeholder="Pilih / cari supplier" baseStyle={inp} errStyle={inpErr(true)}
+                allowCreate onCreate={async (name) => { const r = await acc.addSupplier({ name }); if (r.ok) { toast.success('Supplier baru ditambahkan'); loadSuppliers() } }} />
             </Field>
             <Field icon={ShoppingCart} label="Barang" required error={sdErr.item}>
               <input value={sdForm.item} onChange={e => setSdForm(p => ({ ...p, item: e.target.value }))} placeholder="Nama barang / bahan" className={FIELD_CLS} style={inpErr(sdErr.item)} />
@@ -655,12 +688,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               <Field icon={TrendingDown} label="Total Hutang" required error={sdErr.total}>
                 <MoneyInput value={sdForm.total} onChange={v => setSdForm(p => ({ ...p, total: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(sdErr.total)} />
               </Field>
-              <Field icon={Receipt} label="Jatuh Tempo">
-                <input type="date" value={sdForm.dueDate} onChange={e => setSdForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              <Field icon={Receipt} label="Jatuh Tempo" required error={sdErr.dueDate}>
+                <input type="date" value={sdForm.dueDate} onChange={e => setSdForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(sdErr.dueDate), colorScheme: 'dark' }} />
               </Field>
             </div>
             <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
-              const e = {}; if (!sdForm.supplier.trim()) e.supplier = 'Supplier wajib diisi'; if (!sdForm.item.trim()) e.item = 'Barang wajib diisi'; if (!(parseCurrency(sdForm.total) > 0)) e.total = 'Total harus lebih dari 0'
+              const e = {}; if (!sdForm.supplier.trim()) e.supplier = 'Supplier wajib diisi'; if (!sdForm.item.trim()) e.item = 'Barang wajib diisi'; if (!(parseCurrency(sdForm.total) > 0)) e.total = 'Total harus lebih dari 0'; if (!sdForm.dueDate) e.dueDate = 'Jatuh tempo wajib diisi'
               setSdErr(e); if (Object.keys(e).length) return
               setSaving(true); const r = await acc.addSupplierDebt({ ...sdForm, total: parseCurrency(sdForm.total) }); setSaving(false)
               if (r.ok) { toast.success('Hutang supplier dicatat'); setSdForm({ supplier: '', item: '', total: '', dueDate: '' }); setSdErr({}); loadSupDebts(); loadDashboard() } else toast.error(r.error)
@@ -943,7 +976,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         {editExp && (
           <div className="space-y-3">
             <Field icon={Receipt} label="Tanggal" required><input type="date" value={editExp.date} onChange={e => setEditExp(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
-            <Field icon={BookOpen} label="Kategori" required><CatSelect value={editExp.category} onChange={v => setEditExp(p => ({ ...p, category: v }))} options={expCats} canManage={false} baseStyle={inp} errStyle={inpErr(true)} /></Field>
+            <Field icon={BookOpen} label="Kategori" required><Combo value={editExp.category} onChange={v => setEditExp(p => ({ ...p, category: v }))} options={catOptions} placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)} /></Field>
             <Field icon={Wallet} label="Metode Pembayaran" required><select value={editExp.method} onChange={e => setEditExp(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
             <Field icon={TrendingDown} label="Nominal" required><MoneyInput value={editExp.amount} onChange={v => setEditExp(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
             <Field icon={Pencil} label="Keterangan"><input value={editExp.note} onChange={e => setEditExp(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
