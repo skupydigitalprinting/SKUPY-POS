@@ -151,13 +151,18 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
-  // Auto-refresh ringkasan realtime
+  // OPTIMASI EGRESS: dashboard accounting TIDAK realtime. Auto-refresh ringan
+  // tiap 45 detik (hanya saat tab Ringkasan & tab browser aktif) + refresh
+  // manual lewat tombol Sinkronkan/ubah tanggal. Tidak ada subscription.
   useEffect(() => {
     if (tab !== 'ringkasan') return
-    const t = setInterval(loadDashboard, 15000)
-    const onVis = () => { if (document.visibilityState === 'visible') loadDashboard() }
+    let t = null
+    const start = () => { if (!t) t = setInterval(loadDashboard, 45000) }
+    const stop = () => { if (t) { clearInterval(t); t = null } }
+    const onVis = () => { if (document.visibilityState === 'visible') { loadDashboard(); start() } else stop() }
+    if (document.visibilityState === 'visible') start()
     document.addEventListener('visibilitychange', onVis)
-    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
