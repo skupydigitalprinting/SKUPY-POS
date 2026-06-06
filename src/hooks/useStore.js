@@ -689,8 +689,13 @@ export function useStore() {
         // eslint-disable-next-line no-console
         console.error('[useStore] Gagal insert transaksi (semua percobaan habis):', e)
         // Translate raw DB error → user-friendly Indonesian
+        const msg = String(e.message || '').toLowerCase()
+        const isAccPerm = msg.includes('accounting_entries') ||
+          (msg.includes('permission denied') && msg.includes('account'))
         const friendly = isUniqueViolation(e)
           ? 'Nomor invoice sedang sibuk digunakan kasir lain. Coba checkout sekali lagi.'
+          : isAccPerm
+          ? 'Checkout gagal karena modul Accounting belum siap di database. Jalankan migrasi supabase/migrations/2026_06_accounting_rls_fix.sql di Supabase SQL Editor, lalu coba lagi.'
           : `Gagal menyimpan transaksi: ${e.message}`
         return { ok: false, error: friendly }
       }
