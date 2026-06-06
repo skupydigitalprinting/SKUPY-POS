@@ -62,6 +62,52 @@ function FormCard({ icon: Icon, title, subtitle, children }) {
   )
 }
 
+// Dropdown kategori searchable yang andal (item bisa diklik, z-index tinggi).
+// onMouseDown+preventDefault pada item → pilihan terdaftar SEBELUM input blur.
+function CatSelect({ value, onChange, options, error, onManage, canManage, baseStyle, errStyle }) {
+  const [open, setOpen] = useState(false)
+  const q = (value || '').toLowerCase()
+  const matches = options.filter(c => c.name.toLowerCase().includes(q))
+  const list = matches.length ? matches : options
+  return (
+    <div className="relative">
+      <div className="flex gap-2">
+        <input
+          value={value}
+          onChange={e => { onChange(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); if (list[0]) { onChange(list[0].name); setOpen(false) } }
+            else if (e.key === 'Escape') setOpen(false)
+          }}
+          placeholder="Pilih / ketik kategori"
+          className={FIELD_CLS}
+          style={error ? errStyle : baseStyle}
+        />
+        {canManage && (
+          <button type="button" onMouseDown={e => e.preventDefault()} onClick={onManage}
+            className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap"
+            style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Kategori</button>
+        )}
+      </div>
+      {open && list.length > 0 && (
+        <div className="absolute left-0 right-0 mt-1 rounded-xl py-1"
+          style={{ zIndex: 9999, maxHeight: 220, overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+          {list.map(c => (
+            <button type="button" key={c.id}
+              onMouseDown={e => { e.preventDefault(); onChange(c.name); setOpen(false) }}
+              className="w-full text-left px-3 py-2 text-sm"
+              style={{ color: 'var(--text-primary)', background: c.name === value ? 'rgba(139,92,246,0.14)' : 'transparent', cursor: 'pointer' }}>
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Card({ icon: Icon, label, value, color = '#38BDF8', sub, onClick }) {
   return (
     <div onClick={onClick} className={`rounded-2xl p-4 ${onClick ? 'cursor-pointer hover:brightness-110 transition' : ''}`} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -209,7 +255,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const submitExpense = async () => {
     const e = {}
     if (!expForm.date) e.date = 'Tanggal wajib diisi'
-    if (!expForm.category) e.category = 'Kategori wajib dipilih'
+    if (!expForm.category || !expForm.category.trim()) e.category = 'Pilih kategori pengeluaran'
     if (!expForm.method) e.method = 'Metode pembayaran wajib dipilih'
     if (!(parseCurrency(expForm.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
     setExpErr(e); if (Object.keys(e).length) return
@@ -456,12 +502,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Field icon={Receipt} label="Tanggal" required error={expErr.date}>
               <input type="date" value={expForm.date} onChange={e => setExpForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(expErr.date), colorScheme: 'dark' }} />
             </Field>
-            <Field icon={BookOpen} label="Kategori" required error={expErr.category} hint="Ketik untuk mencari, atau kelola daftar kategori">
-              <div className="flex gap-2">
-                <input list="exp-cats" value={expForm.category} onChange={e => setExpForm(p => ({ ...p, category: e.target.value }))} placeholder="Pilih / ketik kategori" className={FIELD_CLS} style={inpErr(expErr.category)} />
-                <datalist id="exp-cats">{expCats.map(c => <option key={c.id} value={c.name} />)}</datalist>
-                {canManageCat && <button type="button" onClick={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }} className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Kategori</button>}
-              </div>
+            <Field icon={BookOpen} label="Kategori" required error={expErr.category} hint="Ketik untuk mencari, klik untuk memilih">
+              <CatSelect value={expForm.category} onChange={v => setExpForm(p => ({ ...p, category: v }))} options={expCats} error={expErr.category}
+                canManage={canManageCat} onManage={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }}
+                baseStyle={inp} errStyle={inpErr(true)} />
             </Field>
             <Field icon={Wallet} label="Metode Pembayaran" required error={expErr.method}>
               <select value={expForm.method} onChange={e => setExpForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.method)}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -899,7 +943,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         {editExp && (
           <div className="space-y-3">
             <Field icon={Receipt} label="Tanggal" required><input type="date" value={editExp.date} onChange={e => setEditExp(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
-            <Field icon={BookOpen} label="Kategori" required><input list="exp-cats-edit" value={editExp.category} onChange={e => setEditExp(p => ({ ...p, category: e.target.value }))} placeholder="Pilih / ketik kategori" className={FIELD_CLS} style={inp} /><datalist id="exp-cats-edit">{expCats.map(c => <option key={c.id} value={c.name} />)}</datalist></Field>
+            <Field icon={BookOpen} label="Kategori" required><CatSelect value={editExp.category} onChange={v => setEditExp(p => ({ ...p, category: v }))} options={expCats} canManage={false} baseStyle={inp} errStyle={inpErr(true)} /></Field>
             <Field icon={Wallet} label="Metode Pembayaran" required><select value={editExp.method} onChange={e => setEditExp(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
             <Field icon={TrendingDown} label="Nominal" required><MoneyInput value={editExp.amount} onChange={v => setEditExp(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
             <Field icon={Pencil} label="Keterangan"><input value={editExp.note} onChange={e => setEditExp(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>

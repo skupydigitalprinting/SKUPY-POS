@@ -191,8 +191,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       })
     })
     const pengeluaran = pengeluaranAcc
-    const profitBruto = revenue - pengeluaran          // Omset − Pengeluaran
-    const profit = revenue - modal - pengeluaran        // Laba Bersih
+    const profitBruto = revenue - pengeluaran          // kartu biru → "LABA BERSIH" (Omset − Pengeluaran)
+    const profit = revenue - modal - pengeluaran        // kartu hijau → "PROFIT BRUTO" (Omset − Modal − Pengeluaran)
     return { revenue, modal, pengeluaran, profitBruto, profit, count: list.length }
   }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc])
 
@@ -368,7 +368,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         if (labaFrom) { const f = new Date(labaFrom + 'T00:00:00').getTime(); base = base.filter(t => new Date(t.date).getTime() >= f) }
         if (labaTo) { const tt = new Date(labaTo + 'T23:59:59').getTime(); base = base.filter(t => new Date(t.date).getTime() <= tt) }
         const rows = base.map(txRow)
-        const titles = { penjualan: 'Total Penjualan', laba: 'Laba Bersih', modal: 'Modal Barang' }
+        const titles = { penjualan: 'Total Penjualan', laba: 'Profit Bruto', modal: 'Modal Barang' }
         const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profit
         return { title: titles[key], rows, total }
       }
@@ -750,7 +750,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* Profit Bruto = Omset − Pengeluaran */}
+              {/* LABA BERSIH = Omset − Pengeluaran (kartu biru) */}
               <div
                 className="rounded-xl p-4"
                 style={{
@@ -762,7 +762,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                     style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.4)' }}>
                     <Scale size={15} style={{ color: '#3b82f6' }} />
                   </div>
-                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Profit Bruto</span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Laba Bersih</span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
                   style={{ fontFamily: 'Syne', color: labaRugi.profitBruto >= 0 ? '#3b82f6' : '#ff4d6a' }}>
@@ -792,7 +792,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* Laba Bersih = Omset − Modal − Pengeluaran */}
+              {/* PROFIT BRUTO = Omset − Modal − Pengeluaran (kartu hijau) */}
               <div onClick={() => openCard('laba')}
                 className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition lg:col-span-2"
                 style={{
@@ -810,7 +810,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                       : <TrendingDown size={15} style={{ color: '#ff4d6a' }} />}
                   </div>
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-                    {labaRugi.profit >= 0 ? 'Laba Bersih' : 'Rugi'}
+                    {labaRugi.profit >= 0 ? 'Profit Bruto' : 'Rugi'}
                   </span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
