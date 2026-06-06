@@ -2,13 +2,9 @@ import React, { useMemo, useState } from 'react'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
-  Receipt, Layers, Landmark,
+  Receipt, Layers,
 } from 'lucide-react'
 import { Button, Badge, EmptyState } from '../components/ui'
-
-// Modul Accounting di-lazy-load: chunk-nya TIDAK ikut bundle awal & hanya
-// di-download saat owner menekan "Buka Modul Accounting".
-const AccountingLazy = React.lazy(() => import('./Accounting'))
 import Modal from '../components/Modal'
 import WhatsAppButton from '../components/WhatsAppButton'
 import WhatsAppReminder from '../components/WhatsAppReminder'
@@ -57,7 +53,6 @@ export default function Piutang({
   const [historyTarget, setHistoryTarget] = useState(null) // group
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [accOpen, setAccOpen] = useState(false) // modul Accounting (lazy)
 
   // Peta debt → cashierId (lewat transaksi terkait) untuk filter per-admin owner.
   const cashierOf = useMemo(() => {
@@ -455,30 +450,6 @@ export default function Piutang({
                 </div>
               )
             })}
-          </div>
-        )}
-
-        {/* ─── MODUL ACCOUNTING — OWNER ONLY, lazy (tidak load saat app dibuka) ─── */}
-        {isOwner && (
-          <div className="mt-6">
-            {!accOpen ? (
-              <button onClick={() => setAccOpen(true)}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-bold btn-press"
-                style={{
-                  background: 'linear-gradient(135deg, rgba(56,189,248,0.14), rgba(99,102,241,0.10))',
-                  border: '1px solid rgba(56,189,248,0.35)', color: '#38BDF8', fontFamily: 'Syne',
-                }}>
-                <Landmark size={15} /> Buka Modul Accounting
-              </button>
-            ) : (
-              <React.Suspense fallback={
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
-                </div>
-              }>
-                <AccountingLazy />
-              </React.Suspense>
-            )}
           </div>
         )}
       </div>
