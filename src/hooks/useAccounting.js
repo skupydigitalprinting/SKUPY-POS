@@ -26,6 +26,86 @@ export function useAccounting() {
     return { ok: true, data: data || {} }
   }, [])
 
+  // Dashboard sederhana owner (RPC acc_dashboard).
+  const getDashboard = useCallback(async (from, to) => {
+    const { data, error } = await supabase.rpc('acc_dashboard', { p_from: from, p_to: to })
+    if (error) return { ok: false, error: error.message, data: null }
+    return { ok: true, data: data || {} }
+  }, [])
+
+  // Total Piutang Aktif langsung dari debts (untuk validasi sinkron vs RPC).
+  const getPiutangAktif = useCallback(async () => {
+    const { data, error } = await supabase.from('debts').select('total_debt, paid').limit(5000)
+    if (error) return { ok: false, error: error.message, value: 0 }
+    const v = (data || []).reduce((s, d) => s + Math.max(0, Math.round(+d.total_debt || 0) - Math.round(+d.paid || 0)), 0)
+    return { ok: true, value: v }
+  }, [])
+
+  // Sinkronkan / recalculate seluruh jurnal (RPC acc_resync).
+  const resync = useCallback(async () => {
+    const { data, error } = await supabase.rpc('acc_resync')
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, data }
+  }, [])
+
+  // Detail transaksi POS (uang masuk) per metode — paginated.
+  const listTransactions = useCallback(async ({ method, from, to, page = 0 } = {}) => {
+    let q = supabase.from('transactions')
+      .select('id, invoice_no, customer, cashier, cashier_id, payment_method, total, paid, remaining, status, order_status, created_at', { count: 'exact' })
+      .neq('order_status', 'dibatalkan')
+      .order('created_at', { ascending: false })
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+    if (method) q = q.eq('payment_method', method)
+    if (from) q = q.gte('created_at', from)
+    if (to) q = q.lte('created_at', to + 'T23:59:59')
+    const { data, error, count } = await q
+    if (error) return { ok: false, error: error.message, data: [], count: 0 }
+    return { ok: true, data: data || [], count: count || 0 }
+  }, [])
+
+  // Detail pembayaran cicilan (debt_payments).
+  const listCicilan = useCallback(async ({ method, from, to, page = 0 } = {}) => {
+    let q = supabase.from('debt_payments')
+      .select('id, invoice_no, amount, payment_method, paid_at, cashier, cashier_id', { count: 'exact' })
+      .order('paid_at', { ascending: false })
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+    if (method) q = q.eq('payment_method', method)
+    if (from) q = q.gte('paid_at', from)
+    if (to) q = q.lte('paid_at', to + 'T23:59:59')
+    const { data, error, count } = await q
+    if (error) return { ok: false, error: error.message, data: [], count: 0 }
+    return { ok: true, data: data || [], count: count || 0 }
+  }, [])
+
+  // Mutasi kas/rekening (cash_movements) per channel.
+  const listCashMovements = useCallback(async ({ channel = 'kas', to, page = 0 } = {}) => {
+    const methods = channel === 'kas' ? ['cash'] : ['transfer', 'qris']
+    let q = supabase.from('cash_movements')
+      .select('id, moved_at, direction, method, amount, invoice_no, note', { count: 'exact' })
+      .in('method', methods)
+      .order('moved_at', { ascending: false })
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+    if (to) q = q.lte('moved_at', to + 'T23:59:59')
+    const { data, error, count } = await q
+    if (error) return { ok: false, error: error.message, data: [], count: 0 }
+    return { ok: true, data: data || [], count: count || 0 }
+  }, [])
+
+  // Expenses by category bucket.
+  const listExpensesByBucket = useCallback(async ({ bucket, from, to, page = 0 } = {}) => {
+    let q = supabase.from('expenses').select('*', { count: 'exact' })
+      .order('expense_date', { ascending: false })
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+    if (from) q = q.gte('expense_date', from)
+    if (to) q = q.lte('expense_date', to)
+    if (bucket === 'gaji') q = q.in('category', ['Gaji', 'Gaji Karyawan'])
+    else if (bucket === 'bahan') q = q.eq('category', 'Pembelian Bahan')
+    else if (bucket === 'operasional') q = q.not('category', 'in', '("Gaji","Gaji Karyawan","Pembelian Bahan")')
+    const { data, error, count } = await q
+    if (error) return { ok: false, error: error.message, data: [], count: 0 }
+    return { ok: true, data: data || [], count: count || 0 }
+  }, [])
+
   // Jurnal double-entry — pagination 50/halaman.
   const listEntries = useCallback(async ({ page = 0, from, to } = {}) => {
     let q = supabase.from('accounting_entries')
@@ -153,7 +233,8 @@ export function useAccounting() {
 
   return {
     busy, PAGE_SIZE, todayISO, monthStartISO,
-    getSummary, listEntries, listExpenses, listPurchases,
+    getSummary, getDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
+    listTransactions, listCicilan, listCashMovements, listExpensesByBucket,
     addExpense, deleteExpense, addPurchase, deletePurchase,
     listSupplierDebts, addSupplierDebt, paySupplierDebt, deleteSupplierDebt,
     getRecapAdmin, fetchEntriesForExport,

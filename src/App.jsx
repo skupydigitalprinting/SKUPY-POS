@@ -297,7 +297,13 @@ function AppShell() {
     />,
     // Accounting (owner/staff admin saja) — lazy, owner-gated di setActivePage.
     accounting: canSeeDashboard
-      ? <Accounting admins={store.admins} currentUser={store.currentUser} />
+      ? <Accounting
+          admins={store.admins}
+          currentUser={store.currentUser}
+          editTransaction={store.editTransaction}
+          deleteTransaction={store.deleteTransaction}
+          setActivePage={setActivePage}
+        />
       : <AccessDenied />,
   }
 
