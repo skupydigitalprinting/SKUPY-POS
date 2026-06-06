@@ -327,12 +327,14 @@ export function useAccounting() {
     const { error } = await supabase.from('bank_loans').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
-  const payBankLoan = useCallback(async (loanId, { amount, pokok, bunga, method, note, cashierId }) => {
+  // Seluruh nominal bayar mengurangi POKOK (tanpa pemisahan bunga).
+  const payBankLoan = useCallback(async (loanId, { amount, method, note, cashierId, paymentNumber } = {}) => {
     const amt = Math.round(Number(amount) || 0)
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const { error } = await supabase.from('bank_loan_payments').insert({
-      loan_id: loanId, amount: amt, pokok: Math.round(Number(pokok) || 0), bunga: Math.round(Number(bunga) || 0),
+      loan_id: loanId, amount: amt, pokok: amt, bunga: 0,
       method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
+      payment_number: paymentNumber || null,
     })
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
@@ -344,9 +346,10 @@ export function useAccounting() {
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
-  const editBankPayment = useCallback(async (id, { amount, pokok, bunga, method, note }) => {
+  const editBankPayment = useCallback(async (id, { amount, method, note }) => {
+    const amt = Math.round(Number(amount) || 0)
     const { error } = await supabase.from('bank_loan_payments').update({
-      amount: Math.round(Number(amount) || 0), pokok: Math.round(Number(pokok) || 0), bunga: Math.round(Number(bunga) || 0),
+      amount: amt, pokok: amt, bunga: 0,
       method: method || 'transfer', note: note || '', updated_at: new Date().toISOString(),
     }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
