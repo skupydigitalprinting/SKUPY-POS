@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
 import Logo from './components/Logo'
 import { ToastProvider, useToast } from './components/Toast'
+import { ConfirmProvider } from './components/Confirm'
 import { useStore } from './hooks/useStore'
 
 // ─── Code splitting ───────────────────────────────────────────
@@ -393,7 +394,9 @@ export default function App() {
   return (
     <ErrorBoundary title="Aplikasi gagal dimuat">
       <ToastProvider>
-        <AppShell />
+        <ConfirmProvider>
+          <AppShell />
+        </ConfirmProvider>
       </ToastProvider>
     </ErrorBoundary>
   )

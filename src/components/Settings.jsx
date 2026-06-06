@@ -7,6 +7,7 @@ import {
 import Modal from './Modal'
 import { Input, Button } from './ui'
 import Logo from './Logo'
+import { useConfirm } from './Confirm'
 import { ROLE_OPTIONS, roleLabel } from '../utils/helpers'
 
 const TABS = [
@@ -38,6 +39,7 @@ export default function Settings({
   updateStoreInfo, updateLogo,
   addAdmin, deleteAdmin, changePassword, logout,
 }) {
+  const confirm = useConfirm()
   const [tab, setTab] = useState('toko')
   const [msg, setMsg] = useState(null)
   const [savingToko, setSavingToko] = useState(false)
@@ -136,6 +138,7 @@ export default function Settings({
   }
 
   const handleDeleteAdmin = async (id) => {
+    if (!(await confirm({ title: 'Hapus admin ini?', message: 'Akun admin akan dihapus dan tidak bisa login lagi. Tindakan ini bisa memengaruhi data terkait.' }))) return
     setDeletingId(id)
     try {
       const res = await deleteAdmin(id)

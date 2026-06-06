@@ -123,6 +123,7 @@ export function useAccounting() {
   const listExpenses = useCallback(async ({ page = 0 } = {}) => {
     const { data, error, count } = await supabase.from('expenses')
       .select('*', { count: 'exact' })
+      .is('deleted_at', null)
       .order('expense_date', { ascending: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
@@ -132,6 +133,7 @@ export function useAccounting() {
   const listPurchases = useCallback(async ({ page = 0 } = {}) => {
     const { data, error, count } = await supabase.from('purchases')
       .select('*', { count: 'exact' })
+      .is('deleted_at', null)
       .order('purchase_date', { ascending: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
@@ -155,7 +157,8 @@ export function useAccounting() {
   }, [])
 
   const deleteExpense = useCallback(async (id) => {
-    const { error } = await supabase.from('expenses').delete().eq('id', id)
+    // SOFT DELETE — sembunyikan dari laporan; trigger membuang jurnal & arus kas
+    const { error } = await supabase.from('expenses').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -189,7 +192,8 @@ export function useAccounting() {
   }, [])
 
   const deletePurchase = useCallback(async (id) => {
-    const { error } = await supabase.from('purchases').delete().eq('id', id)
+    // SOFT DELETE — sembunyikan dari laporan; trigger membuang jurnal & arus kas
+    const { error } = await supabase.from('purchases').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -303,7 +307,7 @@ export function useAccounting() {
 
   // ── HUTANG BANK ──
   const listBankLoans = useCallback(async () => {
-    const { data, error } = await supabase.from('bank_loans').select('*').order('created_at', { ascending: false }).limit(200)
+    const { data, error } = await supabase.from('bank_loans').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(200)
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -319,7 +323,8 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const deleteBankLoan = useCallback(async (id) => {
-    const { error } = await supabase.from('bank_loans').delete().eq('id', id)
+    // SOFT DELETE — pinjaman disembunyikan dari laporan
+    const { error } = await supabase.from('bank_loans').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const payBankLoan = useCallback(async (loanId, { amount, pokok, bunga, method, note, cashierId }) => {
@@ -351,6 +356,68 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── Detail sumber angka per card dashboard (audit) ──
+  // Mengembalikan { ok, rows, total }. Rows ternormalisasi:
+  //   { id, kind, date, source, ref, party, method, amount, status, note }
+  // kind: expense | purchase | supplier_payment | bank_payment | transaction
+  //       | debt_payment | supplier_debt | bank_loan | debt  (untuk edit/hapus)
+  const getCardDetail = useCallback(async (kind, from, to) => {
+    const toEnd = (to || from) + 'T23:59:59'
+    const rows = []
+    try {
+      const pushExpenses = async (filterCat) => {
+        let q = supabase.from('expenses').select('*').is('deleted_at', null).gte('expense_date', from).lte('expense_date', to)
+        const { data } = await q
+        ;(data || []).filter(x => !filterCat || filterCat(x.category)).forEach(x => rows.push({ id: x.id, kind: 'expense', date: x.expense_date, source: 'Pengeluaran', ref: '', party: x.category, method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      }
+      const pushPurchases = async (onlyPaid) => {
+        const { data } = await supabase.from('purchases').select('*').is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to)
+        ;(data || []).filter(x => !onlyPaid || !x.is_credit).forEach(x => rows.push({ id: x.id, kind: 'purchase', date: x.purchase_date, source: 'Pembelian', ref: x.item, party: x.supplier, method: x.is_credit ? 'kredit' : x.method, amount: Math.round(x.amount || 0), status: x.is_credit ? 'kredit' : 'lunas', note: x.note }))
+      }
+      const pushSupPay = async () => {
+        const { data } = await supabase.from('supplier_debt_payments').select('*').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'supplier_payment', date: x.paid_at, source: 'Bayar Hutang Supplier', ref: '', party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      }
+      const pushBankPay = async () => {
+        const { data } = await supabase.from('bank_loan_payments').select('*').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Cicilan Bank', ref: '', party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      }
+      const pushTransactions = async () => {
+        const { data } = await supabase.from('transactions').select('*').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'transaction', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, party: x.customer_name || '', method: x.payment_method, amount: Math.round(x.total || 0), status: x.status, note: '' }))
+      }
+      const pushDebtPay = async () => {
+        const { data } = await supabase.from('debt_payments').select('*').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'debt_payment', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      }
+
+      if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay() }
+      else if (kind === 'penjualan') { await pushTransactions() }
+      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay() }
+      else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan') ; await pushBankPay() }
+      else if (kind === 'pembelian_bahan' || kind === 'modal_barang' || kind === 'persediaan') { await pushPurchases(false); await pushExpenses(c => c === 'Pembelian Bahan') }
+      else if (kind === 'sudah_bayar') {
+        const { data } = await supabase.from('debts').select('*').is('deleted_at', null)
+        ;(data || []).filter(x => Math.round(x.paid || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'debt', date: x.created_at, source: 'Piutang', ref: x.invoice_no, party: x.customer_name || '', method: '', amount: Math.round(x.paid || 0), status: 'dibayar', note: '' }))
+      }
+      else if (kind === 'piutang') {
+        const { data } = await supabase.from('debts').select('*').is('deleted_at', null)
+        ;(data || []).map(x => ({ ...x, sisa: Math.max(0, Math.round(x.total_debt || 0) - Math.round(x.paid || 0)) })).filter(x => x.sisa > 0).forEach(x => rows.push({ id: x.id, kind: 'debt', date: x.created_at, source: 'Piutang', ref: x.invoice_no, party: x.customer_name || '', method: '', amount: x.sisa, status: 'aktif', note: '' }))
+      }
+      else if (kind === 'hutang_supplier') {
+        const { data } = await supabase.from('supplier_debts').select('*').is('deleted_at', null).eq('status', 'aktif')
+        ;(data || []).map(x => ({ ...x, sisa: Math.max(0, Math.round(x.total || 0) - Math.round(x.paid || 0)) })).filter(x => x.sisa > 0).forEach(x => rows.push({ id: x.id, kind: 'supplier_debt', date: x.created_at, source: 'Hutang Supplier', ref: x.item, party: x.supplier, method: '', amount: x.sisa, status: 'aktif', note: x.note }))
+      }
+      else if (kind === 'hutang_bank') {
+        const { data } = await supabase.from('bank_loans').select('*').is('deleted_at', null).eq('status', 'aktif')
+        ;(data || []).filter(x => Math.round(x.sisa_pokok || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'bank_loan', date: x.tanggal_mulai, source: 'Hutang Bank', ref: x.jenis_pinjaman, party: x.nama_bank, method: '', amount: Math.round(x.sisa_pokok || 0), status: 'aktif', note: x.keterangan }))
+      }
+    } catch (e) { return { ok: false, error: e?.message || String(e), rows: [], total: 0 } }
+    rows.sort((a, b) => new Date(b.date) - new Date(a.date))
+    const total = rows.reduce((s, r) => s + (r.amount || 0), 0)
+    return { ok: true, rows, total }
+  }, [])
+
   // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
   const fetchEntriesForExport = useCallback(async (from, to) => {
     const { data, error } = await supabase.from('accounting_entries')
@@ -371,6 +438,6 @@ export function useAccounting() {
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,
-    getRecapAdmin, fetchEntriesForExport,
+    getRecapAdmin, fetchEntriesForExport, getCardDetail,
   }
 }
