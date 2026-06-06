@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend,
@@ -6,7 +7,7 @@ import {
 import {
   TrendingUp, ShoppingBag, Users, Clock, Receipt,
   ArrowUpRight, Star, Zap, ArrowRight, Activity,
-  Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone, Repeat,
+  Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone,
 } from 'lucide-react'
 import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
@@ -143,8 +144,30 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     return m
   }, [products])
 
+  // Pengeluaran Accounting (deleted_at IS NULL) untuk periode laba-rugi.
+  // Diambil dari RPC acc_dashboard.pengeluaran_total — mencakup pengeluaran
+  // harian, belanja bahan, pembelian supplier, cicilan/bayar hutang bank,
+  // bayar hutang supplier, gaji, operasional, listrik, internet, sewa, dll.
+  const [pengeluaranAcc, setPengeluaranAcc] = useState(0)
+  useEffect(() => {
+    if (!isOwner) return
+    let alive = true
+    const load = async () => {
+      const from = labaFrom || '2000-01-01'
+      const to = labaTo || new Date().toISOString().slice(0, 10)
+      const { data, error } = await supabase.rpc('acc_dashboard', { p_from: from, p_to: to })
+      if (!alive || error || !data) return
+      const row = Array.isArray(data) ? data[0] : data
+      setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
+    }
+    load()
+    const id = setInterval(load, 30000) // realtime: hitung ulang berkala
+    return () => { alive = false; clearInterval(id) }
+  }, [isOwner, labaFrom, labaTo, transactions])
+
   const labaRugi = useMemo(() => {
-    let list = (transactions || []).filter(t => t.status === 'lunas')
+    // Omset = total seluruh invoice/transaksi VALID (non-dibatalkan) dalam rentang.
+    let list = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
     if (labaFrom) {
       const f = new Date(labaFrom + 'T00:00:00').getTime()
       list = list.filter(t => new Date(t.date).getTime() >= f)
@@ -155,13 +178,16 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     }
     let revenue = 0, modal = 0
     list.forEach(t => {
-      revenue += Number(t.total) || 0
+      revenue += toMoney(t.total)
       ;(t.items || []).forEach(i => {
         modal += (Number(i.qty) || 0) * (modalById[i.productId] || 0)
       })
     })
-    return { revenue, modal, profit: revenue - modal, count: list.length }
-  }, [transactions, modalById, labaFrom, labaTo])
+    const pengeluaran = pengeluaranAcc
+    const profitBruto = revenue - pengeluaran          // Omset − Pengeluaran
+    const profit = revenue - modal - pengeluaran        // Laba Bersih
+    return { revenue, modal, pengeluaran, profitBruto, profit, count: list.length }
+  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -330,7 +356,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: 'Piutang Aktif', rows, total: piutangData.value, manage: true }
       }
       case 'penjualan': case 'laba': case 'modal': {
-        let base = validTx.filter(t => t.status === 'lunas')
+        // Omset = semua transaksi valid (non-dibatalkan), selaras labaRugi.revenue
+        let base = validTx.filter(t => (t.orderStatus || '') !== 'dibatalkan')
         if (labaFrom) { const f = new Date(labaFrom + 'T00:00:00').getTime(); base = base.filter(t => new Date(t.date).getTime() >= f) }
         if (labaTo) { const tt = new Date(labaTo + 'T23:59:59').getTime(); base = base.filter(t => new Date(t.date).getTime() <= tt) }
         const rows = base.map(txRow)
@@ -590,7 +617,6 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 { key: 'cash', label: 'Cash', value: uangMasuk.cash, icon: Banknote, hint: 'Pembayaran tunai' },
                 { key: 'transfer', label: 'Transfer', value: uangMasuk.transfer, icon: CreditCard, hint: 'Pembayaran transfer' },
                 { key: 'qris', label: 'QRIS', value: uangMasuk.qris, icon: Smartphone, hint: 'Pembayaran QRIS' },
-                { key: 'cicilan', label: 'Cicilan Hutang', value: uangMasuk.cicilan, icon: Repeat, hint: 'Dari bayar cicilan' },
               ].map((c, i) => {
                 const Icon = c.icon
                 const primary = i === 0
@@ -678,8 +704,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
               </div>
             </div>
 
-            <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* Penjualan */}
+            <div className="relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {/* Total Omset */}
               <div onClick={() => openCard('penjualan')}
                 className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -688,17 +714,59 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                     style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)' }}>
                     <Wallet size={15} style={{ color: '#a78bfa' }} />
                   </div>
-                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Penjualan</span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Omset</span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
                   {formatRupiah(labaRugi.revenue)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  {labaRugi.count} transaksi lunas
+                  {labaRugi.count} transaksi valid
                 </div>
               </div>
 
-              {/* Modal */}
+              {/* Total Pengeluaran (Accounting) */}
+              <div
+                className="rounded-xl p-4"
+                style={{ background: 'rgba(255,77,106,0.06)', border: '1px solid rgba(255,77,106,0.25)' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(255,77,106,0.12)', border: '1px solid rgba(255,77,106,0.3)' }}>
+                    <TrendingDown size={15} style={{ color: '#ff4d6a' }} />
+                  </div>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Pengeluaran</span>
+                </div>
+                <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.pengeluaran)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Dari modul Accounting
+                </div>
+              </div>
+
+              {/* Profit Bruto = Omset − Pengeluaran */}
+              <div
+                className="rounded-xl p-4"
+                style={{
+                  background: labaRugi.profitBruto >= 0 ? 'rgba(59,130,246,0.08)' : 'rgba(255,77,106,0.08)',
+                  border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(59,130,246,0.3)' : 'rgba(255,77,106,0.3)'}`,
+                }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.4)' }}>
+                    <Scale size={15} style={{ color: '#3b82f6' }} />
+                  </div>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Profit Bruto</span>
+                </div>
+                <div className="text-lg sm:text-xl font-bold"
+                  style={{ fontFamily: 'Syne', color: labaRugi.profitBruto >= 0 ? '#3b82f6' : '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.profitBruto)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Omset − Pengeluaran
+                </div>
+              </div>
+
+              {/* Modal Barang */}
               <div onClick={() => openCard('modal')}
                 className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -717,9 +785,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* Laba / Rugi */}
+              {/* Laba Bersih = Omset − Modal − Pengeluaran */}
               <div onClick={() => openCard('laba')}
-                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition lg:col-span-2"
                 style={{
                   background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
                   border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
@@ -743,7 +811,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   {formatRupiah(labaRugi.profit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  {labaRugi.revenue > 0 ? `Margin ${Math.round((labaRugi.profit / labaRugi.revenue) * 100)}%` : 'Belum ada penjualan'}
+                  Omset − Modal − Pengeluaran{labaRugi.revenue > 0 ? ` · Margin ${Math.round((labaRugi.profit / labaRugi.revenue) * 100)}%` : ''}
                 </div>
               </div>
             </div>
