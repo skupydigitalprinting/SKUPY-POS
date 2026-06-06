@@ -148,13 +148,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // Diambil dari RPC acc_dashboard.pengeluaran_total — mencakup pengeluaran
   // harian, belanja bahan, pembelian supplier, cicilan/bayar hutang bank,
   // bayar hutang supplier, gaji, operasional, listrik, internet, sewa, dll.
-  // OPTIMASI EGRESS: bukan realtime. Refresh saat buka dashboard / ganti
-  // tanggal, lalu auto tiap 60 detik HANYA saat tab browser aktif. Tidak
-  // re-fetch tiap ada transaksi (pengeluaran tak bergantung transaksi).
   const [pengeluaranAcc, setPengeluaranAcc] = useState(0)
   useEffect(() => {
     if (!isOwner) return
-    let alive = true, id = null
+    let alive = true
     const load = async () => {
       const from = labaFrom || '2000-01-01'
       const to = labaTo || new Date().toISOString().slice(0, 10)
@@ -163,14 +160,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       const row = Array.isArray(data) ? data[0] : data
       setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
     }
-    const start = () => { if (!id) id = setInterval(load, 60000) }
-    const stop = () => { if (id) { clearInterval(id); id = null } }
-    const onVis = () => { if (document.visibilityState === 'visible') { load(); start() } else stop() }
     load()
-    if (document.visibilityState === 'visible') start()
-    document.addEventListener('visibilitychange', onVis)
-    return () => { alive = false; stop(); document.removeEventListener('visibilitychange', onVis) }
-  }, [isOwner, labaFrom, labaTo])
+    const id = setInterval(load, 30000) // realtime: hitung ulang berkala
+    return () => { alive = false; clearInterval(id) }
+  }, [isOwner, labaFrom, labaTo, transactions])
 
   const labaRugi = useMemo(() => {
     // Omset = total seluruh invoice/transaksi VALID (non-dibatalkan) dalam rentang.
