@@ -2,7 +2,7 @@ import React from 'react'
 import {
   LayoutDashboard, ShoppingCart, Package, ClipboardList,
   ChevronRight, X, Settings as SettingsIcon, Crown,
-  Users, Wallet, LogOut,
+  Users, Wallet, LogOut, Landmark,
 } from 'lucide-react'
 import Logo from './Logo'
 import { canViewDashboard, roleLabel } from '../utils/helpers'
@@ -14,6 +14,7 @@ const NAV = [
   { id: 'order', label: 'Order', icon: ClipboardList, hint: 'Daftar pesanan' },
   { id: 'customers', label: 'Customers', icon: Users, hint: 'Database pelanggan' },
   { id: 'piutang', label: 'Piutang', icon: Wallet, hint: 'Hutang & cicilan' },
+  { id: 'accounting', label: 'Accounting', icon: Landmark, hint: 'Keuangan & laporan' },
 ]
 
 export default function Sidebar({
@@ -66,7 +67,10 @@ export default function Sidebar({
           style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>
           Menu Utama
         </div>
-        {NAV.filter(({ id }) => showDashboard || id !== 'dashboard').map(({ id, label, icon: Icon, hint }) => {
+        {NAV.filter(({ id }) => (
+          // Dashboard & Accounting hanya untuk owner/staff admin (showDashboard).
+          (id === 'dashboard' || id === 'accounting') ? showDashboard : true
+        )).map(({ id, label, icon: Icon, hint }) => {
           const active = activePage === id
           return (
             <button

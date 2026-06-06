@@ -102,9 +102,60 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── Hutang Supplier ──
+  const listSupplierDebts = useCallback(async () => {
+    const { data, error } = await supabase.from('supplier_debts')
+      .select('*').order('created_at', { ascending: false }).limit(200)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
+  const addSupplierDebt = useCallback(async (p) => {
+    const total = Math.round(Number(p.total) || 0)
+    const { error } = await supabase.from('supplier_debts').insert({
+      supplier: p.supplier || '', item: p.item || '',
+      total, paid: 0, remaining: total,
+      due_date: p.dueDate || null, note: p.note || '',
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  const paySupplierDebt = useCallback(async (debtId, amount, method, cashierId) => {
+    const amt = Math.round(Number(amount) || 0)
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const { error } = await supabase.from('supplier_debt_payments').insert({
+      supplier_debt_id: debtId, amount: amt, method: method || 'cash', cashier_id: cashierId || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  const deleteSupplierDebt = useCallback(async (id) => {
+    const { error } = await supabase.from('supplier_debts').delete().eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  // Rekap per admin (RPC agregat)
+  const getRecapAdmin = useCallback(async (from, to) => {
+    const { data, error } = await supabase.rpc('acc_recap_admin', { p_from: from, p_to: to })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
+  // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
+  const fetchEntriesForExport = useCallback(async (from, to) => {
+    const { data, error } = await supabase.from('accounting_entries')
+      .select('entry_date, source_type, invoice_no, account_code, debit, credit, description')
+      .gte('entry_date', from).lte('entry_date', to)
+      .order('entry_date', { ascending: true }).limit(5000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
   return {
     busy, PAGE_SIZE, todayISO, monthStartISO,
     getSummary, listEntries, listExpenses, listPurchases,
     addExpense, deleteExpense, addPurchase, deletePurchase,
+    listSupplierDebts, addSupplierDebt, paySupplierDebt, deleteSupplierDebt,
+    getRecapAdmin, fetchEntriesForExport,
   }
 }

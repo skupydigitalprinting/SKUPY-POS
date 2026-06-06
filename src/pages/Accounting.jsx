@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale,
   Receipt, ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw,
+  Truck, FileSpreadsheet, Users,
 } from 'lucide-react'
 import { formatRupiah } from '../utils/helpers'
 import { Button } from '../components/ui'
@@ -13,6 +14,7 @@ const TABS = [
   { id: 'jurnal', label: 'Jurnal', icon: BookOpen },
   { id: 'pengeluaran', label: 'Pengeluaran', icon: Receipt },
   { id: 'pembelian', label: 'Pembelian', icon: ShoppingCart },
+  { id: 'supplier', label: 'Hutang Supplier', icon: Truck },
 ]
 const METHODS = [{ id: 'cash', label: 'Cash' }, { id: 'transfer', label: 'Transfer' }, { id: 'qris', label: 'QRIS' }]
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
@@ -34,7 +36,21 @@ function Card({ icon: Icon, label, value, color = '#38BDF8', sub }) {
   )
 }
 
-export default function Accounting() {
+function Page({ children }) {
+  return (
+    <div className="flex-1 overflow-y-auto mesh-bg">
+      <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+        <div className="mb-4">
+          <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Keuangan & Laporan</div>
+          <h2 className="text-xl sm:text-2xl font-bold mt-0.5" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Accounting</h2>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+export default function Accounting({ admins = [], currentUser } = {}) {
   const toast = useToast()
   const acc = useAccounting()
   const [tab, setTab] = useState('ringkasan')
@@ -52,6 +68,15 @@ export default function Accounting() {
   const [expForm, setExpForm] = useState({ date: acc.todayISO(), category: 'Operasional', amount: '', method: 'cash', note: '' })
   const [purForm, setPurForm] = useState({ date: acc.todayISO(), supplier: '', item: '', qty: '', amount: '', method: 'cash', isCredit: false, note: '' })
   const [saving, setSaving] = useState(false)
+  // Supplier debts + rekap admin + export
+  const [supDebts, setSupDebts] = useState([])
+  const [sdForm, setSdForm] = useState({ supplier: '', item: '', total: '', dueDate: '', note: '' })
+  const [payDebtId, setPayDebtId] = useState(null)
+  const [payVal, setPayVal] = useState('')
+  const [payMethod, setPayMethod] = useState('cash')
+  const [recap, setRecap] = useState([])
+  const [exporting, setExporting] = useState(false)
+  const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
 
   const loadSummary = async () => {
     setLoading(true)
@@ -70,15 +95,45 @@ export default function Accounting() {
   }
   const loadExpenses = async () => { const r = await acc.listExpenses({}); if (r.ok) setExpenses(r.data) }
   const loadPurchases = async () => { const r = await acc.listPurchases({}); if (r.ok) setPurchases(r.data) }
+  const loadSupplierDebts = async () => { const r = await acc.listSupplierDebts(); if (r.ok) setSupDebts(r.data) }
+  const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
 
   // Fetch saat tab/rentang berubah — HANYA setelah modul dibuka.
   useEffect(() => {
-    if (tab === 'ringkasan') loadSummary()
+    if (tab === 'ringkasan') { loadSummary(); loadRecap() }
     if (tab === 'jurnal') loadEntries(0)
     if (tab === 'pengeluaran') loadExpenses()
     if (tab === 'pembelian') loadPurchases()
+    if (tab === 'supplier') loadSupplierDebts()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, from, to])
+
+  // Export Excel — dynamic import xlsx supaya tidak menambah chunk awal.
+  const exportExcel = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const [{ default: XLSX }, res] = await Promise.all([
+        import('xlsx'),
+        acc.fetchEntriesForExport(from, to),
+      ])
+      if (!res.ok) { toast.error(res.error || 'Gagal ambil data'); return }
+      const rows = (res.data || []).map(e => ({
+        Tanggal: e.entry_date, Sumber: e.source_type, Invoice: e.invoice_no || '',
+        Akun: e.account_code, Debit: Math.round(e.debit || 0), Kredit: Math.round(e.credit || 0),
+        Keterangan: e.description || '',
+      }))
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Jurnal')
+      if (summary) {
+        const sRows = Object.entries(summary).map(([k, v]) => ({ Pos: k, Nilai: Math.round(Number(v) || 0) }))
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sRows), 'Ringkasan')
+      }
+      XLSX.writeFile(wb, `accounting-${from}_${to}.xlsx`)
+    } catch (e) {
+      toast.error('Export gagal: ' + (e?.message || e))
+    } finally { setExporting(false) }
+  }
 
   const laba = useMemo(() => {
     if (!summary) return 0
@@ -113,31 +168,39 @@ export default function Accounting() {
 
   if (setupNeeded) {
     return (
-      <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
-        <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}>
-          <AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span>
+      <Page>
+        <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
+          <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}>
+            <AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span>
+          </div>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+            Jalankan migrasi <code>supabase/migrations/2026_06_accounting_module.sql</code> di Supabase → SQL Editor,
+            lalu buka lagi modul ini. Migrasi membuat tabel akuntansi + jurnal otomatis dari transaksi POS.
+          </p>
+          <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadSummary() }}>
+            <RefreshCw size={13} /> Coba lagi
+          </Button>
         </div>
-        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-          Jalankan migrasi <code>supabase/migrations/2026_06_accounting_module.sql</code> di Supabase → SQL Editor,
-          lalu buka lagi modul ini. Migrasi membuat tabel akuntansi + jurnal otomatis dari transaksi POS.
-        </p>
-        <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadSummary() }}>
-          <RefreshCw size={13} /> Coba lagi
-        </Button>
-      </div>
+      </Page>
     )
   }
 
   return (
+    <Page>
     <div className="rounded-2xl overflow-hidden" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
       {/* Header + date range */}
       <div className="flex flex-wrap items-center gap-2 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <Landmark size={15} style={{ color: 'var(--accent-light)' }} />
         <span className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Accounting</span>
-        <span className="ml-auto flex items-center gap-2">
+        <span className="ml-auto flex items-center gap-2 flex-wrap">
           <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
           <span style={{ color: 'var(--text-muted)' }}>—</span>
           <input type="date" value={to} onChange={e => setTo(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
+          <button onClick={exportExcel} disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold btn-press"
+            style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a', border: '1px solid rgba(16,217,138,0.3)', fontFamily: 'Syne' }}>
+            {exporting ? <Loader2 size={12} className="animate-spin" /> : <FileSpreadsheet size={12} />} Excel
+          </button>
         </span>
       </div>
 
@@ -208,6 +271,30 @@ export default function Accounting() {
                 </div>
               </div>
             </div>
+
+            {/* Rekap per Admin */}
+            {recap.length > 0 && (
+              <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 mb-3"><Users size={14} style={{ color: 'var(--accent-light)' }} />
+                  <span className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Rekap per Admin (rentang)</span></div>
+                <table className="w-full text-xs">
+                  <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    {['Admin', 'Penjualan', 'Penerimaan Kas/Bank'].map((h, i) => (
+                      <th key={i} className={`px-2 py-1.5 ${i === 0 ? 'text-left' : 'text-right'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {recap.map((r, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>{adminName(r.cashier_id)}</td>
+                        <td className="px-2 py-2 text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.revenue)}</td>
+                        <td className="px-2 py-2 text-right" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.cash_in)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -316,7 +403,73 @@ export default function Accounting() {
             </div>
           </div>
         )}
+
+        {/* ── HUTANG SUPPLIER ── */}
+        {tab === 'supplier' && (
+          <div className="space-y-4">
+            <div className="rounded-xl p-3 grid grid-cols-2 sm:grid-cols-3 gap-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <input value={sdForm.supplier} onChange={e => setSdForm(p => ({ ...p, supplier: e.target.value }))} placeholder="Supplier" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
+              <input value={sdForm.item} onChange={e => setSdForm(p => ({ ...p, item: e.target.value }))} placeholder="Barang/keterangan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
+              <input value={sdForm.total} onChange={e => setSdForm(p => ({ ...p, total: e.target.value.replace(/[^\d]/g, '') }))} placeholder="Total hutang" inputMode="numeric" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
+              <input type="date" value={sdForm.dueDate} onChange={e => setSdForm(p => ({ ...p, dueDate: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} title="Jatuh tempo" />
+              <Button variant="primary" size="sm" className="col-span-2 sm:col-span-1" disabled={saving}
+                onClick={async () => {
+                  if (!(Number(sdForm.total) > 0)) return toast.error('Total harus > 0')
+                  setSaving(true); const r = await acc.addSupplierDebt(sdForm); setSaving(false)
+                  if (r.ok) { toast.success('Hutang supplier dicatat'); setSdForm({ supplier: '', item: '', total: '', dueDate: '', note: '' }); loadSupplierDebts() }
+                  else toast.error(r.error || 'Gagal')
+                }}>
+                <Plus size={13} /> Catat Hutang
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {supDebts.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada hutang supplier</p>}
+              {supDebts.map(d => {
+                const rem = Math.max(0, Math.round(d.total || 0) - Math.round(d.paid || 0))
+                return (
+                  <div key={d.id} className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{d.supplier || '—'} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {d.item}</span></div>
+                        <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                          Total {fmt(d.total)} · Bayar {fmt(d.paid)} · {d.due_date ? `Tempo ${dt(d.due_date)}` : 'tanpa tempo'}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div>
+                        <div className="text-sm font-bold" style={{ color: rem > 0 ? '#ef4444' : '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(rem)}</div>
+                      </div>
+                      {rem > 0 && (
+                        <button onClick={() => { setPayDebtId(payDebtId === d.id ? null : d.id); setPayVal(String(rem)); setPayMethod('cash') }}
+                          className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>
+                      )}
+                      <button onClick={async () => { const r = await acc.deleteSupplierDebt(d.id); if (r.ok) { toast.success('Dihapus'); loadSupplierDebts() } }}
+                        className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.15)' }}>
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                    {payDebtId === d.id && (
+                      <div className="flex items-center gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
+                        <input value={payVal} onChange={e => setPayVal(e.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs flex-1" style={inp} />
+                        <select value={payMethod} onChange={e => setPayMethod(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+                        <Button variant="success" size="sm" disabled={saving}
+                          onClick={async () => {
+                            const amt = Number(String(payVal).replace(/[^\d]/g, ''))
+                            if (!(amt > 0)) return toast.error('Nominal harus > 0')
+                            setSaving(true); const r = await acc.paySupplierDebt(d.id, Math.min(amt, rem), payMethod, currentUser?.id); setSaving(false)
+                            if (r.ok) { toast.success('Pembayaran dicatat'); setPayDebtId(null); setPayVal(''); loadSupplierDebts() }
+                            else toast.error(r.error || 'Gagal')
+                          }}>Konfirmasi</Button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
+    </Page>
   )
 }

@@ -18,12 +18,30 @@ const Produk = lazy(() => import('./pages/Produk'))
 const Order = lazy(() => import('./pages/Order'))
 const Customers = lazy(() => import('./pages/Customers'))
 const Piutang = lazy(() => import('./pages/Piutang'))
+const Accounting = lazy(() => import('./pages/Accounting'))
 const Settings = lazy(() => import('./components/Settings'))
 
 function PageLoader() {
   return (
     <div className="flex-1 flex items-center justify-center" style={{ minHeight: 200 }}>
       <Loader2 size={26} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
+    </div>
+  )
+}
+
+function AccessDenied() {
+  return (
+    <div className="flex-1 flex items-center justify-center mesh-bg p-6">
+      <div className="text-center max-w-sm">
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
+          style={{ background: 'rgba(255,77,106,0.12)', border: '1px solid rgba(255,77,106,0.3)' }}>
+          <AlertTriangle size={26} style={{ color: 'var(--red)' }} />
+        </div>
+        <h2 className="font-bold text-lg" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Akses Ditolak</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          Halaman ini hanya untuk Owner & Staff Admin.
+        </p>
+      </div>
     </div>
   )
 }
@@ -172,21 +190,24 @@ function AppShell() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  // Wrap setActivePage: kalau Staff Kasir mencoba membuka 'dashboard',
-  // tampilkan toast dan redirect ke 'kasir'. Tidak ada cara akses tersembunyi.
+  // Dashboard & Accounting: hanya Owner & Staff Admin. Kasir diblok.
+  const GATED = { dashboard: canSeeDashboard, accounting: canSeeDashboard }
+
+  // Wrap setActivePage: kalau Staff Kasir mencoba membuka halaman tergated,
+  // tampilkan toast dan redirect ke 'kasir'. Tidak ada akses tersembunyi.
   const setActivePage = (next) => {
-    if (next === 'dashboard' && !canSeeDashboard) {
-      toast.warning('Dashboard hanya dapat diakses oleh Owner & Staff Admin')
+    if (next in GATED && !GATED[next]) {
+      toast.warning(`${next === 'accounting' ? 'Accounting' : 'Dashboard'} hanya untuk Owner & Staff Admin`)
       setActivePageRaw('kasir')
       return
     }
     setActivePageRaw(next)
   }
 
-  // Saat role berubah (mis. user logout lalu login lagi sebagai Staff Kasir),
-  // pastikan tidak nyangkut di Dashboard.
+  // Saat role berubah (mis. login ulang sebagai Staff Kasir), jangan nyangkut
+  // di halaman tergated.
   useEffect(() => {
-    if (!canSeeDashboard && activePage === 'dashboard') {
+    if ((activePage === 'dashboard' || activePage === 'accounting') && !canSeeDashboard) {
       setActivePageRaw('kasir')
     }
   }, [canSeeDashboard, activePage])
@@ -274,6 +295,10 @@ function AppShell() {
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}
     />,
+    // Accounting (owner/staff admin saja) — lazy, owner-gated di setActivePage.
+    accounting: canSeeDashboard
+      ? <Accounting admins={store.admins} currentUser={store.currentUser} />
+      : <AccessDenied />,
   }
 
   return (
