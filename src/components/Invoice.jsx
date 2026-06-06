@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react'
-import { X, Printer, FileText, MessageCircle, Loader2, Download } from 'lucide-react'
+import { X, Printer, FileText, MessageCircle, Loader2, Download, Plus, Minus, Maximize2 } from 'lucide-react'
 import html2canvas from 'html2canvas'
 import { formatRupiah, formatDateTime, STATUS_MAP, downloadFile } from '../utils/helpers'
 import { STORE_INFO as DEFAULT_STORE } from '../data/dummyData'
@@ -20,6 +20,74 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   const autoTriggered = useRef(false)
   const status = STATUS_MAP[t.status]
   const isHutang = t.paymentMethod === 'hutang' || (t.remaining || 0) > 0
+
+  // ─── Preview responsif (auto-scale) ───────────────────────────
+  // Invoice TETAP 720px (untuk print/PNG/PDF). Hanya TAMPILAN preview yang
+  // di-scale agar muat di layar HP. printRef tidak diberi transform supaya
+  // outerHTML untuk print & html2canvas tetap ukuran asli.
+  const INVOICE_W = 720
+  const viewportRef = useRef(null)
+  const [fitScale, setFitScale] = useState(1)
+  const [manualScale, setManualScale] = useState(null) // null = ikut fit-width
+  const [contentH, setContentH] = useState(0)
+  const scale = manualScale != null ? manualScale : fitScale
+
+  useEffect(() => {
+    const measure = () => {
+      const vp = viewportRef.current, node = printRef.current
+      if (node && node.scrollHeight) setContentH(node.scrollHeight)
+      if (vp) {
+        const cs = getComputedStyle(vp)
+        const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
+        const avail = vp.clientWidth - padX
+        if (avail > 0) setFitScale(Math.min(1, Math.max(0.2, avail / INVOICE_W)))
+      }
+    }
+    measure()
+    const raf = requestAnimationFrame(measure)
+    const t1 = setTimeout(measure, 400)
+    let ro
+    if (window.ResizeObserver) {
+      ro = new ResizeObserver(measure)
+      if (viewportRef.current) ro.observe(viewportRef.current)
+      if (printRef.current) ro.observe(printRef.current)
+    }
+    window.addEventListener('resize', measure)
+    try { document.fonts?.ready?.then(measure).catch(() => {}) } catch {}
+    return () => {
+      cancelAnimationFrame(raf); clearTimeout(t1)
+      ro?.disconnect(); window.removeEventListener('resize', measure)
+    }
+  }, [])
+
+  // Pinch-to-zoom (mobile)
+  useEffect(() => {
+    const vp = viewportRef.current
+    if (!vp) return
+    let active = false, startDist = 0, startScale = 1
+    const dist = (tt) => Math.hypot(tt[0].clientX - tt[1].clientX, tt[0].clientY - tt[1].clientY)
+    const onStart = (e) => { if (e.touches.length === 2) { active = true; startDist = dist(e.touches) || 1; startScale = (manualScale != null ? manualScale : fitScale) } }
+    const onMove = (e) => {
+      if (active && e.touches.length === 2) {
+        e.preventDefault()
+        const ns = Math.min(3, Math.max(0.2, startScale * (dist(e.touches) / startDist)))
+        setManualScale(ns)
+      }
+    }
+    const onEnd = (e) => { if (e.touches.length < 2) active = false }
+    vp.addEventListener('touchstart', onStart, { passive: true })
+    vp.addEventListener('touchmove', onMove, { passive: false })
+    vp.addEventListener('touchend', onEnd, { passive: true })
+    return () => {
+      vp.removeEventListener('touchstart', onStart)
+      vp.removeEventListener('touchmove', onMove)
+      vp.removeEventListener('touchend', onEnd)
+    }
+  }, [manualScale, fitScale])
+
+  const zoomIn = () => setManualScale(Math.min(3, (manualScale != null ? manualScale : fitScale) * 1.2))
+  const zoomOut = () => setManualScale(Math.max(0.2, (manualScale != null ? manualScale : fitScale) * 0.83))
+  const fitWidth = () => setManualScale(null)
 
   /** Render the invoice DOM to a PNG blob — fully captured (no clipping). */
   const renderInvoicePNG = async () => {
@@ -74,6 +142,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
           parent.style.overflow = 'visible'
           parent.style.maxHeight = 'none'
           parent.style.height = 'auto'
+          parent.style.transform = 'none'   // netralkan scale preview → PNG full size
+          parent.style.width = 'auto'
           parent = parent.parentElement
         }
       },
@@ -349,15 +419,56 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
           </div>
         )}
 
-        {/* Invoice render area */}
+        {/* Zoom controls — hanya mobile/tablet (desktop tidak berubah) */}
+        <div className="md:hidden flex items-center justify-center gap-2 px-4 py-2 flex-shrink-0"
+          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+          <button onClick={zoomOut} className="w-8 h-8 rounded-lg flex items-center justify-center btn-press"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+            title="Perkecil">
+            <Minus size={14} />
+          </button>
+          <span className="text-xs font-bold tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', minWidth: 44, textAlign: 'center' }}>
+            {Math.round(scale * 100)}%
+          </span>
+          <button onClick={zoomIn} className="w-8 h-8 rounded-lg flex items-center justify-center btn-press"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+            title="Perbesar">
+            <Plus size={14} />
+          </button>
+          <button onClick={fitWidth} className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-semibold btn-press"
+            style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.3)', fontFamily: 'Syne' }}
+            title="Paskan ke lebar layar">
+            <Maximize2 size={12} /> Fit
+          </button>
+        </div>
+
+        {/* Invoice render area — viewport yang men-scale preview */}
         <div
-          className="overflow-auto p-4 sm:p-8 flex justify-center"
+          ref={viewportRef}
+          className="overflow-auto p-4 sm:p-8"
           style={{
             background: '#1c1c28',
-            // Allow horizontal scroll on mobile so user can swipe the desktop-sized invoice
             WebkitOverflowScrolling: 'touch',
+            touchAction: 'pan-x pan-y pinch-zoom',
           }}
         >
+          {/* Sizing wrapper: mengambil dimensi TER-SCALE supaya tidak ada
+              overflow & scroll sesuai ukuran tampil. */}
+          <div style={{
+            width: Math.round(INVOICE_W * scale),
+            // fallback tinggi sebelum diukur supaya tidak collapse 1 frame
+            height: Math.round((contentH || INVOICE_W * 1.4) * scale),
+            margin: '0 auto',
+            position: 'relative',
+          }}>
+            {/* Scale wrapper — transform DI SINI, bukan di printRef, supaya
+                print & html2canvas tetap ukuran asli 720px. */}
+            <div style={{
+              position: 'absolute', top: 0, left: 0,
+              width: INVOICE_W,
+              transformOrigin: 'top left',
+              transform: `scale(${scale})`,
+            }}>
           {/* IMPORTANT: this is the node captured by html2canvas.
               No `overflow: hidden`, no absolute decorations, plenty of padding. */}
           <div
@@ -848,6 +959,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               ✦ Powered by {STORE_INFO.name} ✦
             </div>
           </div>
+            </div>{/* /scale wrapper */}
+          </div>{/* /sizing wrapper */}
         </div>
       </div>
     </div>
