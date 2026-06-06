@@ -318,7 +318,9 @@ export function useAccounting() {
   }, [])
   const addBankLoan = useCallback(async (p) => {
     const plafon = Math.round(Number(p.plafon) || 0)
-    const sisa = p.sisaPokok != null ? Math.round(Number(p.sisaPokok) || 0) : plafon
+    // Sisa pokok kosong ('' / null / 0) → otomatis = plafon
+    const sisaIn = Math.round(Number(p.sisaPokok) || 0)
+    const sisa = (p.sisaPokok === '' || p.sisaPokok == null || sisaIn <= 0) ? plafon : sisaIn
     const { error } = await supabase.from('bank_loans').insert({
       nama_bank: p.namaBank || '', jenis_pinjaman: p.jenis || '', nomor_kontrak: p.nomor || '',
       tanggal_mulai: p.mulai || null, tanggal_jatuh_tempo: p.jatuhTempo || null,

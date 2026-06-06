@@ -29,10 +29,14 @@ const DEFAULT_EXP_CATEGORIES = [
 ]
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
-// Input uang: hanya angka + titik ribuan
-function MoneyInput({ value, onChange, placeholder, className, style }) {
-  return <input inputMode="numeric" value={formatCurrency(value)} placeholder={placeholder}
-    onChange={(e) => onChange(String(parseCurrency(e.target.value)))} className={className} style={style} />
+// Input uang: hanya angka + titik ribuan.
+// Kosong → tampil KOSONG (placeholder "0" yang redup), BUKAN value 0 tersimpan.
+// Mengetik "5" → "5" (tanpa leading zero). Hapus semua → kembali kosong.
+function MoneyInput({ value, onChange, placeholder = '0', className, style }) {
+  const display = (value === '' || value === null || value === undefined) ? '' : formatCurrency(value)
+  return <input inputMode="numeric" value={display} placeholder={placeholder}
+    onChange={(e) => { const d = (e.target.value || '').replace(/[^\d]/g, ''); onChange(d === '' ? '' : String(parseInt(d, 10))) }}
+    className={className} style={style} />
 }
 
 // ── Form vertikal 1 kolom — komponen reusable ──
@@ -757,9 +761,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field icon={Landmark} label="Plafon Pinjaman" required error={loanErr.plafon}>
-                <MoneyInput value={loanForm.plafon} onChange={v => setLoanForm(p => ({ ...p, plafon: v, sisaPokok: p.sisaPokok || v }))} placeholder="0" className={FIELD_CLS} style={inpErr(loanErr.plafon)} />
+                <MoneyInput value={loanForm.plafon} onChange={v => setLoanForm(p => ({ ...p, plafon: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(loanErr.plafon)} />
               </Field>
-              <Field icon={TrendingDown} label="Sisa Pokok" hint="Default = plafon">
+              <Field icon={TrendingDown} label="Sisa Pokok" hint="Kosongkan → otomatis = Plafon saat disimpan">
                 <MoneyInput value={loanForm.sisaPokok} onChange={v => setLoanForm(p => ({ ...p, sisaPokok: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
               </Field>
             </div>
