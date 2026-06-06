@@ -139,7 +139,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   // All math coerces via Number(discount || 0).
   const [discount, setDiscount] = useState('')
   const [discountType, setDiscountType] = useState('nominal')
-  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [paymentMethod, setPaymentMethod] = useState('transfer')
   const [customerName, setCustomerName] = useState('')
   const [customerId, setCustomerId] = useState('')
   const [dp, setDp] = useState('')
@@ -323,7 +323,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       setDp('')
       setCustomerName('')
       setCustomerId('')
-      setPaymentMethod('cash')
+      setPaymentMethod('transfer')
       setCartOpen(false)
       // Always show the success popup first (NOT invoice preview).
       // User picks: Print Invoice / Kirim WhatsApp / Selesai from popup.

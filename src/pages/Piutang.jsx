@@ -47,7 +47,7 @@ export default function Piutang({
   const [detailTarget, setDetailTarget] = useState(null)  // group
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
-  const [payMethod, setPayMethod] = useState('cash')
+  const [payMethod, setPayMethod] = useState('transfer')
   const [paying, setPaying] = useState(false)
   const [delTarget, setDelTarget] = useState(null)        // single debt
   const [historyTarget, setHistoryTarget] = useState(null) // group
@@ -147,7 +147,7 @@ export default function Piutang({
   const openPay = (g) => {
     setPayTarget(g)
     setPayAmount(String(g.totalRemaining))  // prefill full (integer)
-    setPayMethod('cash')
+    setPayMethod('transfer')
   }
 
   const handlePayCombined = async () => {

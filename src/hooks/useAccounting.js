@@ -145,7 +145,7 @@ export function useAccounting() {
         expense_date: payload.date || todayISO(),
         category: payload.category || 'Operasional',
         amount: Math.round(Number(payload.amount) || 0),
-        method: payload.method || 'cash',
+        method: payload.method || 'transfer',
         note: payload.note || '',
         cashier_id: payload.cashierId || null,
       })
@@ -168,7 +168,7 @@ export function useAccounting() {
         item: payload.item || '',
         qty: Number(payload.qty) || 0,
         amount: Math.round(Number(payload.amount) || 0),
-        method: payload.method || 'cash',
+        method: payload.method || 'transfer',
         is_credit: !!payload.isCredit,
         note: payload.note || '',
       })
@@ -185,32 +185,62 @@ export function useAccounting() {
   // ── Hutang Supplier ──
   const listSupplierDebts = useCallback(async () => {
     const { data, error } = await supabase.from('supplier_debts')
-      .select('*').order('created_at', { ascending: false }).limit(200)
+      .select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(300)
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
 
+  // Mengembalikan id supplier_debt yang dibuat (untuk langsung input DP).
   const addSupplierDebt = useCallback(async (p) => {
     const total = Math.round(Number(p.total) || 0)
-    const { error } = await supabase.from('supplier_debts').insert({
+    const { data, error } = await supabase.from('supplier_debts').insert({
       supplier: p.supplier || '', item: p.item || '',
       total, paid: 0, remaining: total,
       due_date: p.dueDate || null, note: p.note || '',
-    })
+      payment_method: p.method || 'transfer',
+    }).select('id').single()
+    return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
+  }, [])
+
+  const editSupplierDebt = useCallback(async (id, p) => {
+    const { error } = await supabase.from('supplier_debts').update({
+      supplier: p.supplier, item: p.item, total: Math.round(Number(p.total) || 0),
+      due_date: p.dueDate || null, note: p.note, payment_method: p.method,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
-  const paySupplierDebt = useCallback(async (debtId, amount, method, cashierId) => {
+  const paySupplierDebt = useCallback(async (debtId, amount, method, cashierId, note) => {
     const amt = Math.round(Number(amount) || 0)
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const { error } = await supabase.from('supplier_debt_payments').insert({
-      supplier_debt_id: debtId, amount: amt, method: method || 'cash', cashier_id: cashierId || null,
+      supplier_debt_id: debtId, amount: amt, method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
     })
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // Soft delete supplier debt
   const deleteSupplierDebt = useCallback(async (id) => {
-    const { error } = await supabase.from('supplier_debts').delete().eq('id', id)
+    const { error } = await supabase.from('supplier_debts').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  // ── Riwayat pembayaran hutang supplier ──
+  const listSupplierPayments = useCallback(async (debtId) => {
+    const { data, error } = await supabase.from('supplier_debt_payments')
+      .select('*').eq('supplier_debt_id', debtId).is('deleted_at', null).order('paid_at', { ascending: false })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const editSupplierPayment = useCallback(async (id, { amount, method, note }) => {
+    const { error } = await supabase.from('supplier_debt_payments').update({
+      amount: Math.round(Number(amount) || 0), method: method || 'transfer', note: note || '', updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteSupplierPayment = useCallback(async (id) => {
+    const { error } = await supabase.from('supplier_debt_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -273,8 +303,27 @@ export function useAccounting() {
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const { error } = await supabase.from('bank_loan_payments').insert({
       loan_id: loanId, amount: amt, pokok: Math.round(Number(pokok) || 0), bunga: Math.round(Number(bunga) || 0),
-      method: method || 'cash', note: note || '', cashier_id: cashierId || null,
+      method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
     })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  // ── Riwayat pembayaran cicilan bank ──
+  const listBankPayments = useCallback(async (loanId) => {
+    const { data, error } = await supabase.from('bank_loan_payments')
+      .select('*').eq('loan_id', loanId).is('deleted_at', null).order('paid_at', { ascending: false })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const editBankPayment = useCallback(async (id, { amount, pokok, bunga, method, note }) => {
+    const { error } = await supabase.from('bank_loan_payments').update({
+      amount: Math.round(Number(amount) || 0), pokok: Math.round(Number(pokok) || 0), bunga: Math.round(Number(bunga) || 0),
+      method: method || 'transfer', note: note || '', updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteBankPayment = useCallback(async (id) => {
+    const { error } = await supabase.from('bank_loan_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -293,9 +342,11 @@ export function useAccounting() {
     getSummary, getDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
     listTransactions, listCicilan, listCashMovements, listExpensesByBucket,
     addExpense, deleteExpense, addPurchase, deletePurchase,
-    listSupplierDebts, addSupplierDebt, paySupplierDebt, deleteSupplierDebt,
+    listSupplierDebts, addSupplierDebt, editSupplierDebt, paySupplierDebt, deleteSupplierDebt,
+    listSupplierPayments, editSupplierPayment, deleteSupplierPayment,
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
+    listBankPayments, editBankPayment, deleteBankPayment,
     getRecapAdmin, fetchEntriesForExport,
   }
 }

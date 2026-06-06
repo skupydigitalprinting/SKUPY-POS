@@ -1057,7 +1057,7 @@ export function useStore() {
     return await processDebtPayment({
       invoice_no: current.invoiceNo,
       paymentAmount: amount,
-      paymentMethod: 'cash',
+      paymentMethod: 'transfer',
       notes: 'Pembayaran dari halaman Order',
     })
   }, [transactions, processDebtPayment])
