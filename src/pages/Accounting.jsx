@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
-  FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X,
+  FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search,
 } from 'lucide-react'
 import { formatRupiah, formatCurrency, parseCurrency } from '../utils/helpers'
 import { Button } from '../components/ui'
@@ -107,8 +107,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [loanForm, setLoanForm] = useState({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' })
   // error inline per form (field → pesan)
   const [expErr, setExpErr] = useState({}); const [purErr, setPurErr] = useState({})
+  // Master kategori pengeluaran (dari DB)
+  const [expCats, setExpCats] = useState([]); const [catMgr, setCatMgr] = useState(false)
+  const [catNew, setCatNew] = useState(''); const [catEdit, setCatEdit] = useState(null); const [catSearch, setCatSearch] = useState('')
+  const canManageCat = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [supErr, setSupErr] = useState({}); const [sdErr, setSdErr] = useState({}); const [loanErr, setLoanErr] = useState({})
   const [bpay, setBpay] = useState(null) // {loanId, amount, pokok, bunga, method}
+  const [expandLoan, setExpandLoan] = useState(null) // loan id yang di-expand
+  const [expRows, setExpRows] = useState([]); const [expLoading, setExpLoading] = useState(false)
+  const [hbEdit, setHbEdit] = useState(null) // pembayaran bank yang diedit inline
   // edit hutang supplier + riwayat
   const [editDebt, setEditDebt] = useState(null) // supplier_debt being edited
   const [editExp, setEditExp] = useState(null) // expense being edited
@@ -129,6 +136,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   }
   const loadEntries = async (page = 0) => { const r = await acc.listEntries({ page, from, to }); if (r.ok) { setEntries(r.data); setEntCount(r.count); setEntPage(page) } else if (/relation|does not exist/i.test(r.error || '')) setSetupNeeded(true) }
   const loadExpenses = async () => { const r = await acc.listExpenses({}); if (r.ok) setExpenses(r.data) }
+  const loadExpCats = async () => { const r = await acc.listExpenseCategories(); if (r.ok) setExpCats(r.data) }
   const loadPurchases = async () => { const r = await acc.listPurchases({}); if (r.ok) setPurchases(r.data) }
   const loadSuppliers = async () => { const r = await acc.listSuppliers(supSearch); if (r.ok) setSuppliers(r.data) }
   const loadSupDebts = async () => { const r = await acc.listSupplierDebts(); if (r.ok) setSupDebts(r.data) }
@@ -140,7 +148,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     const run = async () => {
       if (tab === 'ringkasan') { await loadDashboard(); await loadRecap() }
       else if (tab === 'jurnal') await loadEntries(0)
-      else if (tab === 'pengeluaran') await loadExpenses()
+      else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
       else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
       else if (tab === 'supplier') await loadSuppliers()
       else if (tab === 'hsupplier') await loadSupDebts()
@@ -151,13 +159,18 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
-  // Auto-refresh ringkasan realtime
+  // OPTIMASI EGRESS: dashboard accounting TIDAK realtime. Auto-refresh ringan
+  // tiap 45 detik (hanya saat tab Ringkasan & tab browser aktif) + refresh
+  // manual lewat tombol Sinkronkan/ubah tanggal. Tidak ada subscription.
   useEffect(() => {
     if (tab !== 'ringkasan') return
-    const t = setInterval(loadDashboard, 15000)
-    const onVis = () => { if (document.visibilityState === 'visible') loadDashboard() }
+    let t = null
+    const start = () => { if (!t) t = setInterval(loadDashboard, 45000) }
+    const stop = () => { if (t) { clearInterval(t); t = null } }
+    const onVis = () => { if (document.visibilityState === 'visible') { loadDashboard(); start() } else stop() }
+    if (document.visibilityState === 'visible') start()
     document.addEventListener('visibilitychange', onVis)
-    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
@@ -279,6 +292,20 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     else if (row.kind === 'purchase') setEditPur({ id: row.id, date: row.date, supplier: row.party || '', item: row.ref || '', amount: String(row.amount), method: row.method || 'transfer', note: row.note || '' })
     else if (row.kind === 'supplier_debt') setEditDebt({ id: row.id, supplier: row.party || '', item: row.ref || '', total: String(row.amount), dueDate: '', note: row.note || '', method: 'transfer' })
     else toast.info('Edit item ini dari menu sumbernya')
+  }
+
+  // ── Hutang Bank: expand inline detail + history per pinjaman ──
+  const toggleLoan = async (loanId) => {
+    if (expandLoan === loanId) { setExpandLoan(null); setHbEdit(null); return }
+    setExpandLoan(loanId); setHbEdit(null); setExpLoading(true); setExpRows([])
+    const r = await acc.listBankPayments(loanId)
+    setExpRows(r.ok ? r.data : []); setExpLoading(false)
+  }
+  const reloadExp = async () => {
+    if (!expandLoan) return
+    const r = await acc.listBankPayments(expandLoan)
+    setExpRows(r.ok ? r.data : [])
+    loadBankLoans(); loadDashboard()
   }
 
   const saveSupplier = async () => {
@@ -429,8 +456,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Field icon={Receipt} label="Tanggal" required error={expErr.date}>
               <input type="date" value={expForm.date} onChange={e => setExpForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(expErr.date), colorScheme: 'dark' }} />
             </Field>
-            <Field icon={BookOpen} label="Kategori" required error={expErr.category}>
-              <select value={expForm.category} onChange={e => setExpForm(p => ({ ...p, category: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.category)}>{EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
+            <Field icon={BookOpen} label="Kategori" required error={expErr.category} hint="Ketik untuk mencari, atau kelola daftar kategori">
+              <div className="flex gap-2">
+                <input list="exp-cats" value={expForm.category} onChange={e => setExpForm(p => ({ ...p, category: e.target.value }))} placeholder="Pilih / ketik kategori" className={FIELD_CLS} style={inpErr(expErr.category)} />
+                <datalist id="exp-cats">{expCats.map(c => <option key={c.id} value={c.name} />)}</datalist>
+                {canManageCat && <button type="button" onClick={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }} className="px-3 rounded-xl text-xs font-semibold flex-shrink-0 whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>+ Kategori</button>}
+              </div>
             </Field>
             <Field icon={Wallet} label="Metode Pembayaran" required error={expErr.method}>
               <select value={expForm.method} onChange={e => setExpForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(expErr.method)}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -674,9 +705,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               return (
                 <div key={x.id} className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue7 ? 'rgba(245,158,11,0.5)' : 'var(--border)'}` }}>
                   <div className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0"><div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.nama_bank} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {x.jenis_pinjaman}</span></div>
-                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Plafon {fmt(x.plafon_pinjaman)} · Cicilan {fmt(x.cicilan_bulanan)}/bln {x.tanggal_jatuh_tempo ? `· Tempo ${dt(x.tanggal_jatuh_tempo)}` : ''}</div>
-                      {overdue7 && <div className="text-[11px] font-bold mt-0.5" style={{ color: '#f59e0b' }}>⏰ Cicilan {x.nama_bank} jatuh tempo dalam 7 hari</div>}
+                    <div onClick={() => toggleLoan(x.id)} className="flex-1 min-w-0 cursor-pointer">
+                      <div className="text-xs font-semibold truncate flex items-center gap-1" style={{ color: 'var(--text-primary)' }}>
+                        <ChevronDown size={13} style={{ color: 'var(--accent-light)', transform: expandLoan === x.id ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }} />
+                        {x.nama_bank} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {x.jenis_pinjaman}</span>
+                      </div>
+                      <div className="text-[11px] ml-4" style={{ color: 'var(--text-muted)' }}>Plafon {fmt(x.plafon_pinjaman)} · Cicilan {fmt(x.cicilan_bulanan)}/bln {x.tanggal_jatuh_tempo ? `· Tempo ${dt(x.tanggal_jatuh_tempo)}` : ''}</div>
+                      {overdue7 && <div className="text-[11px] font-bold mt-0.5 ml-4" style={{ color: '#f59e0b' }}>⏰ Cicilan {x.nama_bank} jatuh tempo dalam 7 hari</div>}
                     </div>
                     <div className="text-right"><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Pokok</div><div className="text-sm font-bold" style={{ color: x.sisa_pokok > 0 ? '#ef4444' : '#10d98a' }}>{fmt(x.sisa_pokok)}</div></div>
                     {x.sisa_pokok > 0 && <button onClick={async () => {
@@ -685,9 +720,65 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                       const n = (h.ok ? h.data.length : 0) + 1
                       setBpay({ loanId: x.id, amount: String(Math.round(x.cicilan_bulanan || 0)), method: 'transfer', note: '', paymentNumber: n, sisa: Math.round(x.sisa_pokok || 0) })
                     }} className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
-                    <button onClick={() => openHistory('bank', { id: x.id, title: `${x.nama_bank} · ${x.jenis_pinjaman}`, bank: x.nama_bank, jenis: x.jenis_pinjaman })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat Pembayaran"><BookOpen size={11} /></button>
+                    <button onClick={() => toggleLoan(x.id)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat Pembayaran"><BookOpen size={11} /></button>
                     <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteBankLoan(x.id); if (r.ok) { toast.success('Dihapus'); loadBankLoans(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button>
                   </div>
+
+                  {/* Expand inline: detail pinjaman + history pembayaran */}
+                  {expandLoan === x.id && (
+                    <div className="mt-3 pt-3 space-y-3" style={{ borderTop: '1px solid var(--border)' }}>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {[['Plafon Awal', fmt(x.plafon_pinjaman)], ['Cicilan/bln', fmt(x.cicilan_bulanan)], ['Sisa Pokok', fmt(x.sisa_pokok)], ['Status', x.status === 'lunas' ? 'Lunas' : 'Aktif'], ['Mulai', dt(x.tanggal_mulai)], ['Tempo', dt(x.tanggal_jatuh_tempo)]].map(([k, v]) => (
+                          <div key={k} className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{v}</div></div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>History Pembayaran</div>
+                      {expLoading ? <div className="flex justify-center py-4"><Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
+                        : expRows.length === 0 ? <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran untuk pinjaman ini.</p>
+                        : (() => {
+                          const numMap = {}; [...expRows].sort((a, b) => new Date(a.paid_at) - new Date(b.paid_at)).forEach((p, i) => { numMap[p.id] = i + 1 })
+                          return (
+                          <div className="overflow-x-auto -mx-1">
+                            <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 520 }}>
+                              <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Ke-', 'Tanggal', 'Nominal', 'Metode', 'Keterangan', 'Admin', ''].map((h, i) => <th key={i} className={`px-2 py-1.5 ${h === 'Nominal' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>)}</tr></thead>
+                              <tbody>
+                                {expRows.map(p => hbEdit?.id === p.id ? (
+                                  <tr key={p.id} style={{ background: 'rgba(139,92,246,0.05)', borderBottom: '1px solid var(--border)' }}>
+                                    <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>
+                                    <td className="px-2 py-2"><input type="date" value={hbEdit.date} onChange={e => setHbEdit(s => ({ ...s, date: e.target.value }))} className="px-2 py-1 rounded text-xs" style={{ ...inp, colorScheme: 'dark' }} /></td>
+                                    <td className="px-2 py-2"><MoneyInput value={hbEdit.amount} onChange={v => setHbEdit(s => ({ ...s, amount: v }))} placeholder="Nominal" className="px-2 py-1 rounded text-xs w-28" style={inp} /></td>
+                                    <td className="px-2 py-2"><select value={hbEdit.method} onChange={e => setHbEdit(s => ({ ...s, method: e.target.value }))} className="px-2 py-1 rounded text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></td>
+                                    <td className="px-2 py-2" colSpan={2}><input value={hbEdit.note} onChange={e => setHbEdit(s => ({ ...s, note: e.target.value }))} placeholder="Catatan" className="px-2 py-1 rounded text-xs w-full" style={inp} /></td>
+                                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                                      <button onClick={async () => {
+                                        const amt = parseCurrency(hbEdit.amount); if (!(amt > 0)) return toast.error('Nominal > 0')
+                                        const r = await acc.editBankPayment(p.id, { amount: amt, method: hbEdit.method, note: hbEdit.note, paidAt: hbEdit.date })
+                                        if (r.ok) { toast.success('Diperbarui'); setHbEdit(null); reloadExp() } else toast.error(r.error)
+                                      }} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Check size={11} /></button>
+                                      <button onClick={() => setHbEdit(null)} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}><X size={11} /></button>
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                    <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>
+                                    <td className="px-2 py-2" style={{ color: 'var(--text-secondary)' }}>{dt(p.paid_at)}</td>
+                                    <td className="px-2 py-2 text-right font-bold" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</td>
+                                    <td className="px-2 py-2" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>{p.method}</td>
+                                    <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 140 }}>{p.note}</td>
+                                    <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{adminName(p.cashier_id)}</td>
+                                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                                      <button onClick={() => setHbEdit({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.method || 'transfer', note: p.note || '', date: (p.paid_at || '').slice(0, 10) })} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={11} /></button>
+                                      <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteBankPayment(p.id); if (r.ok) { toast.success('Dihapus · sisa pokok diperbarui'); reloadExp() } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          )
+                        })()}
+                    </div>
+                  )}
                   {bpay?.loanId === x.id && (() => {
                     const amt = parseCurrency(bpay.amount)
                     const over = amt > (bpay.sisa || 0)
@@ -808,7 +899,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         {editExp && (
           <div className="space-y-3">
             <Field icon={Receipt} label="Tanggal" required><input type="date" value={editExp.date} onChange={e => setEditExp(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
-            <Field icon={BookOpen} label="Kategori" required><select value={editExp.category} onChange={e => setEditExp(p => ({ ...p, category: e.target.value }))} className={FIELD_CLS} style={inp}>{EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+            <Field icon={BookOpen} label="Kategori" required><input list="exp-cats-edit" value={editExp.category} onChange={e => setEditExp(p => ({ ...p, category: e.target.value }))} placeholder="Pilih / ketik kategori" className={FIELD_CLS} style={inp} /><datalist id="exp-cats-edit">{expCats.map(c => <option key={c.id} value={c.name} />)}</datalist></Field>
             <Field icon={Wallet} label="Metode Pembayaran" required><select value={editExp.method} onChange={e => setEditExp(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
             <Field icon={TrendingDown} label="Nominal" required><MoneyInput value={editExp.amount} onChange={v => setEditExp(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
             <Field icon={Pencil} label="Keterangan"><input value={editExp.note} onChange={e => setEditExp(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
@@ -838,6 +929,49 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             }}><Check size={14} /> Simpan</Button>
           </div>
         )}
+      </Modal>
+
+      {/* ── MASTER KATEGORI PENGELUARAN ── */}
+      <Modal open={catMgr} onClose={() => { setCatMgr(false); setCatEdit(null) }} title="Kelola Kategori Pengeluaran" size="sm">
+        <div className="space-y-3">
+          {canManageCat && (
+            <div className="flex gap-2">
+              <input value={catNew} onChange={e => setCatNew(e.target.value)} placeholder="Nama kategori baru" className={FIELD_CLS} style={inp} onKeyDown={async e => { if (e.key === 'Enter' && catNew.trim()) { const r = await acc.addExpenseCategory(catNew); if (r.ok) { toast.success('Kategori ditambah'); setCatNew(''); loadExpCats() } else toast.error(r.error) } }} />
+              <Button variant="primary" onClick={async () => { if (!catNew.trim()) return; const r = await acc.addExpenseCategory(catNew); if (r.ok) { toast.success('Kategori ditambah'); setCatNew(''); loadExpCats() } else toast.error(r.error) }}><Plus size={14} /></Button>
+            </div>
+          )}
+          <div className="relative">
+            <Search size={13} style={{ position: 'absolute', left: 10, top: 11, color: 'var(--text-muted)' }} />
+            <input value={catSearch} onChange={e => setCatSearch(e.target.value)} placeholder="Cari kategori..." className="w-full pl-8 pr-3 py-2.5 rounded-xl text-sm" style={inp} />
+          </div>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {expCats.filter(c => c.name.toLowerCase().includes(catSearch.toLowerCase())).length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Tidak ada kategori</p>}
+            {expCats.filter(c => c.name.toLowerCase().includes(catSearch.toLowerCase())).map(c => (
+              <div key={c.id} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                {catEdit?.id === c.id ? (
+                  <>
+                    <input value={catEdit.name} onChange={e => setCatEdit(s => ({ ...s, name: e.target.value }))} className="flex-1 px-2 py-1 rounded text-xs" style={inp} autoFocus />
+                    <button onClick={async () => { if (!catEdit.name.trim()) return; const r = await acc.updateExpenseCategory(c.id, catEdit.name, catEdit.oldName); if (r.ok) { toast.success('Kategori diperbarui'); setCatEdit(null); loadExpCats(); loadExpenses() } else toast.error(r.error) }} className="w-7 h-7 rounded inline-flex items-center justify-center" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Check size={12} /></button>
+                    <button onClick={() => setCatEdit(null)} className="w-7 h-7 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}><X size={12} /></button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1 text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{c.name}</span>
+                    {canManageCat && <button onClick={() => setCatEdit({ id: c.id, name: c.name, oldName: c.name })} className="w-7 h-7 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>}
+                    {isOwner && <button onClick={async () => {
+                      const n = await acc.countExpensesByCategory(c.name)
+                      const ok = await confirm({ title: 'Hapus kategori ini?', message: n > 0 ? `Kategori "${c.name}" dipakai ${n} transaksi. Transaksi lama akan dialihkan ke "Pengeluaran Lainnya". Lanjut hapus?` : `Hapus kategori "${c.name}"?`, confirmLabel: 'Ya, Hapus' })
+                      if (!ok) return
+                      const r = await acc.deleteExpenseCategory(c.id, c.name, 'Pengeluaran Lainnya')
+                      if (r.ok) { toast.success('Kategori dihapus'); loadExpCats(); loadExpenses() } else toast.error(r.error)
+                    }} className="w-7 h-7 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          {!canManageCat && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Hanya owner/admin yang dapat menambah/edit kategori.</p>}
+        </div>
       </Modal>
 
       {/* ── DETAIL SUMBER ANGKA (klik card ringkasan) ── */}
