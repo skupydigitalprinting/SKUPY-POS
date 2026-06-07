@@ -6,7 +6,7 @@ import {
 import { Input, Button, Badge, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import WhatsAppButton from '../components/WhatsAppButton'
-import { formatRupiah, formatDate, timeAgo } from '../utils/helpers'
+import { formatRupiah, formatRupiahShort, formatDate, timeAgo } from '../utils/helpers'
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 
@@ -103,24 +103,26 @@ export default function Customers({
           </Button>
         </div>
 
-        {/* Stat strips */}
-        <div className="grid grid-cols-3 gap-3 mb-5">
-          <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Total Belanja</p>
-            <p className="text-sm sm:text-base font-bold truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-              {formatRupiah(totalSpent)}
+        {/* Stat strips — angka pendek di mobile (anti overflow), lengkap di desktop */}
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-5">
+          <div className="rounded-xl p-3 sm:p-4 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <p className="text-[11px] sm:text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>Total Belanja</p>
+            <p className="font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontSize: 'clamp(14px,4vw,20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              <span className="sm:hidden">{formatRupiahShort(totalSpent)}</span>
+              <span className="hidden sm:inline">{formatRupiah(totalSpent)}</span>
             </p>
           </div>
-          <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Total Hutang</p>
-            <p className="text-sm sm:text-base font-bold" style={{ color: '#f59e0b', fontFamily: 'Syne' }}>
-              {formatRupiah(totalDebt)}
+          <div className="rounded-xl p-3 sm:p-4 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <p className="text-[11px] sm:text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>Total Hutang</p>
+            <p className="font-bold" style={{ color: '#f59e0b', fontFamily: 'Syne', fontSize: 'clamp(14px,4vw,20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              <span className="sm:hidden">{formatRupiahShort(totalDebt)}</span>
+              <span className="hidden sm:inline">{formatRupiah(totalDebt)}</span>
             </p>
           </div>
-          <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Customer Hutang</p>
-            <p className="text-sm sm:text-base font-bold" style={{ color: '#ff4d6a', fontFamily: 'Syne' }}>
-              {debtorCount} orang
+          <div className="rounded-xl p-3 sm:p-4 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <p className="text-[11px] sm:text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>Customer Hutang</p>
+            <p className="font-bold" style={{ color: '#ff4d6a', fontFamily: 'Syne', fontSize: 'clamp(14px,4vw,20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {debtorCount} <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>orang</span>
             </p>
           </div>
         </div>
@@ -214,17 +216,19 @@ export default function Customers({
                         {c.totalTransactions}
                       </p>
                     </div>
-                    <div className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Belanja</p>
-                      <p className="text-xs font-bold truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-                        {formatRupiah(c.totalSpent)}
+                      <p className="font-bold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontSize: 'clamp(11px,3.2vw,13px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                        <span className="sm:hidden">{formatRupiahShort(c.totalSpent)}</span>
+                        <span className="hidden sm:inline">{formatRupiah(c.totalSpent)}</span>
                       </p>
                     </div>
-                    <div className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Hutang</p>
-                      <p className="text-xs font-bold truncate"
-                        style={{ color: c.totalDebt > 0 ? 'var(--amber)' : 'var(--text-secondary)', fontFamily: 'Syne' }}>
-                        {formatRupiah(c.totalDebt)}
+                      <p className="font-bold"
+                        style={{ color: c.totalDebt > 0 ? 'var(--amber)' : 'var(--text-secondary)', fontFamily: 'Syne', fontSize: 'clamp(11px,3.2vw,13px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                        <span className="sm:hidden">{formatRupiahShort(c.totalDebt)}</span>
+                        <span className="hidden sm:inline">{formatRupiah(c.totalDebt)}</span>
                       </p>
                     </div>
                   </div>

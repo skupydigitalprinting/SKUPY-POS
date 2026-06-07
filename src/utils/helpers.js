@@ -19,6 +19,17 @@ export function formatCompact(n) {
   return String(v)
 }
 
+// Rupiah ringkas untuk mobile: Rp246Jt, Rp1,4Jt, Rp950Rb (koma ala Indonesia).
+export function formatRupiahShort(amount) {
+  const v = Math.round(Number(amount) || 0)
+  const sign = v < 0 ? '-' : ''
+  const a = Math.abs(v)
+  if (a >= 1_000_000_000) return `${sign}Rp${(a / 1_000_000_000).toFixed(1).replace('.', ',').replace(/,0$/, '')}M`
+  if (a >= 1_000_000) return `${sign}Rp${(a / 1_000_000).toFixed(1).replace('.', ',').replace(/,0$/, '')}Jt`
+  if (a >= 1_000) return `${sign}Rp${Math.round(a / 1_000)}Rb`
+  return `${sign}Rp${a}`
+}
+
 export function formatDate(dateStr, opts = {}) {
   return new Date(dateStr).toLocaleDateString('id-ID', {
     day: 'numeric',

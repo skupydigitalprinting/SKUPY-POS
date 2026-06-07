@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
-import { getCatLabel } from '../hooks/useCategories'
+import { getCatLabel, useCategories } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
 import Logo from '../components/Logo'
 
@@ -273,9 +273,27 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     }).sort((a, b) => b.totalOmzet - a.totalOmzet)
   }, [admins, transactions, debts])
   const recentTrx = transactions.slice(0, 6)
-  const catLabel = (id) => getCatLabel(id)
 
-  const pieData = stats.categoryData.map((d) => ({ ...d, name: catLabel(d.name) }))
+  // ── Distribusi Kategori — sumber data = kategori produk asli (bukan hardcode) ──
+  const { categories } = useCategories() // reaktif: edit/tambah/hapus kategori → recompute
+  const [catMode, setCatMode] = useState('penjualan') // 'penjualan' | 'produk'
+  const prodCatById = useMemo(() => {
+    const m = {}
+    ;(products || []).forEach(p => { m[p.id] = p.category })
+    return m
+  }, [products])
+  const pieData = useMemo(() => {
+    const agg = {}
+    const add = (cat, n) => { const label = getCatLabel(cat) || 'Lainnya'; agg[label] = (agg[label] || 0) + n }
+    if (catMode === 'produk') {
+      ;(products || []).filter(p => !p.deleted_at).forEach(p => add(p.category, 1))
+    } else {
+      ;(transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan' && (t.status || '') !== 'dibatalkan')
+        .forEach(t => (t.items || []).forEach(i => add(prodCatById[i.productId], Number(i.qty) || 0)))
+    }
+    return Object.entries(agg).map(([name, value]) => ({ name, value })).filter(d => d.value > 0).sort((a, b) => b.value - a.value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catMode, products, transactions, prodCatById, categories])
 
   // ─── Owner: detail sumber data tiap kartu (klik untuk audit + edit/hapus) ───
   const [detailKey, setDetailKey] = useState(null)
@@ -389,8 +407,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const detailCard = detailKey ? buildCard(detailKey) : null
 
   return (
-    <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0 }}>
-      <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+    <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
+      <div className="p-4 sm:p-6 max-w-7xl mx-auto" style={{ paddingBottom: 'calc(120px + env(safe-area-inset-bottom))' }}>
         {/* Hero Banner with Logo */}
         <div
           className="relative rounded-2xl overflow-hidden mb-5 animate-fadeIn"
@@ -1114,49 +1132,51 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             </ResponsiveContainer>
           </div>
 
-          {/* Pie chart - sales by category */}
+          {/* Pie chart - distribusi kategori (kategori produk asli) */}
           <div className="rounded-2xl p-5 animate-slideUp"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', animationDelay: '420ms' }}>
-            <h2 className="font-bold text-sm mb-3"
-              style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-              Distribusi Kategori
-            </h2>
-            <ResponsiveContainer width="100%" height={180}>
-              <PieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={40}
-                  outerRadius={70}
-                  paddingAngle={3}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {pieData.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    background: 'rgba(28,28,40,0.95)',
-                    border: '1px solid var(--border-strong)',
-                    borderRadius: 12,
-                    fontSize: 11,
-                  }}
-                  formatter={(v) => formatRupiah(v)}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {pieData.slice(0, 6).map((p, i) => (
-                <div key={p.name} className="flex items-center gap-1.5 text-xs"
-                  style={{ color: 'var(--text-secondary)' }}>
-                  <span className="w-2 h-2 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
-                  {p.name}
-                </div>
-              ))}
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+              <h2 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
+                Distribusi Kategori
+              </h2>
+              <div className="flex rounded-lg p-0.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                {[['penjualan', 'Penjualan'], ['produk', 'Produk']].map(([k, label]) => (
+                  <button key={k} onClick={() => setCatMode(k)}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold transition"
+                    style={{ background: catMode === k ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'transparent', color: catMode === k ? '#fff' : 'var(--text-muted)', fontFamily: 'Syne' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
+            {pieData.length === 0 ? (
+              <div className="flex items-center justify-center" style={{ height: 180 }}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Belum ada data kategori</p>
+              </div>
+            ) : (
+              <>
+                <ResponsiveContainer width="100%" height={180}>
+                  <PieChart>
+                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={40} outerRadius={70} paddingAngle={3} dataKey="value" stroke="none">
+                      {pieData.map((_, i) => (<Cell key={i} fill={COLORS[i % COLORS.length]} />))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{ background: 'rgba(28,28,40,0.95)', border: '1px solid var(--border-strong)', borderRadius: 12, fontSize: 11 }}
+                      formatter={(v) => catMode === 'produk' ? `${v} produk` : `${formatQty(v)} terjual`}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2 max-h-20 overflow-y-auto">
+                  {pieData.map((p, i) => (
+                    <div key={p.name} className="flex items-center gap-1.5 text-xs min-w-0" style={{ color: 'var(--text-secondary)', maxWidth: '48%' }}>
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
+                      <span className="truncate">{p.name}</span>
+                      <span className="flex-shrink-0" style={{ color: 'var(--text-muted)' }}>· {p.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Recent Transactions */}
