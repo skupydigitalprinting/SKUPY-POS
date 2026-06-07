@@ -462,6 +462,73 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── ASET TETAP ──
+  const listAssets = useCallback(async () => {
+    const { data, error } = await supabase.from('assets').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addAsset = useCallback(async (p) => {
+    const { error } = await supabase.from('assets').insert({
+      name: p.name || '', category_id: p.categoryId || null, category_name: p.categoryName || '',
+      purchase_date: p.purchaseDate || null, purchase_price: Math.round(Number(p.purchasePrice) || 0),
+      residual_value: Math.round(Number(p.residualValue) || 0), depreciation_method: p.method || 'percentage',
+      depreciation_rate: Number(p.rate) || 0, useful_life_years: p.life ? Number(p.life) : null,
+      photo_url: p.photoUrl || null, notes: p.notes || '', status: 'active', created_by: p.createdBy || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const updateAsset = useCallback(async (id, p) => {
+    const patch = { updated_at: new Date().toISOString() }
+    if (p.name !== undefined) patch.name = p.name
+    if (p.categoryId !== undefined) patch.category_id = p.categoryId || null
+    if (p.categoryName !== undefined) patch.category_name = p.categoryName
+    if (p.purchaseDate !== undefined) patch.purchase_date = p.purchaseDate
+    if (p.purchasePrice !== undefined) patch.purchase_price = Math.round(Number(p.purchasePrice) || 0)
+    if (p.residualValue !== undefined) patch.residual_value = Math.round(Number(p.residualValue) || 0)
+    if (p.method !== undefined) patch.depreciation_method = p.method
+    if (p.rate !== undefined) patch.depreciation_rate = Number(p.rate) || 0
+    if (p.life !== undefined) patch.useful_life_years = p.life ? Number(p.life) : null
+    if (p.photoUrl !== undefined) patch.photo_url = p.photoUrl || null
+    if (p.notes !== undefined) patch.notes = p.notes
+    if (p.status !== undefined) patch.status = p.status
+    const { error } = await supabase.from('assets').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteAsset = useCallback(async (id) => {
+    const { error } = await supabase.from('assets').update({ deleted_at: new Date().toISOString(), status: 'deleted' }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const sellAsset = useCallback(async (id, { soldDate, soldPrice, method, note }) => {
+    const { error } = await supabase.from('assets').update({
+      status: 'sold', sold_date: soldDate || null, sold_price: Math.round(Number(soldPrice) || 0),
+      payment_method: method || 'transfer', notes: note != null ? note : undefined, updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // Kategori aset
+  const listAssetCategories = useCallback(async () => {
+    const { data, error } = await supabase.from('asset_categories').select('id,name').is('deleted_at', null).order('name', { ascending: true })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addAssetCategory = useCallback(async (name) => {
+    const n = (name || '').trim(); if (!n) return { ok: false, error: 'Nama kategori wajib' }
+    const { data, error } = await supabase.from('asset_categories').insert({ name: n }).select('id,name').single()
+    return error ? { ok: false, error: error.message } : { ok: true, data }
+  }, [])
+  const updateAssetCategory = useCallback(async (id, newName, oldName) => {
+    const n = (newName || '').trim(); if (!n) return { ok: false, error: 'Nama kategori wajib' }
+    const { error } = await supabase.from('asset_categories').update({ name: n, updated_at: new Date().toISOString() }).eq('id', id)
+    if (error) return { ok: false, error: error.message }
+    if (oldName && oldName !== n) await supabase.from('assets').update({ category_name: n }).eq('category_id', id)
+    return { ok: true }
+  }, [])
+  const deleteAssetCategory = useCallback(async (id) => {
+    const { error } = await supabase.from('asset_categories').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
   const fetchEntriesForExport = useCallback(async (from, to) => {
     const { data, error } = await supabase.from('accounting_entries')
@@ -484,5 +551,7 @@ export function useAccounting() {
     listBankPayments, editBankPayment, deleteBankPayment,
     getRecapAdmin, fetchEntriesForExport, getCardDetail,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
+    listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
+    listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
   }
 }

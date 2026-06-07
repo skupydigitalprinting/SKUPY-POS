@@ -19,6 +19,58 @@ export function formatCompact(n) {
   return String(v)
 }
 
+// ── Penyusutan Aset Tetap ──
+// Umur aset = tahun penuh (floor) sejak tanggal beli.
+export function assetAgeYears(purchaseDate, now = new Date()) {
+  if (!purchaseDate) return 0
+  const pd = new Date(purchaseDate), d = new Date(now)
+  let age = d.getFullYear() - pd.getFullYear()
+  const before = (d.getMonth() < pd.getMonth()) || (d.getMonth() === pd.getMonth() && d.getDate() < pd.getDate())
+  if (before) age -= 1
+  return age < 0 ? 0 : age
+}
+
+// Hitung nilai buku saat ini dari data mentah aset (TIDAK disimpan statis).
+// method: 'none' | 'percentage' | 'straight'
+export function calculateAssetBookValue(a, now = new Date()) {
+  const price = Math.round(Number(a.purchase_price) || 0)
+  const residual = Math.round(Number(a.residual_value) || 0)
+  const method = a.depreciation_method || 'percentage'
+  const rate = Number(a.depreciation_rate) || 0
+  const life = Number(a.useful_life_years) || 0
+  const age = assetAgeYears(a.purchase_date, now)
+  let perYear = 0
+  if (method === 'percentage') perYear = Math.round(price * rate / 100)
+  else if (method === 'straight') perYear = life > 0 ? Math.round((price - residual) / life) : 0
+  let book = method === 'none' ? price : price - perYear * age
+  if (book < residual) book = residual
+  if (book > price) book = price
+  const totalDep = price - book
+  const depleted = method !== 'none' && book <= residual && totalDep > 0
+  return { age, perYear, totalDep, bookValue: book, residual, price, method, rate, life, depleted }
+}
+
+// Tabel simulasi nilai buku per tahun (untuk detail aset).
+export function assetDepreciationSchedule(a, maxYears = 12) {
+  const price = Math.round(Number(a.purchase_price) || 0)
+  const residual = Math.round(Number(a.residual_value) || 0)
+  const method = a.depreciation_method || 'percentage'
+  const rate = Number(a.depreciation_rate) || 0
+  const life = Number(a.useful_life_years) || 0
+  let perYear = 0
+  if (method === 'percentage') perYear = Math.round(price * rate / 100)
+  else if (method === 'straight') perYear = life > 0 ? Math.round((price - residual) / life) : 0
+  const rows = []
+  let n = method === 'none' ? 0 : (method === 'straight' && life > 0 ? life : Math.min(maxYears, perYear > 0 ? Math.ceil((price - residual) / perYear) : 0))
+  n = Math.min(Math.max(n, 0), maxYears)
+  for (let y = 0; y <= n; y++) {
+    let book = method === 'none' ? price : price - perYear * y
+    if (book < residual) book = residual
+    rows.push({ year: y, book })
+  }
+  return rows
+}
+
 // Rupiah ringkas untuk mobile: Rp246Jt, Rp1,4Jt, Rp950Rb (koma ala Indonesia).
 export function formatRupiahShort(amount) {
   const v = Math.round(Number(amount) || 0)

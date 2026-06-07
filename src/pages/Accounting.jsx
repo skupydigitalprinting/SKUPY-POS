@@ -4,7 +4,7 @@ import {
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears } from '../utils/helpers'
 import { Button } from '../components/ui'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -19,7 +19,28 @@ const TABS = [
   { id: 'supplier', label: 'Supplier', icon: UsersIcon },
   { id: 'hsupplier', label: 'Hutang Supplier', icon: Truck },
   { id: 'hbank', label: 'Hutang Bank', icon: Building2 },
+  { id: 'aset', label: 'Aset', icon: Landmark },
 ]
+const DEP_METHODS = [{ id: 'percentage', label: 'Persentase per Tahun' }, { id: 'straight', label: 'Garis Lurus' }, { id: 'none', label: 'Tanpa Penyusutan' }]
+const DEFAULT_ASSET_CATEGORIES = ['Mesin Produksi', 'Komputer & Elektronik', 'Kendaraan', 'Peralatan Toko', 'Furniture', 'Renovasi', 'Software', 'Lainnya']
+const ASSET_STATUS = { active: { label: 'Aktif', color: '#10d98a' }, depleted: { label: 'Habis Nilai', color: '#94a3b8' }, sold: { label: 'Dijual', color: '#3b82f6' }, broken: { label: 'Rusak', color: '#ef4444' }, deleted: { label: 'Dihapus', color: '#64748b' } }
+// Kompres gambar → dataURL kecil (maks 700px, webp/jpeg) untuk foto aset.
+function fileToCompressedDataURL(file, max = 700) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height))
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale)
+      const c = document.createElement('canvas'); c.width = w; c.height = h
+      c.getContext('2d').drawImage(img, 0, 0, w, h)
+      URL.revokeObjectURL(url)
+      try { resolve(c.toDataURL('image/webp', 0.7)) } catch { resolve(c.toDataURL('image/jpeg', 0.7)) }
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Gagal memuat gambar')) }
+    img.src = url
+  })
+}
 const METHODS = [{ id: 'cash', label: 'Cash' }, { id: 'transfer', label: 'Transfer' }, { id: 'qris', label: 'QRIS' }]
 // Kategori bawaan sistem (selalu tersedia walau tabel DB belum dimigrasi).
 const DEFAULT_EXP_CATEGORIES = [
@@ -199,6 +220,19 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [expandLoan, setExpandLoan] = useState(null) // loan id yang di-expand
   const [expRows, setExpRows] = useState([]); const [expLoading, setExpLoading] = useState(false)
   const [hbEdit, setHbEdit] = useState(null) // pembayaran bank yang diedit inline
+  // ── ASET ──
+  const blankAsset = { name: '', categoryName: '', purchaseDate: acc.todayISO(), purchasePrice: '', residualValue: '', method: 'percentage', rate: '', life: '', notes: '', photoUrl: '' }
+  const [assets, setAssets] = useState([]); const [assetCats, setAssetCats] = useState([])
+  const [assetForm, setAssetForm] = useState(blankAsset); const [assetErr, setAssetErr] = useState({})
+  const [editAsset, setEditAsset] = useState(null); const [detailAsset, setDetailAsset] = useState(null)
+  const [sellState, setSellState] = useState(null); const [photoBusy, setPhotoBusy] = useState(false)
+  const [assetFilter, setAssetFilter] = useState({ cat: 'all', status: 'all', method: 'all' })
+  const assetCatOptions = useMemo(() => {
+    const map = new Map()
+    DEFAULT_ASSET_CATEGORIES.forEach(n => map.set(n.toLowerCase(), { id: 'sys:' + n, name: n }))
+    ;(assetCats || []).forEach(c => map.set(c.name.toLowerCase(), { id: c.id, name: c.name }))
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [assetCats])
   // edit hutang supplier + riwayat
   const [editDebt, setEditDebt] = useState(null) // supplier_debt being edited
   const [editExp, setEditExp] = useState(null) // expense being edited
@@ -224,18 +258,21 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const loadSuppliers = async () => { const r = await acc.listSuppliers(supSearch); if (r.ok) setSuppliers(r.data) }
   const loadSupDebts = async () => { const r = await acc.listSupplierDebts(); if (r.ok) setSupDebts(r.data) }
   const loadBankLoans = async () => { const r = await acc.listBankLoans(); if (r.ok) setBankLoans(r.data) }
+  const loadAssets = async () => { const r = await acc.listAssets(); if (r.ok) setAssets(r.data) }
+  const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
 
   useEffect(() => {
     setLoading(true)
     const run = async () => {
-      if (tab === 'ringkasan') { await loadDashboard(); await loadRecap() }
+      if (tab === 'ringkasan') { await loadDashboard(); await loadRecap(); await loadAssets() }
       else if (tab === 'jurnal') await loadEntries(0)
       else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
       else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
       else if (tab === 'supplier') await loadSuppliers()
       else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
       else if (tab === 'hbank') await loadBankLoans()
+      else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
       setLoading(false)
     }
     run()
@@ -408,6 +445,50 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     if (r.ok) { toast.success('Hutang bank dicatat'); setLoanForm({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' }); setLoanErr({}); loadBankLoans() } else toast.error(r.error || 'Gagal')
   }
 
+  // ── ASET: validasi + submit ──
+  const validateAsset = (f) => {
+    const e = {}
+    if (!f.name.trim()) e.name = 'Nama aset wajib diisi'
+    if (!f.categoryName.trim()) e.categoryName = 'Kategori wajib dipilih'
+    if (!f.purchaseDate) e.purchaseDate = 'Tanggal beli wajib diisi'
+    if (!(parseCurrency(f.purchasePrice) > 0)) e.purchasePrice = 'Harga beli harus lebih dari 0'
+    if (!f.method) e.method = 'Metode penyusutan wajib dipilih'
+    if (f.method === 'percentage') { const r = Number(f.rate) || 0; if (!(r > 0 && r <= 100)) e.rate = 'Persentase harus 0–100%' }
+    if (f.method === 'straight') { if (!(Number(f.life) > 0)) e.life = 'Umur manfaat harus lebih dari 0' }
+    return e
+  }
+  const catIdByName = (name) => assetCats.find(c => c.name.toLowerCase() === (name || '').toLowerCase())?.id || null
+  const submitAsset = async () => {
+    const e = validateAsset(assetForm); setAssetErr(e); if (Object.keys(e).length) return
+    setSaving(true)
+    const r = await acc.addAsset({ ...assetForm, categoryId: catIdByName(assetForm.categoryName), purchasePrice: parseCurrency(assetForm.purchasePrice), residualValue: parseCurrency(assetForm.residualValue), createdBy: currentUser?.id })
+    setSaving(false)
+    if (r.ok) { toast.success('Aset ditambahkan'); setAssetForm(blankAsset); setAssetErr({}); loadAssets() } else toast.error(r.error)
+  }
+  const saveEditAsset = async () => {
+    const e = validateAsset(editAsset); if (Object.keys(e).length) return toast.error(Object.values(e)[0])
+    const r = await acc.updateAsset(editAsset.id, { ...editAsset, categoryId: catIdByName(editAsset.categoryName), purchasePrice: parseCurrency(editAsset.purchasePrice), residualValue: parseCurrency(editAsset.residualValue) })
+    if (r.ok) { toast.success('Aset diperbarui'); setEditAsset(null); loadAssets() } else toast.error(r.error)
+  }
+  const onPhotoPick = async (file, setter) => {
+    if (!file) return
+    setPhotoBusy(true)
+    try { const url = await fileToCompressedDataURL(file); setter(url) } catch { toast.error('Gagal memuat foto') } finally { setPhotoBusy(false) }
+  }
+  const exportAssets = async () => {
+    try {
+      const mod = await import('xlsx'); const XLSX = mod.default || mod
+      const rows = assets.filter(a => a.status !== 'sold' && a.status !== 'deleted').map(a => {
+        const bv = calculateAssetBookValue(a)
+        return { 'Nama Aset': a.name, Kategori: a.category_name || '', 'Tanggal Beli': a.purchase_date, 'Harga Beli': Math.round(a.purchase_price || 0), 'Metode': a.depreciation_method, 'Penyusutan/Tahun': bv.perYear, 'Total Penyusutan': bv.totalDep, 'Nilai Buku': bv.bookValue, Status: a.status, Catatan: a.notes || '' }
+      })
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Aset')
+      XLSX.writeFile(wb, `aset-${acc.todayISO()}.xlsx`)
+    } catch (e) { toast.error('Export gagal: ' + (e?.message || e)) }
+  }
+  // Total nilai buku aset aktif (untuk dashboard/neraca) — realtime dari data mentah.
+  const asetTetap = useMemo(() => (assets || []).filter(a => a.status === 'active' || a.status === 'depleted' || a.status === 'broken').reduce((s, a) => s + calculateAssetBookValue(a).bookValue, 0), [assets])
+
   if (setupNeeded) {
     return (
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
@@ -485,6 +566,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
           </div>
 
+          {/* BARIS 4 — Aset & Kekayaan Bersih */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
+            <Card icon={Wallet} label="Total Aset" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap)} color="#3b82f6" sub="Kas+Bank+Piutang+Persediaan+Aset" />
+            <Card icon={Scale} label="Kekayaan Bersih" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap - (d.hutang_supplier || 0) - (d.hutang_bank || 0))} color="#10d98a" sub="Total Aset − Total Hutang" />
+          </div>
+
           {/* Neraca sederhana — OWNER ONLY (data ekuitas sensitif) */}
           {isOwner && (
           <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -492,15 +580,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Aset</div>
-                {[['Kas', d.saldo_kas], ['Bank', d.saldo_rekening], ['Piutang Usaha', d.piutang_aktif], ['Persediaan', d.persediaan]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
-                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(totalAset)}</span></div>
+                {[['Kas', d.saldo_kas], ['Bank', d.saldo_rekening], ['Piutang Usaha', d.piutang_aktif], ['Persediaan', d.persediaan], ['Aset Tetap', asetTetap]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
+                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(totalAset + asetTetap)}</span></div>
               </div>
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Kewajiban & Ekuitas</div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Supplier</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_supplier)}</span></div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Bank</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_bank)}</span></div>
-                <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Ekuitas (penyeimbang)</span><span style={{ color: 'var(--text-primary)' }}>{fmt(totalAset - totalHutang)}</span></div>
-                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total</span><span>{fmt(totalAset)}</span></div>
+                <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Hutang</span><span style={{ color: '#ef4444' }}>{fmt(totalHutang)}</span></div>
+                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Kekayaan Bersih</span><span style={{ color: '#10d98a' }}>{fmt(totalAset + asetTetap - totalHutang)}</span></div>
               </div>
             </div>
           </div>
@@ -899,6 +987,179 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           </div>
         </div>
       )}
+
+      {/* ── ASET TETAP + PENYUSUTAN ── */}
+      {tab === 'aset' && !loading && (
+        <div className="space-y-4">
+          <FormCard icon={Landmark} title="Tambah Aset Baru" subtitle="Catat aset usaha; nilai buku & penyusutan dihitung otomatis tiap tahun.">
+            <Field icon={Landmark} label="Nama Aset" required error={assetErr.name}>
+              <input value={assetForm.name} onChange={e => setAssetForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Mesin DTF A3" className={FIELD_CLS} style={inpErr(assetErr.name)} />
+            </Field>
+            <Field icon={BookOpen} label="Kategori Aset" required error={assetErr.categoryName}>
+              <Combo value={assetForm.categoryName} onChange={v => setAssetForm(p => ({ ...p, categoryName: v }))} options={assetCatOptions} error={assetErr.categoryName} placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)} allowCreate onCreate={async (name) => { const r = await acc.addAssetCategory(name); if (r.ok) { toast.success('Kategori aset ditambah'); loadAssetCats() } }} />
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Receipt} label="Tanggal Beli" required error={assetErr.purchaseDate}>
+                <input type="date" value={assetForm.purchaseDate} onChange={e => setAssetForm(p => ({ ...p, purchaseDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(assetErr.purchaseDate), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Wallet} label="Harga Beli" required error={assetErr.purchasePrice}>
+                <MoneyInput value={assetForm.purchasePrice} onChange={v => setAssetForm(p => ({ ...p, purchasePrice: v }))} className={FIELD_CLS} style={inpErr(assetErr.purchasePrice)} />
+              </Field>
+            </div>
+            <Field icon={BookOpen} label="Metode Penyusutan" required error={assetErr.method}>
+              <select value={assetForm.method} onChange={e => setAssetForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(assetErr.method)}>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={TrendingDown} label="Nilai Residu / Sisa">
+                <MoneyInput value={assetForm.residualValue} onChange={v => setAssetForm(p => ({ ...p, residualValue: v }))} className={FIELD_CLS} style={inp} />
+              </Field>
+              {assetForm.method === 'percentage' && (
+                <Field icon={TrendingDown} label="Penyusutan / Tahun (%)" required error={assetErr.rate}>
+                  <input inputMode="decimal" value={assetForm.rate} onChange={e => setAssetForm(p => ({ ...p, rate: e.target.value.replace(/[^\d.]/g, '') }))} placeholder="contoh: 10" className={FIELD_CLS} style={inpErr(assetErr.rate)} />
+                </Field>
+              )}
+              {assetForm.method === 'straight' && (
+                <Field icon={Receipt} label="Umur Manfaat (tahun)" required error={assetErr.life}>
+                  <input inputMode="numeric" value={assetForm.life} onChange={e => setAssetForm(p => ({ ...p, life: e.target.value.replace(/[^\d]/g, '') }))} placeholder="contoh: 5" className={FIELD_CLS} style={inpErr(assetErr.life)} />
+                </Field>
+              )}
+            </div>
+            <Field icon={Pencil} label="Catatan">
+              <input value={assetForm.notes} onChange={e => setAssetForm(p => ({ ...p, notes: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+            </Field>
+            <Field icon={Landmark} label="Foto Aset">
+              <div className="flex items-center gap-3">
+                {assetForm.photoUrl ? <img src={assetForm.photoUrl} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover' }} /> : <div style={{ width: 48, height: 48, borderRadius: 8, background: 'var(--bg-elevated)', border: '1px solid var(--border)' }} className="flex items-center justify-center"><Landmark size={18} style={{ color: 'var(--text-muted)' }} /></div>}
+                <label className="px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>{photoBusy ? 'Memproses…' : 'Pilih Foto'}<input type="file" accept="image/*" className="hidden" onChange={e => onPhotoPick(e.target.files?.[0], url => setAssetForm(p => ({ ...p, photoUrl: url })))} /></label>
+                {assetForm.photoUrl && <button type="button" onClick={() => setAssetForm(p => ({ ...p, photoUrl: '' }))} className="text-xs" style={{ color: 'var(--red)' }}>Hapus</button>}
+              </div>
+            </Field>
+            <Button variant="primary" className="w-full" onClick={submitAsset} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Tambah Aset</Button>
+          </FormCard>
+
+          {/* Filter + Export + Ringkasan */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <select value={assetFilter.cat} onChange={e => setAssetFilter(p => ({ ...p, cat: e.target.value }))} className="px-2.5 py-1.5 rounded-lg text-xs" style={inp}><option value="all">Semua Kategori</option>{assetCatOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
+            <select value={assetFilter.status} onChange={e => setAssetFilter(p => ({ ...p, status: e.target.value }))} className="px-2.5 py-1.5 rounded-lg text-xs" style={inp}><option value="all">Semua Status</option>{Object.entries(ASSET_STATUS).filter(([k]) => k !== 'deleted').map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
+            <select value={assetFilter.method} onChange={e => setAssetFilter(p => ({ ...p, method: e.target.value }))} className="px-2.5 py-1.5 rounded-lg text-xs" style={inp}><option value="all">Semua Metode</option>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+            <button onClick={exportAssets} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold btn-press" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a', border: '1px solid rgba(16,217,138,0.3)', fontFamily: 'Syne' }}><FileSpreadsheet size={12} /> Export</button>
+            <div className="ml-auto rounded-lg px-3 py-1.5" style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)' }}><span className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Aset Tetap </span><span className="text-xs font-bold" style={{ color: '#a78bfa' }}>{fmt(asetTetap)}</span></div>
+          </div>
+
+          {/* List aset */}
+          {(() => {
+            const list = (assets || []).filter(a => (assetFilter.cat === 'all' || a.category_name === assetFilter.cat) && (assetFilter.status === 'all' || a.status === assetFilter.status) && (assetFilter.method === 'all' || a.depreciation_method === assetFilter.method))
+            if (list.length === 0) return <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada aset tercatat</p>
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                {list.map(a => {
+                  const bv = calculateAssetBookValue(a)
+                  const st = ASSET_STATUS[a.status] || ASSET_STATUS.active
+                  return (
+                    <div key={a.id} className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                      <div className="flex items-start gap-3 min-w-0">
+                        {a.photo_url ? <img src={a.photo_url} alt="" style={{ width: 52, height: 52, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} /> : <div style={{ width: 52, height: 52, borderRadius: 10, background: 'var(--bg-elevated)', border: '1px solid var(--border)', flexShrink: 0 }} className="flex items-center justify-center"><Landmark size={20} style={{ color: 'var(--text-muted)' }} /></div>}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{a.name}</span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${st.color}22`, color: st.color }}>{st.label}</span>
+                          </div>
+                          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{a.category_name || '—'} · beli {dt(a.purchase_date)} · umur {bv.age} th</div>
+                          <div className="grid grid-cols-3 gap-1.5 mt-2">
+                            <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Harga Beli</div><div className="text-[11px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(a.purchase_price)}</div></div>
+                            <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Peny./Thn</div><div className="text-[11px] font-bold truncate" style={{ color: '#f59e0b' }}>{fmt(bv.perYear)}</div></div>
+                            <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Nilai Buku</div><div className="text-[11px] font-bold truncate" style={{ color: '#10d98a' }}>{fmt(bv.bookValue)}</div></div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--border)' }}>
+                        <button onClick={() => setDetailAsset(a)} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', fontFamily: 'Syne' }}>Detail</button>
+                        {a.status !== 'sold' && <button onClick={() => setEditAsset({ id: a.id, name: a.name, categoryName: a.category_name || '', purchaseDate: a.purchase_date, purchasePrice: String(Math.round(a.purchase_price || 0)), residualValue: String(Math.round(a.residual_value || 0)), method: a.depreciation_method || 'percentage', rate: String(a.depreciation_rate || ''), life: String(a.useful_life_years || ''), notes: a.notes || '', photoUrl: a.photo_url || '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>}
+                        {a.status !== 'sold' && <button onClick={() => setSellState({ id: a.id, name: a.name, book: bv.bookValue, soldDate: acc.todayISO(), soldPrice: '', method: 'transfer', note: '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', fontFamily: 'Syne' }}>Jual</button>}
+                        <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus aset ini?' }))) return; const r = await acc.deleteAsset(a.id); if (r.ok) { toast.success('Aset dihapus'); loadAssets() } else toast.error(r.error) }} className="px-3 py-1.5 rounded-lg" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* ── DETAIL ASET (+ simulasi penyusutan) ── */}
+      <Modal open={!!detailAsset} onClose={() => setDetailAsset(null)} title={detailAsset ? `Aset — ${detailAsset.name}` : ''} size="lg">
+        {detailAsset && (() => {
+          const bv = calculateAssetBookValue(detailAsset)
+          const sched = assetDepreciationSchedule(detailAsset)
+          const methodLabel = DEP_METHODS.find(m => m.id === detailAsset.depreciation_method)?.label || detailAsset.depreciation_method
+          const rows = [['Kategori', detailAsset.category_name || '—'], ['Tanggal Beli', dt(detailAsset.purchase_date)], ['Harga Beli', fmt(detailAsset.purchase_price)], ['Nilai Residu', fmt(detailAsset.residual_value)], ['Metode', methodLabel], ['Persentase', detailAsset.depreciation_method === 'percentage' ? `${detailAsset.depreciation_rate || 0}%` : '—'], ['Umur Manfaat', detailAsset.useful_life_years ? `${detailAsset.useful_life_years} th` : '—'], ['Umur Aset', `${bv.age} th`], ['Penyusutan/Tahun', fmt(bv.perYear)], ['Total Penyusutan', fmt(bv.totalDep)], ['Nilai Buku', fmt(bv.bookValue)]]
+          return (
+            <div className="space-y-3">
+              {detailAsset.photo_url && <img src={detailAsset.photo_url} alt="" style={{ width: '100%', maxHeight: 180, borderRadius: 12, objectFit: 'cover' }} />}
+              <div className="grid grid-cols-2 gap-2">
+                {rows.map(([k, v]) => <div key={k} className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>{v}</div></div>)}
+              </div>
+              {detailAsset.notes && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Catatan: {detailAsset.notes}</p>}
+              {sched.length > 1 && (
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Simulasi Penyusutan</div>
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 280 }}>
+                      <thead><tr style={{ borderBottom: '1px solid var(--border)' }}><th className="px-2 py-1.5 text-left" style={{ color: 'var(--text-muted)', fontSize: 10 }}>Tahun ke-</th><th className="px-2 py-1.5 text-right" style={{ color: 'var(--text-muted)', fontSize: 10 }}>Nilai Buku</th></tr></thead>
+                      <tbody>{sched.map(r => <tr key={r.year} style={{ borderBottom: '1px solid var(--border)' }}><td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>Tahun {r.year}{r.year === bv.age ? ' (sekarang)' : ''}</td><td className="px-2 py-1.5 text-right font-bold" style={{ color: r.year === bv.age ? '#10d98a' : 'var(--text-primary)' }}>{fmt(r.book)}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* ── EDIT ASET ── */}
+      <Modal open={!!editAsset} onClose={() => setEditAsset(null)} title="Edit Aset" size="sm">
+        {editAsset && (
+          <div className="space-y-3">
+            <Field icon={Landmark} label="Nama Aset" required><input value={editAsset.name} onChange={e => setEditAsset(p => ({ ...p, name: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={BookOpen} label="Kategori" required><Combo value={editAsset.categoryName} onChange={v => setEditAsset(p => ({ ...p, categoryName: v }))} options={assetCatOptions} placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)} allowCreate onCreate={async (name) => { const r = await acc.addAssetCategory(name); if (r.ok) loadAssetCats() }} /></Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field icon={Receipt} label="Tanggal Beli" required><input type="date" value={editAsset.purchaseDate} onChange={e => setEditAsset(p => ({ ...p, purchaseDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+              <Field icon={Wallet} label="Harga Beli" required><MoneyInput value={editAsset.purchasePrice} onChange={v => setEditAsset(p => ({ ...p, purchasePrice: v }))} className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            <Field icon={BookOpen} label="Metode Penyusutan" required><select value={editAsset.method} onChange={e => setEditAsset(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field icon={TrendingDown} label="Nilai Residu"><MoneyInput value={editAsset.residualValue} onChange={v => setEditAsset(p => ({ ...p, residualValue: v }))} className={FIELD_CLS} style={inp} /></Field>
+              {editAsset.method === 'percentage' && <Field icon={TrendingDown} label="Peny./Tahun (%)"><input inputMode="decimal" value={editAsset.rate} onChange={e => setEditAsset(p => ({ ...p, rate: e.target.value.replace(/[^\d.]/g, '') }))} className={FIELD_CLS} style={inp} /></Field>}
+              {editAsset.method === 'straight' && <Field icon={Receipt} label="Umur Manfaat (th)"><input inputMode="numeric" value={editAsset.life} onChange={e => setEditAsset(p => ({ ...p, life: e.target.value.replace(/[^\d]/g, '') }))} className={FIELD_CLS} style={inp} /></Field>}
+            </div>
+            <Field icon={Pencil} label="Catatan"><input value={editAsset.notes} onChange={e => setEditAsset(p => ({ ...p, notes: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" onClick={saveEditAsset}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── JUAL ASET ── */}
+      <Modal open={!!sellState} onClose={() => setSellState(null)} title="Jual Aset" size="sm">
+        {sellState && (() => {
+          const hj = parseCurrency(sellState.soldPrice); const gl = hj - sellState.book
+          return (
+            <div className="space-y-3">
+              <div className="rounded-lg p-2.5 text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>Aset: <b style={{ color: 'var(--text-primary)' }}>{sellState.name}</b> · Nilai buku: <b style={{ color: '#10d98a' }}>{fmt(sellState.book)}</b></div>
+              <Field icon={Receipt} label="Tanggal Jual" required><input type="date" value={sellState.soldDate} onChange={e => setSellState(p => ({ ...p, soldDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+              <Field icon={Wallet} label="Harga Jual" required><MoneyInput value={sellState.soldPrice} onChange={v => setSellState(p => ({ ...p, soldPrice: v }))} className={FIELD_CLS} style={inp} /></Field>
+              <Field icon={Wallet} label="Metode Pembayaran" required><select value={sellState.method} onChange={e => setSellState(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+              <Field icon={Pencil} label="Catatan"><input value={sellState.note} onChange={e => setSellState(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+              {hj > 0 && <div className="text-xs font-semibold" style={{ color: gl >= 0 ? '#10d98a' : '#ef4444' }}>{gl >= 0 ? 'Keuntungan' : 'Kerugian'} penjualan: {fmt(Math.abs(gl))}</div>}
+              <Button variant="primary" className="w-full" onClick={async () => {
+                if (!(parseCurrency(sellState.soldPrice) > 0)) return toast.error('Harga jual harus > 0')
+                const r = await acc.sellAsset(sellState.id, { soldDate: sellState.soldDate, soldPrice: parseCurrency(sellState.soldPrice), method: sellState.method, note: sellState.note })
+                if (r.ok) { toast.success(`Aset terjual · ${gl >= 0 ? 'untung' : 'rugi'} ${fmt(Math.abs(gl))}`); setSellState(null); loadAssets() } else toast.error(r.error)
+              }}><Check size={14} /> Konfirmasi Jual</Button>
+            </div>
+          )
+        })()}
+      </Modal>
 
       {/* ── RIWAYAT PEMBAYARAN (supplier / bank) ── */}
       <Modal open={!!history} onClose={() => { setHistory(null); setHEdit(null) }} title={history ? `Riwayat Pembayaran — ${history.title}` : ''} size="lg">
