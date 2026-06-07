@@ -68,6 +68,16 @@ textarea::placeholder {
   opacity: 0.4;
 }
 
+/* Card accounting: hover naik + glow sesuai warna card (--card-glow) */
+.acc-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+.acc-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px var(--card-glow, rgba(0,0,0,0.4));
+  filter: brightness(1.06);
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -137,12 +137,14 @@ function Combo({ value, onChange, options, error, baseStyle, errStyle, placehold
 
 function Card({ icon: Icon, label, value, color = '#38BDF8', sub, onClick }) {
   return (
-    <div onClick={onClick} className={`rounded-2xl p-4 ${onClick ? 'cursor-pointer hover:brightness-110 transition' : ''}`} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+    <div onClick={onClick}
+      className={`rounded-2xl p-4 min-w-0 overflow-hidden ${onClick ? 'acc-card cursor-pointer' : ''}`}
+      style={{ background: 'var(--bg-card)', border: `1px solid ${color}33`, '--card-glow': `${color}3a` }}>
       <div className="flex items-center gap-2 mb-2">
         <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}1f`, border: `1px solid ${color}44` }}><Icon size={15} style={{ color }} /></div>
-        <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        <span className="text-xs font-semibold truncate" style={{ color: 'var(--text-secondary)' }}>{label}</span>
       </div>
-      <div className="font-bold truncate" style={{ fontFamily: 'Syne', color, fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(15px,4.2vw,20px)' }}>{value}</div>
+      <div className="font-bold" style={{ fontFamily: 'Syne', color, fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(15px,4.2vw,20px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{value}</div>
       {sub && <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{sub}</div>}
     </div>
   )
@@ -461,26 +463,26 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             </div>
           )}
 
-          {/* BARIS 2: Penjualan · Uang Masuk · Uang Keluar · Beban */}
+          {/* BARIS 1 — Aktivitas Kas: Penjualan(biru) · Arus Kas(tosca) · Sudah Bayar(hijau muda) · Uang Masuk(hijau) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#38BDF8" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#38BDF8')} />
+            <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0))} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
+            <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
+          </div>
+
+          {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={TrendingDown} label="Uang Keluar" value={fmt(d.pengeluaran_total)} color="#ef4444" sub="Semua pembayaran keluar" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
-            <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#f59e0b" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#f59e0b')} />
-          </div>
-
-          {/* BARIS 3: Arus Kas Bersih · Piutang Usaha · Hutang Supplier · Hutang Bank */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0))} color={(d.uang_masuk_total - d.pengeluaran_total) >= 0 ? '#10d98a' : '#ef4444'} sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#10d98a')} />
-            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
-            <Card icon={TrendingDown} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#fb923c" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#fb923c')} />
-            <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#ef4444" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#ef4444')} />
-          </div>
-
-          {/* BARIS 4: Sudah Bayar Piutang · Persediaan */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#10d98a" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#10d98a')} />
+            <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
+            <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />
+          </div>
+
+          {/* BARIS 3 — Aset & Kewajiban: Piutang Usaha(emas) · Hutang Bank(merah tua, terakhir) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
+            <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
           </div>
 
           {/* Neraca sederhana — OWNER ONLY (data ekuitas sensitif) */}
