@@ -393,6 +393,11 @@ export function useAccounting() {
         const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Cicilan Bank', ref: '', party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
+      // BEBAN: hanya bagian BUNGA dari cicilan bank (pokok bukan beban).
+      const pushBankBunga = async () => {
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,bunga,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).filter(x => Math.round(x.bunga || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Bunga Bank', ref: '', party: '', method: x.method, amount: Math.round(x.bunga || 0), status: 'valid', note: x.note }))
+      }
       const pushTransactions = async () => {
         const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'transaction', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.total || 0), status: x.status, note: '' }))
@@ -405,7 +410,9 @@ export function useAccounting() {
       if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay() }
       else if (kind === 'penjualan') { await pushTransactions() }
       else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay() }
-      else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan') ; await pushBankPay() }
+      // BEBAN = operasional + gaji + bunga bank. TANPA pokok cicilan bank,
+      // bayar hutang supplier, pembelian bahan/aset/persediaan.
+      else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga() }
       else if (kind === 'pembelian_bahan' || kind === 'modal_barang' || kind === 'persediaan') { await pushPurchases(false); await pushExpenses(c => c === 'Pembelian Bahan') }
       else if (kind === 'sudah_bayar') {
         const { data } = await supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid').is('deleted_at', null)
