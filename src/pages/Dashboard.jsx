@@ -8,11 +8,15 @@ import {
   TrendingUp, ShoppingBag, Users, Clock, Receipt,
   ArrowUpRight, Star, Zap, ArrowRight, Activity,
   Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone,
+  Pencil, Trash2, Check, X, Loader2,
 } from 'lucide-react'
 import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { getCatLabel, useCategories } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
+import Modal from '../components/Modal'
+import { useAccounting } from '../hooks/useAccounting'
+import { useConfirm } from '../components/Confirm'
 import Logo from '../components/Logo'
 
 const COLORS = ['#8b5cf6', '#10d98a', '#f59e0b', '#3b82f6', '#ff4d6a', '#a78bfa']
@@ -151,14 +155,17 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // OPTIMASI EGRESS: bukan realtime. Refresh saat buka dashboard / ganti
   // tanggal, lalu auto tiap 60 detik HANYA saat tab browser aktif. Tidak
   // re-fetch tiap ada transaksi (pengeluaran tak bergantung transaksi).
+  const acc = useAccounting()
+  const confirm = useConfirm()
   const [pengeluaranAcc, setPengeluaranAcc] = useState(0)
+  const [accBump, setAccBump] = useState(0) // dipicu setelah edit/hapus → refresh card
+  const accFrom = labaFrom || '2000-01-01'
+  const accTo = labaTo || new Date().toISOString().slice(0, 10)
   useEffect(() => {
     if (!isOwner) return
     let alive = true, id = null
     const load = async () => {
-      const from = labaFrom || '2000-01-01'
-      const to = labaTo || new Date().toISOString().slice(0, 10)
-      const { data, error } = await supabase.rpc('acc_dashboard', { p_from: from, p_to: to })
+      const { data, error } = await supabase.rpc('acc_dashboard', { p_from: accFrom, p_to: accTo })
       if (!alive || error || !data) return
       const row = Array.isArray(data) ? data[0] : data
       setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
@@ -170,7 +177,39 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     if (document.visibilityState === 'visible') start()
     document.addEventListener('visibilitychange', onVis)
     return () => { alive = false; stop(); document.removeEventListener('visibilitychange', onVis) }
-  }, [isOwner, labaFrom, labaTo])
+  }, [isOwner, accFrom, accTo, accBump])
+
+  // ── Detail Pengeluaran & Laba Bersih (klik card) ──
+  const [pengModal, setPengModal] = useState(false)
+  const [labaModal, setLabaModal] = useState(false)
+  const [labaTab, setLabaTab] = useState('omset')
+  const [pengRows, setPengRows] = useState([]); const [pengLoading, setPengLoading] = useState(false)
+  const [pengEdit, setPengEdit] = useState(null) // { id, kind, amount, method, note }
+  const loadPengRows = async () => {
+    setPengLoading(true)
+    const r = await acc.getCardDetail('uang_keluar', accFrom, accTo)
+    setPengRows(r.ok ? r.rows : []); setPengLoading(false)
+  }
+  const reloadAfterMutation = () => { loadPengRows(); setAccBump(b => b + 1) }
+  const deletePengRow = async (row) => {
+    if (!(await confirm({ title: 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.' }))) return
+    let r
+    if (row.kind === 'expense') r = await acc.deleteExpense(row.id)
+    else if (row.kind === 'purchase') r = await acc.deletePurchase(row.id)
+    else if (row.kind === 'supplier_payment') r = await acc.deleteSupplierPayment(row.id)
+    else if (row.kind === 'bank_payment') r = await acc.deleteBankPayment(row.id)
+    if (r?.ok) reloadAfterMutation()
+  }
+  const savePengEdit = async () => {
+    const amount = toMoney(pengEdit.amount)
+    if (!(amount > 0)) return
+    let r
+    if (pengEdit.kind === 'expense') r = await acc.updateExpense(pengEdit.id, { amount, method: pengEdit.method, note: pengEdit.note })
+    else if (pengEdit.kind === 'purchase') r = await acc.updatePurchase(pengEdit.id, { amount, method: pengEdit.method, note: pengEdit.note })
+    else if (pengEdit.kind === 'supplier_payment') r = await acc.editSupplierPayment(pengEdit.id, { amount, method: pengEdit.method, note: pengEdit.note })
+    else if (pengEdit.kind === 'bank_payment') r = await acc.editBankPayment(pengEdit.id, { amount, method: pengEdit.method, note: pengEdit.note })
+    if (r?.ok) { setPengEdit(null); reloadAfterMutation() }
+  }
 
   const labaRugi = useMemo(() => {
     // Omset = total seluruh invoice/transaksi VALID (non-dibatalkan) dalam rentang.
@@ -409,6 +448,66 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // Dihitung ulang tiap render → setelah edit/hapus (store refresh) modal
   // langsung menampilkan angka terbaru tanpa reload manual.
   const detailCard = detailKey ? buildCard(detailKey) : null
+
+  // Tabel/list rincian Pengeluaran (dipakai di 2 modal). Responsive: card di mobile.
+  const PMETHODS = [{ id: 'cash', label: 'Cash' }, { id: 'transfer', label: 'Transfer' }, { id: 'qris', label: 'QRIS' }]
+  const pengTotal = pengRows.reduce((s, r) => s + (r.amount || 0), 0)
+  const pengTableJsx = (
+    pengLoading ? <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
+    : pengRows.length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada pengeluaran pada periode ini.</p>
+    : <div className="space-y-2">
+        {pengRows.map(row => pengEdit && pengEdit.id === row.id ? (
+          <div key={row.kind + row.id} className="rounded-xl p-3" style={{ background: 'rgba(139,92,246,0.06)', border: '1px solid var(--border)' }}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <input inputMode="numeric" value={pengEdit.amount} onChange={e => setPengEdit(s => ({ ...s, amount: e.target.value.replace(/[^\d]/g, '') }))} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+              <select value={pengEdit.method} onChange={e => setPengEdit(s => ({ ...s, method: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>{PMETHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              <input value={pengEdit.note} onChange={e => setPengEdit(s => ({ ...s, note: e.target.value }))} placeholder="Keterangan" className="px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+            </div>
+            <div className="flex justify-end gap-1.5 mt-2">
+              <button onClick={savePengEdit} className="px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Check size={12} /> Simpan</button>
+              <button onClick={() => setPengEdit(null)} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}><X size={12} /></button>
+            </div>
+          </div>
+        ) : (
+          <div key={row.kind + row.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{row.source}{row.party ? ` · ${row.party}` : ''}{row.ref ? ` · ${row.ref}` : ''}</div>
+              <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{formatDateTime ? new Date(row.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : row.date}</span>{row.method && <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,77,106,0.1)', color: '#ff4d6a', fontSize: 9, textTransform: 'uppercase' }}>{row.method}</span>}{row.note && <span className="truncate">· {row.note}</span>}</div>
+            </div>
+            <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{formatRupiah(row.amount)}</div>
+            <button onClick={() => setPengEdit({ id: row.id, kind: row.kind, amount: String(Math.round(row.amount || 0)), method: row.method || 'transfer', note: row.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>
+            <button onClick={() => deletePengRow(row)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
+          </div>
+        ))}
+        <div className="flex justify-between items-center px-3 py-2.5 rounded-xl mt-1" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><span className="text-xs font-bold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>TOTAL ({pengRows.length})</span><span className="text-sm font-extrabold" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(pengTotal)}</span></div>
+      </div>
+  )
+
+  // Rincian Omset (transaksi valid dalam periode) — edit/hapus via props store.
+  const omsetRows = (transactions || []).filter(t => {
+    if ((t.orderStatus || '') === 'dibatalkan') return false
+    if (labaFrom && new Date(t.date).getTime() < new Date(labaFrom + 'T00:00:00').getTime()) return false
+    if (labaTo && new Date(t.date).getTime() > new Date(labaTo + 'T23:59:59').getTime()) return false
+    return true
+  })
+  const omsetTableJsx = (
+    omsetRows.length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada transaksi pada periode ini.</p>
+    : <div className="space-y-2">
+        {omsetRows.slice(0, 200).map(t => {
+          const s = STATUS_MAP[t.status] || { label: t.status || '-', hex: '#8888a8' }
+          return (
+            <div key={t.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{t.invoiceNo || t.id} · {t.customer || '—'}</div>
+                <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{new Date(t.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span><span className="px-1.5 py-0.5 rounded" style={{ background: `${s.hex}22`, color: s.hex, fontSize: 9 }}>{s.label}</span></div>
+              </div>
+              <div className="text-sm font-bold whitespace-nowrap" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{formatRupiah(t.total)}</div>
+              <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.' }))) return; await deleteTransaction?.(t.id) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
+            </div>
+          )
+        })}
+      </div>
+  )
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
@@ -753,9 +852,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* Total Pengeluaran (Accounting) */}
+              {/* Total Pengeluaran (Accounting) — klik untuk rincian */}
               <div
-                className="rounded-xl p-4"
+                onClick={() => { setPengModal(true); loadPengRows() }}
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
                 style={{ background: 'rgba(255,77,106,0.06)', border: '1px solid rgba(255,77,106,0.25)' }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
@@ -772,9 +872,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* LABA BERSIH = Omset − Pengeluaran (kartu biru) */}
+              {/* LABA BERSIH = Omset − Pengeluaran (kartu biru) — klik untuk rincian */}
               <div
-                className="rounded-xl p-4"
+                onClick={() => { setLabaModal(true); setLabaTab('omset'); loadPengRows() }}
+                className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition"
                 style={{
                   background: labaRugi.profit >= 0 ? 'rgba(59,130,246,0.08)' : 'rgba(255,77,106,0.08)',
                   border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(59,130,246,0.3)' : 'rgba(255,77,106,0.3)'}`,
@@ -1282,6 +1383,28 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           )}
         />
       )}
+
+      {/* ── RINCIAN TOTAL PENGELUARAN ── */}
+      <Modal open={pengModal} onClose={() => { setPengModal(false); setPengEdit(null) }} title="Rincian Total Pengeluaran" size="lg">
+        <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Periode: {labaFrom || '…'} s/d {labaTo || 'sekarang'}. Data terhapus tidak dihitung. Edit/Hapus langsung mengubah data asli & dashboard.</p>
+        {pengTableJsx}
+      </Modal>
+
+      {/* ── RINCIAN LABA BERSIH ── */}
+      <Modal open={labaModal} onClose={() => { setLabaModal(false); setPengEdit(null) }} title="Rincian Laba Bersih" size="lg">
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Total Omset</div><div className="text-xs font-bold" style={{ color: '#3b82f6', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.revenue)}</div></div>
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Pengeluaran</div><div className="text-xs font-bold" style={{ color: '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.pengeluaran)}</div></div>
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Laba Bersih</div><div className="text-xs font-bold" style={{ color: '#10d98a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.profit)}</div></div>
+        </div>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih = Total Omset − Total Pengeluaran</p>
+        <div className="flex gap-1.5 mb-3">
+          {[['omset', 'Rincian Omset'], ['pengeluaran', 'Rincian Pengeluaran']].map(([k, label]) => (
+            <button key={k} onClick={() => setLabaTab(k)} className="flex-1 py-2 rounded-lg text-xs font-semibold" style={{ background: labaTab === k ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: labaTab === k ? '#fff' : 'var(--text-secondary)', fontFamily: 'Syne' }}>{label}</button>
+          ))}
+        </div>
+        {labaTab === 'omset' ? omsetTableJsx : pengTableJsx}
+      </Modal>
     </div>
   )
 }
