@@ -529,6 +529,74 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── SEWA TOKO DIBAYAR DIMUKA ──
+  const rentDuration = (start, end) => {
+    if (!start || !end) return 1
+    const s = new Date(start), e = new Date(end)
+    const m = (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth()) + 1
+    return m > 0 ? m : 1
+  }
+  const genRentSchedules = async (rentId, p) => {
+    const dur = p.duration_months
+    const total = Math.round(Number(p.total_amount) || 0)
+    const monthly = Math.round(total / dur)
+    const s = new Date(p.start_date)
+    const rows = []
+    for (let i = 0; i < dur; i++) {
+      const pm = new Date(s.getFullYear(), s.getMonth() + i, 1)
+      const amt = i === dur - 1 ? total - monthly * (dur - 1) : monthly
+      rows.push({ prepaid_rent_id: rentId, period_month: pm.toISOString().slice(0, 10), expense_amount: amt, status: 'pending' })
+    }
+    if (rows.length) await supabase.from('prepaid_rent_schedules').insert(rows)
+  }
+  const listRents = useCallback(async () => {
+    const { data, error } = await supabase.from('prepaid_rents').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(300)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const listRentSchedules = useCallback(async (rentId) => {
+    const { data, error } = await supabase.from('prepaid_rent_schedules').select('*').eq('prepaid_rent_id', rentId).is('deleted_at', null).order('period_month', { ascending: true })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addRent = useCallback(async (p) => {
+    const dur = Number(p.durationMonths) || rentDuration(p.startDate, p.endDate)
+    const total = Math.round(Number(p.totalAmount) || 0)
+    const monthly = Math.round(total / (dur || 1))
+    const { data, error } = await supabase.from('prepaid_rents').insert({
+      name: p.name || '', location: p.location || '', landlord_name: p.landlord || '',
+      payment_date: p.paymentDate || null, start_date: p.startDate || null, end_date: p.endDate || null,
+      duration_months: dur, total_amount: total, monthly_expense: monthly,
+      payment_method: p.method || 'transfer', proof_url: p.proofUrl || null, notes: p.notes || '',
+      status: 'active', created_by: p.createdBy || null,
+    }).select('id').single()
+    if (error) return { ok: false, error: error.message }
+    await genRentSchedules(data.id, { duration_months: dur, total_amount: total, start_date: p.startDate })
+    return { ok: true, id: data.id }
+  }, [])
+  const updateRent = useCallback(async (id, p) => {
+    const dur = Number(p.durationMonths) || rentDuration(p.startDate, p.endDate)
+    const total = Math.round(Number(p.totalAmount) || 0)
+    const monthly = Math.round(total / (dur || 1))
+    const { error } = await supabase.from('prepaid_rents').update({
+      name: p.name, location: p.location || '', landlord_name: p.landlord || '',
+      payment_date: p.paymentDate || null, start_date: p.startDate || null, end_date: p.endDate || null,
+      duration_months: dur, total_amount: total, monthly_expense: monthly,
+      payment_method: p.method || 'transfer', notes: p.notes || '', updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    if (error) return { ok: false, error: error.message }
+    // regen schedule: soft-delete lama lalu buat baru
+    await supabase.from('prepaid_rent_schedules').update({ deleted_at: new Date().toISOString() }).eq('prepaid_rent_id', id).is('deleted_at', null)
+    await genRentSchedules(id, { duration_months: dur, total_amount: total, start_date: p.startDate })
+    return { ok: true }
+  }, [])
+  const deleteRent = useCallback(async (id) => {
+    const now = new Date().toISOString()
+    await supabase.from('prepaid_rent_schedules').update({ deleted_at: now }).eq('prepaid_rent_id', id).is('deleted_at', null)
+    const { error } = await supabase.from('prepaid_rents').update({ deleted_at: now, status: 'cancelled' }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
   const fetchEntriesForExport = useCallback(async (from, to) => {
     const { data, error } = await supabase.from('accounting_entries')
@@ -553,5 +621,6 @@ export function useAccounting() {
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
+    listRents, listRentSchedules, addRent, updateRent, deleteRent,
   }
 }

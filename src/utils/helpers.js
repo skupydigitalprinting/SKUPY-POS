@@ -71,6 +71,65 @@ export function assetDepreciationSchedule(a, maxYears = 12) {
   return rows
 }
 
+// ── Sewa Toko Dibayar Dimuka (amortisasi) ──
+// Durasi bulan inklusif antara start & end.
+export function rentDurationMonths(start, end) {
+  if (!start || !end) return 0
+  const s = new Date(start), e = new Date(end)
+  const m = (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth()) + 1
+  return m > 0 ? m : 0
+}
+
+// Jumlah bulan yang SUDAH berjalan (accrued) per tanggal `now` (cap di durasi).
+// Bulan berjalan dihitung penuh 1 beban begitu memasuki bulan tsb.
+export function rentMonthsElapsed(rent, now = new Date()) {
+  if (!rent.start_date) return 0
+  const s = new Date(rent.start_date), d = new Date(now)
+  const startMonth = new Date(s.getFullYear(), s.getMonth(), 1)
+  const curMonth = new Date(d.getFullYear(), d.getMonth(), 1)
+  if (curMonth < startMonth) return 0 // sewa belum mulai
+  const m = (d.getFullYear() - s.getFullYear()) * 12 + (d.getMonth() - s.getMonth()) + 1
+  const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date)
+  return Math.max(0, Math.min(m, dur))
+}
+
+// Ringkasan amortisasi sewa pada tanggal `now`.
+export function rentAmortization(rent, now = new Date()) {
+  const total = Math.round(Number(rent.total_amount) || 0)
+  const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date) || 1
+  const monthly = Math.round(Number(rent.monthly_expense) || (total / dur))
+  const elapsed = rentMonthsElapsed(rent, now)
+  const accrued = Math.min(total, monthly * elapsed)       // beban yang sudah berjalan
+  const prepaid = Math.max(0, total - accrued)             // sisa dibayar dimuka (aset)
+  const done = elapsed >= dur
+  return { total, dur, monthly, elapsed, accrued, prepaid, done }
+}
+
+// Apakah bulan `now` masih dalam masa sewa (untuk "beban sewa bulan ini").
+export function rentBebanBulanIni(rent, now = new Date()) {
+  const e = rentMonthsElapsed(rent, now)
+  const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date)
+  return (e >= 1 && e <= dur) ? rentAmortization(rent, now).monthly : 0
+}
+
+// Tabel jadwal amortisasi (period_month, beban, status) untuk durasi penuh.
+export function rentSchedule(rent, now = new Date()) {
+  const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date)
+  const total = Math.round(Number(rent.total_amount) || 0)
+  const monthly = Math.round(Number(rent.monthly_expense) || (dur ? total / dur : 0))
+  const s = new Date(rent.start_date)
+  const elapsed = rentMonthsElapsed(rent, now)
+  const rows = []
+  for (let i = 0; i < dur; i++) {
+    const pm = new Date(s.getFullYear(), s.getMonth() + i, 1)
+    // baris terakhir menyerap pembulatan
+    const amt = i === dur - 1 ? total - monthly * (dur - 1) : monthly
+    const status = (i + 1) < elapsed ? 'done' : (i + 1) === elapsed ? 'accrued' : 'pending'
+    rows.push({ idx: i + 1, periodMonth: pm, amount: amt, status })
+  }
+  return rows
+}
+
 // Rupiah ringkas untuk mobile: Rp246Jt, Rp1,4Jt, Rp950Rb (koma ala Indonesia).
 export function formatRupiahShort(amount) {
   const v = Math.round(Number(amount) || 0)

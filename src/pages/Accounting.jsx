@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react'
 import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
-  FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search,
+  FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni } from '../utils/helpers'
 import { Button } from '../components/ui'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -20,6 +20,7 @@ const TABS = [
   { id: 'hsupplier', label: 'Hutang Supplier', icon: Truck },
   { id: 'hbank', label: 'Hutang Bank', icon: Building2 },
   { id: 'aset', label: 'Aset', icon: Landmark },
+  { id: 'sewa', label: 'Sewa Toko', icon: Home },
 ]
 const DEP_METHODS = [{ id: 'percentage', label: 'Persentase per Tahun' }, { id: 'straight', label: 'Garis Lurus' }, { id: 'none', label: 'Tanpa Penyusutan' }]
 const DEFAULT_ASSET_CATEGORIES = ['Mesin Produksi', 'Komputer & Elektronik', 'Kendaraan', 'Peralatan Toko', 'Furniture', 'Renovasi', 'Software', 'Lainnya']
@@ -233,6 +234,24 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     ;(assetCats || []).forEach(c => map.set(c.name.toLowerCase(), { id: c.id, name: c.name }))
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [assetCats])
+  // ── SEWA TOKO ──
+  const blankRent = { name: '', location: '', landlord: '', paymentDate: acc.todayISO(), startDate: acc.todayISO(), endDate: '', totalAmount: '', method: 'transfer', notes: '', proofUrl: '' }
+  const [rents, setRents] = useState([]); const [rentForm, setRentForm] = useState(blankRent); const [rentErr, setRentErr] = useState({})
+  const [editRent, setEditRent] = useState(null); const [detailRent, setDetailRent] = useState(null)
+  // Agregat sewa (realtime): sisa dibayar dimuka, beban bulan ini, kas keluar & beban dalam periode.
+  const rentAgg = useMemo(() => {
+    const now = new Date()
+    const inRange = (ds) => { if (!ds) return false; const t = new Date(ds).getTime(); if (from && t < new Date(from + 'T00:00:00').getTime()) return false; if (to && t > new Date(to + 'T23:59:59').getTime()) return false; return true }
+    let dibayarDimuka = 0, bebanBulanIni = 0, cashOutPeriod = 0, bebanPeriod = 0
+    ;(rents || []).filter(r => r.status !== 'cancelled').forEach(r => {
+      const a = rentAmortization(r, now)
+      dibayarDimuka += a.prepaid
+      bebanBulanIni += rentBebanBulanIni(r, now)
+      if (inRange(r.payment_date)) cashOutPeriod += a.total
+      rentSchedule(r, now).forEach(s => { if (s.status !== 'pending' && inRange(s.periodMonth)) bebanPeriod += s.amount })
+    })
+    return { dibayarDimuka, bebanBulanIni, cashOutPeriod, bebanPeriod }
+  }, [rents, from, to])
   // edit hutang supplier + riwayat
   const [editDebt, setEditDebt] = useState(null) // supplier_debt being edited
   const [editExp, setEditExp] = useState(null) // expense being edited
@@ -260,12 +279,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const loadBankLoans = async () => { const r = await acc.listBankLoans(); if (r.ok) setBankLoans(r.data) }
   const loadAssets = async () => { const r = await acc.listAssets(); if (r.ok) setAssets(r.data) }
   const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data) }
+  const loadRents = async () => { const r = await acc.listRents(); if (r.ok) setRents(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
 
   useEffect(() => {
     setLoading(true)
     const run = async () => {
-      if (tab === 'ringkasan') { await loadDashboard(); await loadRecap(); await loadAssets() }
+      if (tab === 'ringkasan') { await loadDashboard(); await loadRecap(); await loadAssets(); await loadRents() }
       else if (tab === 'jurnal') await loadEntries(0)
       else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
       else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
@@ -273,6 +293,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
       else if (tab === 'hbank') await loadBankLoans()
       else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
+      else if (tab === 'sewa') await loadRents()
       setLoading(false)
     }
     run()
@@ -298,7 +319,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // pengeluaran manual + pembelian bahan + bayar hutang supplier + cicilan/bayar
   // hutang bank + gaji + operasional + biaya lain. pengeluaran_total sudah mencakup
   // semuanya (lihat acc_dashboard). Jadi bayar hutang bank 50jt → laba turun 50jt.
-  const laba = useMemo(() => d ? Math.round((d.penjualan || 0) - (d.pengeluaran_total || 0)) : 0, [d])
+  // Laba = Omzet − Total Pengeluaran − Beban Sewa berjalan (akrual, bukan kas penuh)
+  const laba = useMemo(() => d ? Math.round((d.penjualan || 0) - (d.pengeluaran_total || 0) - (rentAgg.bebanPeriod || 0)) : 0, [d, rentAgg])
   const totalAset = useMemo(() => d ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0)) : 0, [d])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
 
@@ -504,6 +526,30 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // Total nilai buku aset aktif (untuk dashboard/neraca) — realtime dari data mentah.
   const asetTetap = useMemo(() => (assets || []).filter(a => a.status === 'active' || a.status === 'depleted' || a.status === 'broken').reduce((s, a) => s + calculateAssetBookValue(a).bookValue, 0), [assets])
 
+  // ── SEWA: validasi + submit ──
+  const validateRent = (f) => {
+    const e = {}
+    if (!f.name.trim()) e.name = 'Nama sewa wajib diisi'
+    if (!f.paymentDate) e.paymentDate = 'Tanggal bayar wajib diisi'
+    if (!f.startDate) e.startDate = 'Tanggal mulai wajib diisi'
+    if (!f.endDate) e.endDate = 'Tanggal akhir wajib diisi'
+    if (f.startDate && f.endDate && rentDurationMonths(f.startDate, f.endDate) <= 0) e.endDate = 'Tanggal akhir harus setelah mulai'
+    if (!(parseCurrency(f.totalAmount) > 0)) e.totalAmount = 'Total bayar harus lebih dari 0'
+    return e
+  }
+  const submitRent = async () => {
+    const e = validateRent(rentForm); setRentErr(e); if (Object.keys(e).length) return
+    setSaving(true)
+    const r = await acc.addRent({ ...rentForm, totalAmount: parseCurrency(rentForm.totalAmount), durationMonths: rentDurationMonths(rentForm.startDate, rentForm.endDate), createdBy: currentUser?.id })
+    setSaving(false)
+    if (r.ok) { toast.success('Sewa dicatat'); setRentForm(blankRent); setRentErr({}); loadRents() } else toast.error(r.error)
+  }
+  const saveEditRent = async () => {
+    const e = validateRent(editRent); if (Object.keys(e).length) return toast.error(Object.values(e)[0])
+    const r = await acc.updateRent(editRent.id, { ...editRent, totalAmount: parseCurrency(editRent.totalAmount), durationMonths: rentDurationMonths(editRent.startDate, editRent.endDate) })
+    if (r.ok) { toast.success('Sewa diperbarui'); setEditRent(null); loadRents() } else toast.error(r.error)
+  }
+
   if (setupNeeded) {
     return (
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
@@ -555,24 +601,25 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
               <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Total Pengeluaran {fmt(d.pengeluaran_total)}</div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Pengeluaran {fmt(d.pengeluaran_total)}{rentAgg.bebanPeriod > 0 ? ` − Beban Sewa ${fmt(rentAgg.bebanPeriod)}` : ''}</div>
             </div>
           )}
 
           {/* BARIS 1 — Aktivitas Kas: Penjualan(biru) · Arus Kas(tosca) · Sudah Bayar(hijau muda) · Uang Masuk(hijau) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0))} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0) - rentAgg.cashOutPeriod)} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
           </div>
 
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingDown} label="Uang Keluar" value={fmt(d.pengeluaran_total)} color="#ef4444" sub="Semua pembayaran keluar" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
+            <Card icon={TrendingDown} label="Uang Keluar" value={fmt((d.pengeluaran_total || 0) + rentAgg.cashOutPeriod)} color="#ef4444" sub="Termasuk pembayaran sewa" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
             <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />
+            <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual sewa berjalan" onClick={() => setTab('sewa')} />
           </div>
 
           {/* BARIS 3 — Aset & Kewajiban: Piutang Usaha(emas) · Hutang Bank(merah tua, terakhir) */}
@@ -585,8 +632,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           {isOwner && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
-            <Card icon={Wallet} label="Total Aset" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap)} color="#3b82f6" sub="Kas+Bank+Piutang+Persediaan+Aset" />
-            <Card icon={Scale} label="Kekayaan Bersih" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap - (d.hutang_supplier || 0) - (d.hutang_bank || 0))} color="#10d98a" sub="Total Aset − Total Hutang" />
+            <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub="Sisa sewa belum jadi beban" onClick={() => setTab('sewa')} />
+            <Card icon={Wallet} label="Total Aset" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap + rentAgg.dibayarDimuka)} color="#3b82f6" sub="Kas+Bank+Piutang+Persediaan+Aset+Sewa" />
+            <Card icon={Scale} label="Kekayaan Bersih" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap + rentAgg.dibayarDimuka - (d.hutang_supplier || 0) - (d.hutang_bank || 0))} color="#10d98a" sub="Total Aset − Total Hutang" />
           </div>
           )}
 
@@ -597,15 +645,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Aset</div>
-                {[['Kas', d.saldo_kas], ['Bank', d.saldo_rekening], ['Piutang Usaha', d.piutang_aktif], ['Persediaan', d.persediaan], ['Aset Tetap', asetTetap]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
-                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(totalAset + asetTetap)}</span></div>
+                {[['Kas', d.saldo_kas], ['Bank', d.saldo_rekening], ['Piutang Usaha', d.piutang_aktif], ['Persediaan', d.persediaan], ['Aset Tetap', asetTetap], ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
+                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(totalAset + asetTetap + rentAgg.dibayarDimuka)}</span></div>
               </div>
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Kewajiban & Ekuitas</div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Supplier</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_supplier)}</span></div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Bank</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_bank)}</span></div>
                 <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Hutang</span><span style={{ color: '#ef4444' }}>{fmt(totalHutang)}</span></div>
-                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Kekayaan Bersih</span><span style={{ color: '#10d98a' }}>{fmt(totalAset + asetTetap - totalHutang)}</span></div>
+                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Kekayaan Bersih</span><span style={{ color: '#10d98a' }}>{fmt(totalAset + asetTetap + rentAgg.dibayarDimuka - totalHutang)}</span></div>
               </div>
             </div>
           </div>
@@ -1103,6 +1151,126 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           })()}
         </div>
       )}
+
+      {/* ── SEWA TOKO DIBAYAR DIMUKA ── */}
+      {tab === 'sewa' && !loading && (
+        <div className="space-y-4">
+          {(() => { const dur = rentDurationMonths(rentForm.startDate, rentForm.endDate); const monthly = dur ? Math.round(parseCurrency(rentForm.totalAmount) / dur) : 0; return (
+          <FormCard icon={Home} title="Tambah Sewa Toko" subtitle="Sewa dibayar di muka; otomatis dibebankan per bulan ke laba/rugi.">
+            <Field icon={Home} label="Nama Sewa" required error={rentErr.name}>
+              <input value={rentForm.name} onChange={e => setRentForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Sewa Toko Tanah Abang" className={FIELD_CLS} style={inpErr(rentErr.name)} />
+            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Landmark} label="Lokasi / Alamat"><input value={rentForm.location} onChange={e => setRentForm(p => ({ ...p, location: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+              <Field icon={UsersIcon} label="Pemilik / Penerima Sewa"><input value={rentForm.landlord} onChange={e => setRentForm(p => ({ ...p, landlord: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field icon={Receipt} label="Tanggal Bayar" required error={rentErr.paymentDate}><input type="date" value={rentForm.paymentDate} onChange={e => setRentForm(p => ({ ...p, paymentDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(rentErr.paymentDate), colorScheme: 'dark' }} /></Field>
+              <Field icon={Receipt} label="Mulai Sewa" required error={rentErr.startDate}><input type="date" value={rentForm.startDate} onChange={e => setRentForm(p => ({ ...p, startDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(rentErr.startDate), colorScheme: 'dark' }} /></Field>
+              <Field icon={Receipt} label="Akhir Sewa" required error={rentErr.endDate}><input type="date" value={rentForm.endDate} onChange={e => setRentForm(p => ({ ...p, endDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(rentErr.endDate), colorScheme: 'dark' }} /></Field>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Wallet} label="Total Bayar" required error={rentErr.totalAmount}><MoneyInput value={rentForm.totalAmount} onChange={v => setRentForm(p => ({ ...p, totalAmount: v }))} className={FIELD_CLS} style={inpErr(rentErr.totalAmount)} /></Field>
+              <Field icon={Wallet} label="Metode Pembayaran" required><select value={rentForm.method} onChange={e => setRentForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+            </div>
+            {dur > 0 && <div className="rounded-xl px-3.5 py-2.5 flex items-center justify-between flex-wrap gap-2" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Durasi <b>{dur} bulan</b></span><span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Beban / bulan <b style={{ color: '#f59e0b' }}>{fmt(monthly)}</b></span></div>}
+            <Field icon={Pencil} label="Nomor Bukti / Catatan"><input value={rentForm.notes} onChange={e => setRentForm(p => ({ ...p, notes: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Home} label="Upload Bukti Pembayaran">
+              <div className="flex items-center gap-3">
+                {rentForm.proofUrl ? <img src={rentForm.proofUrl} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover' }} /> : <div style={{ width: 48, height: 48, borderRadius: 8, background: 'var(--bg-elevated)', border: '1px solid var(--border)' }} className="flex items-center justify-center"><Receipt size={18} style={{ color: 'var(--text-muted)' }} /></div>}
+                <label className="px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>{photoBusy ? 'Memproses…' : 'Pilih Bukti'}<input type="file" accept="image/*" className="hidden" onChange={e => onPhotoPick(e.target.files?.[0], url => setRentForm(p => ({ ...p, proofUrl: url })))} /></label>
+                {rentForm.proofUrl && <button type="button" onClick={() => setRentForm(p => ({ ...p, proofUrl: '' }))} className="text-xs" style={{ color: 'var(--red)' }}>Hapus</button>}
+              </div>
+            </Field>
+            <Button variant="primary" className="w-full" onClick={submitRent} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Sewa</Button>
+          </FormCard>
+          )})()}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl p-3" style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sewa Dibayar Dimuka</div><div className="text-sm font-bold" style={{ color: '#a78bfa' }}>{fmt(rentAgg.dibayarDimuka)}</div></div>
+            <div className="rounded-xl p-3" style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Beban Sewa Bulan Ini</div><div className="text-sm font-bold" style={{ color: '#f59e0b' }}>{fmt(rentAgg.bebanBulanIni)}</div></div>
+          </div>
+
+          <div className="space-y-2">
+            {rents.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada sewa tercatat</p>}
+            {rents.map(r => {
+              const a = rentAmortization(r)
+              return (
+                <div key={r.id} className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{r.name}</div>
+                      <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{r.location || '—'} · {dt(r.start_date)}–{dt(r.end_date)} · {a.dur} bln</div>
+                      <div className="grid grid-cols-3 gap-1.5 mt-2">
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Total</div><div className="text-[11px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(a.total)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Beban/bln</div><div className="text-[11px] font-bold truncate" style={{ color: '#f59e0b' }}>{fmt(a.monthly)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Dibayar Dimuka</div><div className="text-[11px] font-bold truncate" style={{ color: '#a78bfa' }}>{fmt(a.prepaid)}</div></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--border)' }}>
+                    <button onClick={() => setDetailRent(r)} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', fontFamily: 'Syne' }}>Detail & Jadwal</button>
+                    <button onClick={() => setEditRent({ id: r.id, name: r.name, location: r.location || '', landlord: r.landlord_name || '', paymentDate: r.payment_date, startDate: r.start_date, endDate: r.end_date, totalAmount: String(Math.round(r.total_amount || 0)), method: r.payment_method || 'transfer', notes: r.notes || '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>
+                    <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data sewa ini? Semua jadwal beban sewa juga akan dihapus.' }))) return; const res = await acc.deleteRent(r.id); if (res.ok) { toast.success('Sewa dihapus'); loadRents(); loadDashboard() } else toast.error(res.error) }} className="px-3 py-1.5 rounded-lg" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── DETAIL SEWA (jadwal amortisasi) ── */}
+      <Modal open={!!detailRent} onClose={() => setDetailRent(null)} title={detailRent ? `Sewa — ${detailRent.name}` : ''} size="lg">
+        {detailRent && (() => {
+          const a = rentAmortization(detailRent); const sched = rentSchedule(detailRent)
+          const STAT = { pending: { label: 'Belum berjalan', color: 'var(--text-muted)' }, accrued: { label: 'Sudah dibebankan', color: '#10d98a' }, done: { label: 'Selesai', color: '#38BDF8' } }
+          const info = [['Lokasi', detailRent.location || '—'], ['Pemilik', detailRent.landlord_name || '—'], ['Tanggal Bayar', dt(detailRent.payment_date)], ['Periode', `${dt(detailRent.start_date)} – ${dt(detailRent.end_date)}`], ['Durasi', `${a.dur} bulan`], ['Total Bayar', fmt(a.total)], ['Beban / Bulan', fmt(a.monthly)], ['Sudah Berjalan', `${a.elapsed} bln · ${fmt(a.accrued)}`], ['Dibayar Dimuka', fmt(a.prepaid)], ['Metode', (detailRent.payment_method || '').toUpperCase()]]
+          return (
+            <div className="space-y-3">
+              {detailRent.proof_url && <img src={detailRent.proof_url} alt="" style={{ width: '100%', maxHeight: 160, borderRadius: 12, objectFit: 'cover' }} />}
+              <div className="grid grid-cols-2 gap-2">
+                {info.map(([k, v]) => <div key={k} className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{v}</div></div>)}
+              </div>
+              {detailRent.notes && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Catatan: {detailRent.notes}</p>}
+              <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Jadwal Amortisasi</div>
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 360 }}>
+                  <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Bln', 'Periode', 'Beban', 'Status'].map((h, i) => <th key={i} className={`px-2 py-1.5 ${h === 'Beban' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>)}</tr></thead>
+                  <tbody>{sched.map(s => { const st = STAT[s.status]; return (
+                    <tr key={s.idx} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>{s.idx}</td>
+                      <td className="px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>{s.periodMonth.toLocaleDateString('id-ID', { month: 'short', year: 'numeric' })}</td>
+                      <td className="px-2 py-1.5 text-right font-bold" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(s.amount)}</td>
+                      <td className="px-2 py-1.5"><span style={{ color: st.color, fontSize: 10 }}>{st.label}</span></td>
+                    </tr>
+                  )})}</tbody>
+                </table>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* ── EDIT SEWA ── */}
+      <Modal open={!!editRent} onClose={() => setEditRent(null)} title="Edit Sewa Toko" size="sm">
+        {editRent && (
+          <div className="space-y-3">
+            <Field icon={Home} label="Nama Sewa" required><input value={editRent.name} onChange={e => setEditRent(p => ({ ...p, name: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Landmark} label="Lokasi"><input value={editRent.location} onChange={e => setEditRent(p => ({ ...p, location: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field icon={Receipt} label="Mulai" required><input type="date" value={editRent.startDate} onChange={e => setEditRent(p => ({ ...p, startDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+              <Field icon={Receipt} label="Akhir" required><input type="date" value={editRent.endDate} onChange={e => setEditRent(p => ({ ...p, endDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field icon={Receipt} label="Tgl Bayar" required><input type="date" value={editRent.paymentDate} onChange={e => setEditRent(p => ({ ...p, paymentDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+              <Field icon={Wallet} label="Total Bayar" required><MoneyInput value={editRent.totalAmount} onChange={v => setEditRent(p => ({ ...p, totalAmount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            <Field icon={Pencil} label="Catatan"><input value={editRent.notes} onChange={e => setEditRent(p => ({ ...p, notes: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" onClick={saveEditRent}><Check size={14} /> Simpan (jadwal dihitung ulang)</Button>
+          </div>
+        )}
+      </Modal>
 
       {/* ── DETAIL ASET (+ simulasi penyusutan) ── */}
       <Modal open={!!detailAsset} onClose={() => setDetailAsset(null)} title={detailAsset ? `Aset — ${detailAsset.name}` : ''} size="lg">
