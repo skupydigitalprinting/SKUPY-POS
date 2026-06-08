@@ -191,8 +191,11 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       })
     })
     const pengeluaran = pengeluaranAcc
-    const profitBruto = revenue - pengeluaran          // kartu biru → "LABA BERSIH" (Omset − Pengeluaran)
-    const profit = revenue - modal - pengeluaran        // kartu hijau → "PROFIT BRUTO" (Omset − Modal − Pengeluaran)
+    // Modal Barang  = Σ(qty × modal produk)  → sudah dihitung di atas (modal)
+    // Profit Bruto  = Omset − Modal Barang   (TANPA pengeluaran)
+    // Laba Bersih   = Profit Bruto − Total Pengeluaran
+    const profitBruto = revenue - modal
+    const profit = profitBruto - pengeluaran
     return { revenue, modal, pengeluaran, profitBruto, profit, count: list.length }
   }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc])
 
@@ -387,7 +390,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         if (labaTo) { const tt = new Date(labaTo + 'T23:59:59').getTime(); base = base.filter(t => new Date(t.date).getTime() <= tt) }
         const rows = base.map(txRow)
         const titles = { penjualan: 'Total Penjualan', laba: 'Profit Bruto', modal: 'Modal Barang' }
-        const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profit
+        // 'laba' = kartu hijau "Profit Bruto" = Omset − Modal Barang
+        const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profitBruto
         return { title: titles[key], rows, total }
       }
       case 'pelanggan': {
@@ -768,12 +772,12 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* LABA BERSIH = Omset − Pengeluaran (kartu biru) */}
+              {/* LABA BERSIH = Profit Bruto − Pengeluaran (kartu biru) */}
               <div
                 className="rounded-xl p-4"
                 style={{
-                  background: labaRugi.profitBruto >= 0 ? 'rgba(59,130,246,0.08)' : 'rgba(255,77,106,0.08)',
-                  border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(59,130,246,0.3)' : 'rgba(255,77,106,0.3)'}`,
+                  background: labaRugi.profit >= 0 ? 'rgba(59,130,246,0.08)' : 'rgba(255,77,106,0.08)',
+                  border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(59,130,246,0.3)' : 'rgba(255,77,106,0.3)'}`,
                 }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
@@ -783,11 +787,11 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Laba Bersih</span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
-                  style={{ fontFamily: 'Syne', color: labaRugi.profitBruto >= 0 ? '#3b82f6' : '#ff4d6a' }}>
-                  {formatRupiah(labaRugi.profitBruto)}
+                  style={{ fontFamily: 'Syne', color: labaRugi.profit >= 0 ? '#3b82f6' : '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.profit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Omset − Pengeluaran
+                  Profit Bruto − Pengeluaran
                 </div>
               </div>
 
@@ -810,33 +814,33 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* PROFIT BRUTO = Omset − Modal − Pengeluaran (kartu hijau) */}
+              {/* PROFIT BRUTO = Omset − Modal Barang (kartu hijau) */}
               <div onClick={() => openCard('laba')}
                 className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition lg:col-span-2"
                 style={{
-                  background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
-                  border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
+                  background: labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
+                  border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
                 }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                     style={{
-                      background: labaRugi.profit >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(255,77,106,0.15)',
-                      border: `1px solid ${labaRugi.profit >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(255,77,106,0.4)'}`,
+                      background: labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(255,77,106,0.15)',
+                      border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(255,77,106,0.4)'}`,
                     }}>
-                    {labaRugi.profit >= 0
+                    {labaRugi.profitBruto >= 0
                       ? <TrendingUp size={15} style={{ color: '#10d98a' }} />
                       : <TrendingDown size={15} style={{ color: '#ff4d6a' }} />}
                   </div>
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-                    {labaRugi.profit >= 0 ? 'Profit Bruto' : 'Rugi'}
+                    {labaRugi.profitBruto >= 0 ? 'Profit Bruto' : 'Rugi Kotor'}
                   </span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
-                  style={{ fontFamily: 'Syne', color: labaRugi.profit >= 0 ? '#10d98a' : '#ff4d6a' }}>
-                  {formatRupiah(labaRugi.profit)}
+                  style={{ fontFamily: 'Syne', color: labaRugi.profitBruto >= 0 ? '#10d98a' : '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.profitBruto)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Omset − Modal − Pengeluaran{labaRugi.revenue > 0 ? ` · Margin ${Math.round((labaRugi.profit / labaRugi.revenue) * 100)}%` : ''}
+                  Omset − Modal Barang{labaRugi.revenue > 0 ? ` · Margin ${Math.round((labaRugi.profitBruto / labaRugi.revenue) * 100)}%` : ''}
                 </div>
               </div>
             </div>
