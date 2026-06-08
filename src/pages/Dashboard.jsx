@@ -193,9 +193,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     const pengeluaran = pengeluaranAcc
     // Modal Barang  = Σ(qty × modal produk)  → sudah dihitung di atas (modal)
     // Profit Bruto  = Omset − Modal Barang   (TANPA pengeluaran)
-    // Laba Bersih   = Profit Bruto − Total Pengeluaran
+    // Laba Bersih   = Omset − Total Pengeluaran
     const profitBruto = revenue - modal
-    const profit = profitBruto - pengeluaran
+    const profit = revenue - pengeluaran
     return { revenue, modal, pengeluaran, profitBruto, profit, count: list.length }
   }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc])
 
@@ -772,7 +772,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* LABA BERSIH = Profit Bruto − Pengeluaran (kartu biru) */}
+              {/* LABA BERSIH = Omset − Pengeluaran (kartu biru) */}
               <div
                 className="rounded-xl p-4"
                 style={{
@@ -791,7 +791,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   {formatRupiah(labaRugi.profit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Profit Bruto − Pengeluaran
+                  Omset − Pengeluaran
                 </div>
               </div>
 
