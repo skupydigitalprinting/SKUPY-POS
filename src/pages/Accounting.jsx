@@ -315,7 +315,22 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       const [mod, res] = await Promise.all([import('xlsx'), acc.fetchEntriesForExport(from, to)])
       const XLSX = mod.default || mod
       const wb = XLSX.utils.book_new()
-      if (d) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(d).map(([k, v]) => ({ Pos: k, Nilai: Math.round(Number(v) || 0) })).concat([{ Pos: 'laba_bersih', Nilai: laba }])), 'Ringkasan')
+      if (d) {
+        // Sembunyikan pos sensitif (laba, modal, aset, kekayaan) dari export non-owner
+        const SENSITIVE = ['modal_barang']
+        let rows = Object.entries(d).map(([k, v]) => ({ Pos: k, Nilai: Math.round(Number(v) || 0) }))
+        if (isOwner) {
+          rows = rows.concat([
+            { Pos: 'laba_bersih', Nilai: laba },
+            { Pos: 'aset_tetap', Nilai: asetTetap },
+            { Pos: 'total_aset', Nilai: Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap) },
+            { Pos: 'kekayaan_bersih', Nilai: Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap - (d.hutang_supplier || 0) - (d.hutang_bank || 0)) },
+          ])
+        } else {
+          rows = rows.filter(r => !SENSITIVE.includes(r.Pos))
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Ringkasan')
+      }
       if (res.ok) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((res.data || []).map(e => ({ Tanggal: e.entry_date, Sumber: e.source_type, Invoice: e.invoice_no || '', Akun: e.account_code, Debit: Math.round(e.debit || 0), Kredit: Math.round(e.credit || 0), Keterangan: e.description }))), 'Jurnal')
       XLSX.writeFile(wb, `accounting-${from}_${to}.xlsx`)
     } catch (e) { toast.error('Export gagal: ' + (e?.message || e)) } finally { setExporting(false) }
@@ -566,12 +581,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
           </div>
 
-          {/* BARIS 4 — Aset & Kekayaan Bersih */}
+          {/* BARIS 4 — Aset & Kekayaan Bersih — OWNER ONLY (sensitif) */}
+          {isOwner && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
             <Card icon={Wallet} label="Total Aset" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap)} color="#3b82f6" sub="Kas+Bank+Piutang+Persediaan+Aset" />
             <Card icon={Scale} label="Kekayaan Bersih" value={fmt((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0) + asetTetap - (d.hutang_supplier || 0) - (d.hutang_bank || 0))} color="#10d98a" sub="Total Aset − Total Hutang" />
           </div>
+          )}
 
           {/* Neraca sederhana — OWNER ONLY (data ekuitas sensitif) */}
           {isOwner && (
