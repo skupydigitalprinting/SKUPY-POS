@@ -194,6 +194,8 @@ supabase/
 
 **WhatsApp share buka tab kosong** → di desktop browser tanpa Web Share API support, fallback akan download JPEG dan buka WhatsApp Web — user perlu attach JPEG manual.
 
+**Tab "Kasbon Karyawan" kosong / error setup** → jalankan migrasi `supabase/migrations/2026_06_employee_cash_advances.sql` di Supabase SQL Editor. Kasbon dicatat sebagai **Piutang Karyawan** (akun 1250, aset), bukan beban. Jalankan juga `2026_06_supplier_debt_fixes.sql` agar trigger hutang supplier konsisten.
+
 ---
 
 Made with ❤️ for printing studios.
