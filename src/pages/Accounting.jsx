@@ -4,7 +4,7 @@ import {
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit } from '../utils/helpers'
 import { Button } from '../components/ui'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -319,8 +319,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // pengeluaran manual + pembelian bahan + bayar hutang supplier + cicilan/bayar
   // hutang bank + gaji + operasional + biaya lain. pengeluaran_total sudah mencakup
   // semuanya (lihat acc_dashboard). Jadi bayar hutang bank 50jt → laba turun 50jt.
-  // Laba = Omzet − Total Pengeluaran − Beban Sewa berjalan (akrual, bukan kas penuh)
-  const laba = useMemo(() => d ? Math.round((d.penjualan || 0) - (d.pengeluaran_total || 0) - (rentAgg.bebanPeriod || 0)) : 0, [d, rentAgg])
+  // Laba = Omzet − Total Pengeluaran − Beban Sewa berjalan (rumus resmi bersama netProfit)
+  const laba = useMemo(() => d ? netProfit(d.penjualan, d.pengeluaran_total, rentAgg.bebanPeriod) : 0, [d, rentAgg])
   const totalAset = useMemo(() => d ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.persediaan || 0)) : 0, [d])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
 

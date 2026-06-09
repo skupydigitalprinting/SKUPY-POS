@@ -10,7 +10,7 @@ import {
   Scale, Wallet, TrendingDown, PackageOpen, Banknote, CreditCard, Smartphone,
   Pencil, Trash2, Check, X, Loader2,
 } from 'lucide-react'
-import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty } from '../utils/helpers'
+import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleLabel, toMoney, formatQty, rentSchedule, netProfit } from '../utils/helpers'
 import { Badge, ProductImage } from '../components/ui'
 import { getCatLabel, useCategories } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
@@ -179,6 +179,25 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     return () => { alive = false; stop(); document.removeEventListener('visibilitychange', onVis) }
   }, [isOwner, accFrom, accTo, accBump])
 
+  // ── Sewa: beban sewa berjalan dalam periode (amortisasi) ──
+  const [rents, setRents] = useState([])
+  useEffect(() => {
+    if (!isOwner) return
+    let alive = true
+    acc.listRents().then(r => { if (alive && r.ok) setRents(r.data) })
+    return () => { alive = false }
+  }, [isOwner, accBump])
+  const rentBeban = useMemo(() => {
+    const now = new Date()
+    const fromT = labaFrom ? new Date(labaFrom + 'T00:00:00').getTime() : -Infinity
+    const toT = labaTo ? new Date(labaTo + 'T23:59:59').getTime() : Infinity
+    let sum = 0
+    ;(rents || []).filter(r => r.status !== 'cancelled').forEach(r => {
+      rentSchedule(r, now).forEach(s => { if (s.status !== 'pending') { const t = s.periodMonth.getTime(); if (t >= fromT && t <= toT) sum += s.amount } })
+    })
+    return sum
+  }, [rents, labaFrom, labaTo])
+
   // ── Detail Pengeluaran & Laba Bersih (klik card) ──
   const [pengModal, setPengModal] = useState(false)
   const [labaModal, setLabaModal] = useState(false)
@@ -192,7 +211,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   }
   const reloadAfterMutation = () => { loadPengRows(); setAccBump(b => b + 1) }
   const deletePengRow = async (row) => {
-    if (!(await confirm({ title: 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.' }))) return
+    const msg = row.kind === 'supplier_payment'
+      ? 'Yakin ingin menghapus pembayaran hutang supplier ini? Data asli di Hutang Supplier juga akan ikut terhapus.'
+      : 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.'
+    if (!(await confirm({ title: msg }))) return
     let r
     if (row.kind === 'expense') r = await acc.deleteExpense(row.id)
     else if (row.kind === 'purchase') r = await acc.deletePurchase(row.id)
@@ -230,13 +252,12 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       })
     })
     const pengeluaran = pengeluaranAcc
-    // Modal Barang  = Σ(qty × modal produk)  → sudah dihitung di atas (modal)
-    // Profit Bruto  = Omset − Modal Barang   (TANPA pengeluaran)
-    // Laba Bersih   = Omset − Total Pengeluaran
+    // Profit Bruto = Omset − Modal Barang (TANPA pengeluaran)
+    // Laba Bersih  = Omset − Total Pengeluaran − Beban Sewa berjalan (amortisasi)
     const profitBruto = revenue - modal
-    const profit = revenue - pengeluaran
-    return { revenue, modal, pengeluaran, profitBruto, profit, count: list.length }
-  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc])
+    const profit = netProfit(revenue, pengeluaran, rentBeban) // rumus resmi bersama
+    return { revenue, modal, pengeluaran, bebanSewa: rentBeban, profitBruto, profit, count: list.length }
+  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -892,7 +913,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   {formatRupiah(labaRugi.profit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Omset − Pengeluaran
+                  Omset − Pengeluaran − Beban Sewa
                 </div>
               </div>
 
@@ -1392,12 +1413,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
 
       {/* ── RINCIAN LABA BERSIH ── */}
       <Modal open={labaModal} onClose={() => { setLabaModal(false); setPengEdit(null) }} title="Rincian Laba Bersih" size="lg">
-        <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Total Omset</div><div className="text-xs font-bold" style={{ color: '#3b82f6', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.revenue)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Pengeluaran</div><div className="text-xs font-bold" style={{ color: '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.pengeluaran)}</div></div>
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Beban Sewa</div><div className="text-xs font-bold" style={{ color: '#d97706', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.bebanSewa || 0)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Laba Bersih</div><div className="text-xs font-bold" style={{ color: '#10d98a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaRugi.profit)}</div></div>
         </div>
-        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih = Total Omset − Total Pengeluaran</p>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih = Total Omset − Total Pengeluaran − Beban Sewa Bulan Ini</p>
         <div className="flex gap-1.5 mb-3">
           {[['omset', 'Rincian Omset'], ['pengeluaran', 'Rincian Pengeluaran']].map(([k, label]) => (
             <button key={k} onClick={() => setLabaTab(k)} className="flex-1 py-2 rounded-lg text-xs font-semibold" style={{ background: labaTab === k ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: labaTab === k ? '#fff' : 'var(--text-secondary)', fontFamily: 'Syne' }}>{label}</button>

@@ -71,6 +71,12 @@ export function assetDepreciationSchedule(a, maxYears = 12) {
   return rows
 }
 
+// ── RUMUS RESMI LABA BERSIH (satu sumber untuk seluruh aplikasi) ──
+// Laba Bersih = Omset − Total Pengeluaran − Beban Sewa berjalan
+export function netProfit(omset, pengeluaran, bebanSewa = 0) {
+  return Math.round((Number(omset) || 0) - (Number(pengeluaran) || 0) - (Number(bebanSewa) || 0))
+}
+
 // ── Sewa Toko Dibayar Dimuka (amortisasi) ──
 // Durasi bulan inklusif antara start & end.
 export function rentDurationMonths(start, end) {
