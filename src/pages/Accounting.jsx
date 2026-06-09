@@ -289,7 +289,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data) }
   const loadRents = async () => { const r = await acc.listRents(); if (r.ok) setRents(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
-  const loadAdvances = async () => { const r = await acc.listEmployeeAdvances(); if (r.ok) setAdvances(r.data); else if (/relation|does not exist|schema cache/i.test(r.error || '')) setSetupNeeded(true) }
+  const [kasbonNeedsMigration, setKasbonNeedsMigration] = useState(false)
+  const loadAdvances = async () => {
+    const r = await acc.listEmployeeAdvances()
+    if (r.ok) { setAdvances(r.data); setKasbonNeedsMigration(false) }
+    // Tabel kasbon belum dimigrasi ≠ modul Accounting mati. Tampilkan
+    // notice khusus di tab Kasbon saja, jangan set setupNeeded global.
+    else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setAdvances([]); setKasbonNeedsMigration(true) }
+    else toast.error(r.error || 'Gagal memuat kasbon')
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -572,7 +580,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
         <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
           <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}><AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span></div>
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan migrasi accounting di Supabase → SQL Editor (urut): module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank.</p>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances.</p>
           <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadDashboard() }}><RefreshCw size={13} /> Coba lagi</Button>
         </div>
       </Page>
@@ -1120,6 +1128,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         const totSisa = Math.max(0, totAwal - totBayar)
         return (
         <div className="space-y-4">
+          {kasbonNeedsMigration && (
+            <div className="rounded-2xl p-4" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
+              <div className="flex items-center gap-2 mb-1" style={{ color: '#f59e0b' }}><AlertTriangle size={14} /> <span className="font-bold text-xs" style={{ fontFamily: 'Syne' }}>Tabel Kasbon belum dimigrasi</span></div>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan <code>supabase/migrations/2026_06_employee_cash_advances.sql</code> di Supabase → SQL Editor, lalu klik Coba lagi. Tab Accounting lain tetap berfungsi normal.</p>
+              <button onClick={loadAdvances} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><RefreshCw size={11} /> Coba lagi</button>
+            </div>
+          )}
           <FormCard icon={HandCoins} title="Tambah Kasbon Karyawan" subtitle="Uang perusahaan yang dipinjamkan ke karyawan. Tercatat sebagai Piutang Karyawan (aset) — bukan beban/gaji.">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field icon={UsersIcon} label="Nama Karyawan" required error={kasbonErr.employeeName}>
