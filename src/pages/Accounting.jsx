@@ -331,14 +331,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // semuanya (lihat acc_dashboard). Jadi bayar hutang bank 50jt → laba turun 50jt.
   // Laba = Omzet − Total Pengeluaran − Beban Sewa berjalan (rumus resmi bersama netProfit)
   const laba = useMemo(() => d ? netProfit(d.penjualan, d.pengeluaran_total, rentAgg.bebanPeriod) : 0, [d, rentAgg])
-  // Total Aset = Kas + Bank + Piutang Usaha + Piutang Karyawan + Persediaan
-  //              + Aset Tetap + Sewa Dibayar Dimuka. Satu sumber kebenaran
-  //              dipakai di Card, Neraca, dan Export agar tidak divergen.
-  const asetTotal = useMemo(() => d
-    ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.piutang_karyawan || 0) + (d.persediaan || 0) + asetTetap + rentAgg.dibayarDimuka)
-    : 0, [d, asetTetap, rentAgg])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
-  const kekayaanBersih = useMemo(() => asetTotal - totalHutang, [asetTotal, totalHutang])
 
   const doSync = async () => {
     if (syncing) return; setSyncing(true)
@@ -541,6 +534,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   }
   // Total nilai buku aset aktif (untuk dashboard/neraca) — realtime dari data mentah.
   const asetTetap = useMemo(() => (assets || []).filter(a => a.status === 'active' || a.status === 'depleted' || a.status === 'broken').reduce((s, a) => s + calculateAssetBookValue(a).bookValue, 0), [assets])
+  // Total Aset = Kas + Bank + Piutang Usaha + Piutang Karyawan + Persediaan
+  //              + Aset Tetap + Sewa Dibayar Dimuka. Satu sumber kebenaran
+  //              dipakai di Card, Neraca, dan Export agar tidak divergen.
+  // PENTING: harus dideklarasikan SETELAH asetTetap & rentAgg (TDZ).
+  const asetTotal = useMemo(() => d
+    ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.piutang_karyawan || 0) + (d.persediaan || 0) + asetTetap + rentAgg.dibayarDimuka)
+    : 0, [d, asetTetap, rentAgg])
+  const kekayaanBersih = useMemo(() => asetTotal - totalHutang, [asetTotal, totalHutang])
 
   // ── SEWA: validasi + submit ──
   const validateRent = (f) => {
