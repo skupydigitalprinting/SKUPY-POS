@@ -637,101 +637,6 @@ export function useAccounting() {
     return { ok: true, data: data || [] }
   }, [])
 
-  // ── KASBON KARYAWAN (employee cash advances) ──
-  // Kasbon = ASET (Piutang Karyawan 1250), bukan beban. Jurnal & arus kas
-  // diurus trigger DB (2026_06_employee_cash_advances.sql); paid parent
-  // selalu di-recompute dari SUM pembayaran non-deleted.
-  const listEmployeeAdvances = useCallback(async () => {
-    const { data, error } = await supabase.from('employee_cash_advances')
-      .select('*').is('deleted_at', null)
-      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }).limit(500)
-    if (error) return { ok: false, error: error.message, data: [] }
-    return { ok: true, data: data || [] }
-  }, [])
-
-  const addEmployeeAdvance = useCallback(async (p, cashierId) => {
-    const amt = Math.round(Number(p.amount) || 0)
-    if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
-    if (amt <= 0) return { ok: false, error: 'Nominal kasbon harus > 0' }
-    if (!p.date) return { ok: false, error: 'Tanggal kasbon wajib diisi' }
-    const { data, error } = await supabase.from('employee_cash_advances').insert({
-      employee_name: p.employeeName.trim(),
-      amount: amt, paid: 0, remaining: amt,
-      advance_date: p.date,
-      due_date: p.dueDate || null,
-      payment_method: p.method === 'transfer' ? 'transfer' : 'cash',
-      notes: p.note || '',
-      cashier_id: cashierId || null,
-    }).select('id').single()
-    return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
-  }, [])
-
-  const editEmployeeAdvance = useCallback(async (id, p) => {
-    const amt = Math.round(Number(p.amount) || 0)
-    if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
-    if (amt <= 0) return { ok: false, error: 'Nominal kasbon harus > 0' }
-    const { error } = await supabase.from('employee_cash_advances').update({
-      employee_name: p.employeeName.trim(), amount: amt,
-      advance_date: p.date || undefined,
-      due_date: p.dueDate || null,
-      payment_method: p.method === 'transfer' ? 'transfer' : 'cash',
-      notes: p.note || '', updated_at: new Date().toISOString(),
-    }).eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
-
-  const payEmployeeAdvance = useCallback(async (advanceId, { amount, method, date, note }, cashierId) => {
-    const amt = Math.round(Number(amount) || 0)
-    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const { error } = await supabase.from('employee_cash_advance_payments').insert({
-      cash_advance_id: advanceId, amount: amt,
-      payment_date: date || todayISO(),
-      payment_method: method === 'transfer' ? 'transfer' : 'cash',
-      notes: note || '', cashier_id: cashierId || null,
-    })
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
-
-  // Hapus kasbon ATOMIK via RPC; fallback dua langkah kalau migrasi belum jalan.
-  const deleteEmployeeAdvance = useCallback(async (id) => {
-    const { error: rpcErr } = await supabase.rpc('acc_delete_employee_advance', { p_id: id })
-    if (!rpcErr) return { ok: true }
-    const msg = String(rpcErr.message || '')
-    if (!/could not find the function|does not exist|schema cache/i.test(msg)) {
-      return { ok: false, error: msg }
-    }
-    const now = new Date().toISOString()
-    const { error: payErr } = await supabase.from('employee_cash_advance_payments').update({ deleted_at: now }).eq('cash_advance_id', id).is('deleted_at', null)
-    if (payErr) return { ok: false, error: payErr.message }
-    const { error } = await supabase.from('employee_cash_advances').update({ deleted_at: now }).eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
-
-  const listAdvancePayments = useCallback(async (advanceId) => {
-    const { data, error } = await supabase.from('employee_cash_advance_payments')
-      .select('*').eq('cash_advance_id', advanceId).is('deleted_at', null)
-      .order('payment_date', { ascending: false }).order('created_at', { ascending: false })
-    if (error) return { ok: false, error: error.message, data: [] }
-    return { ok: true, data: data || [] }
-  }, [])
-
-  const editAdvancePayment = useCallback(async (id, { amount, method, note, date }) => {
-    const amt = Math.round(Number(amount) || 0)
-    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const patch = {
-      amount: amt, payment_method: method === 'transfer' ? 'transfer' : 'cash',
-      notes: note || '', updated_at: new Date().toISOString(),
-    }
-    if (date) patch.payment_date = date
-    const { error } = await supabase.from('employee_cash_advance_payments').update(patch).eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
-
-  const deleteAdvancePayment = useCallback(async (id) => {
-    const { error } = await supabase.from('employee_cash_advance_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
-
   return {
     busy, PAGE_SIZE, todayISO, monthStartISO,
     getSummary, getDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
@@ -747,7 +652,5 @@ export function useAccounting() {
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
-    listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance,
-    deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
   }
 }
