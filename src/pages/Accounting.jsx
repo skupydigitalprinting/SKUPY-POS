@@ -392,9 +392,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         // TEMPO → wajib jatuh tempo; sisa masuk Hutang Supplier, DP jadi uang keluar.
         if (!purForm.dueDate) { setSaving(false); return toast.error('Isi tanggal jatuh tempo untuk pembelian tempo') }
         const dp = Math.min(parseCurrency(purForm.paid), total)
-        const r = await acc.addSupplierDebt({ supplier: purForm.supplier, item: purForm.item, total, dueDate: purForm.dueDate, method: purForm.dpMethod, note: purForm.note })
+        const r = await acc.addSupplierDebt({ supplier: purForm.supplier, item: purForm.item, total, dueDate: purForm.dueDate, method: purForm.dpMethod, note: purForm.note, date: purForm.date })
         if (!r.ok) { toast.error(r.error); setSaving(false); return }
-        if (dp > 0 && r.id) { const rp = await acc.paySupplierDebt(r.id, dp, purForm.dpMethod, currentUser?.id, 'DP pembelian'); if (!rp.ok) toast.error(rp.error) }
+        if (dp > 0 && r.id) { const rp = await acc.paySupplierDebt(r.id, dp, purForm.dpMethod, currentUser?.id, 'DP pembelian', purForm.date); if (!rp.ok) toast.error(rp.error) }
         toast.success('Pembelian tempo → Hutang Supplier')
       } else {
         // CASH/TRANSFER/QRIS → lunas, langsung uang keluar
@@ -874,7 +874,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           <div className="space-y-2">{supDebts.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada</p>}
             {supDebts.map(x => {
               const rem = Math.max(0, Math.round(x.total || 0) - Math.round(x.paid || 0))
-              const overdue = x.due_date && new Date(x.due_date) < new Date() && rem > 0
+              // Bandingkan per-TANGGAL lokal: due_date 'YYYY-MM-DD' di-parse JS
+              // sebagai UTC 00:00 (= 07:00 WIB), jadi pakai string compare
+              // supaya hutang yang jatuh tempo HARI INI belum dicap lewat.
+              const todayLocal = new Date().toLocaleDateString('en-CA')
+              const overdue = x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0
               const status = rem <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
               const stColor = rem <= 0 ? '#10d98a' : overdue ? '#fb923c' : '#f59e0b'
               return (
@@ -888,14 +892,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                     <div className="text-right"><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold" style={{ color: rem > 0 ? '#ef4444' : '#10d98a' }}>{fmt(rem)}</div></div>
                     {rem > 0 && <button onClick={() => { setPayId(payId === x.id ? null : x.id); setPayVal(String(rem)); setPayMethod('transfer'); setPayNote('') }} className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
                     <button onClick={() => setEditDebt({ id: x.id, supplier: x.supplier || '', item: x.item || '', total: String(Math.round(x.total || 0)), dueDate: x.due_date || '', note: x.note || '', method: x.payment_method || 'transfer' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
-                    <button onClick={() => openHistory('supplier', { id: x.id, title: `${x.supplier} · ${x.item}` })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat"><BookOpen size={11} /></button>
+                    <button onClick={() => openHistory('supplier', { id: x.id, title: `${x.supplier} · ${x.item}`, total: x.total, paid: x.paid })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat"><BookOpen size={11} /></button>
                     <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteSupplierDebt(x.id); if (r.ok) { toast.success('Dihapus'); loadSupDebts(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
                   </div>
                   {payId === x.id && <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
                     <MoneyInput value={payVal} onChange={setPayVal} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
                     <select value={payMethod} onChange={e => setPayMethod(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
                     <input value={payNote} onChange={e => setPayNote(e.target.value)} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-                    <Button variant="success" size="sm" onClick={async () => { const amt = parseCurrency(payVal); if (!(amt > 0)) return toast.error('Nominal > 0'); const r = await acc.paySupplierDebt(x.id, Math.min(amt, rem), payMethod, currentUser?.id, payNote); if (r.ok) { toast.success('Dibayar'); setPayId(null); loadSupDebts(); loadDashboard() } else toast.error(r.error) }}>Konfirmasi</Button>
+                    <Button variant="success" size="sm" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(payVal); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.paySupplierDebt(x.id, Math.min(amt, rem), payMethod, currentUser?.id, payNote); setSaving(false); if (r.ok) { toast.success('Dibayar'); setPayId(null); loadSupDebts(); loadDashboard() } else toast.error(r.error) }}>Konfirmasi</Button>
                   </div>}
                 </div>
               )
@@ -1376,9 +1380,17 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                       </td>
                       <td className="px-2 py-2 text-right whitespace-nowrap">
                         <button onClick={async () => {
+                          const amt = parseCurrency(hEdit.amount)
+                          if (!(amt > 0)) return toast.error('Nominal harus lebih dari 0')
+                          // Cegah overpay: nominal baru tidak boleh membuat total
+                          // pembayaran melebihi total hutang supplier.
+                          if (!isBank && history.ctx?.total != null) {
+                            const maxAmt = Math.max(0, Math.round(history.ctx.total) - (Math.round(history.ctx.paid || 0) - Math.round(p.amount || 0)))
+                            if (amt > maxAmt) return toast.error(`Maksimal ${fmt(maxAmt)} — melebihi sisa hutang`)
+                          }
                           const r = isBank
-                            ? await acc.editBankPayment(p.id, { amount: parseCurrency(hEdit.amount), method: hEdit.method, note: hEdit.note })
-                            : await acc.editSupplierPayment(p.id, { amount: parseCurrency(hEdit.amount), method: hEdit.method, note: hEdit.note })
+                            ? await acc.editBankPayment(p.id, { amount: amt, method: hEdit.method, note: hEdit.note })
+                            : await acc.editSupplierPayment(p.id, { amount: amt, method: hEdit.method, note: hEdit.note })
                           if (r.ok) { toast.success('Diperbarui'); setHEdit(null); reloadHistory() } else toast.error(r.error)
                         }} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Check size={11} /></button>
                         <button onClick={() => setHEdit(null)} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}><X size={11} /></button>

@@ -219,14 +219,19 @@ export function useAccounting() {
   }, [])
 
   // Mengembalikan id supplier_debt yang dibuat (untuk langsung input DP).
+  // p.date (YYYY-MM-DD, opsional) → created_at, supaya pembelian tempo yang
+  // di-backdate tercatat di tanggal pembelian (bukan now()). Jam 12 siang
+  // lokal dipakai agar ::date di trigger tidak mundur sehari karena UTC.
   const addSupplierDebt = useCallback(async (p) => {
     const total = Math.round(Number(p.total) || 0)
-    const { data, error } = await supabase.from('supplier_debts').insert({
+    const row = {
       supplier: p.supplier || '', item: p.item || '',
       total, paid: 0, remaining: total,
       due_date: p.dueDate || null, note: p.note || '',
       payment_method: p.method || 'transfer',
-    }).select('id').single()
+    }
+    if (p.date) row.created_at = new Date(`${p.date}T12:00:00`).toISOString()
+    const { data, error } = await supabase.from('supplier_debts').insert(row).select('id').single()
     return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
   }, [])
 
@@ -239,22 +244,32 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
-  const paySupplierDebt = useCallback(async (debtId, amount, method, cashierId, note) => {
+  const paySupplierDebt = useCallback(async (debtId, amount, method, cashierId, note, paidAt) => {
     const amt = Math.round(Number(amount) || 0)
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const { error } = await supabase.from('supplier_debt_payments').insert({
+    const row = {
       supplier_debt_id: debtId, amount: amt, method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
-    })
+    }
+    // paidAt (YYYY-MM-DD, opsional) → paid_at, untuk DP pembelian backdate.
+    if (paidAt) row.paid_at = new Date(`${paidAt}T12:00:00`).toISOString()
+    const { error } = await supabase.from('supplier_debt_payments').insert(row)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
-  // Soft delete supplier debt
+  // Soft delete supplier debt — ATOMIK via RPC (1 transaksi DB).
+  // Fallback dua langkah hanya kalau DB belum menjalankan migrasi
+  // 2026_06_supplier_debt_fixes.sql.
   const deleteSupplierDebt = useCallback(async (id) => {
+    const { error: rpcErr } = await supabase.rpc('acc_delete_supplier_debt', { p_id: id })
+    if (!rpcErr) return { ok: true }
+    const msg = String(rpcErr.message || '')
+    if (!/could not find the function|does not exist|schema cache/i.test(msg)) {
+      return { ok: false, error: msg }
+    }
+    // Fallback (tidak atomik): cek error langkah pertama sebelum lanjut.
     const now = new Date().toISOString()
-    // Soft delete hutang + CASCADE soft delete semua pembayarannya → trigger
-    // pembayaran membuang jurnal/cash movement masing-masing, sehingga Uang
-    // Keluar, Arus Kas Bersih, dan Laba Bersih ikut sinkron.
-    await supabase.from('supplier_debt_payments').update({ deleted_at: now }).eq('supplier_debt_id', id).is('deleted_at', null)
+    const { error: payErr } = await supabase.from('supplier_debt_payments').update({ deleted_at: now }).eq('supplier_debt_id', id).is('deleted_at', null)
+    if (payErr) return { ok: false, error: payErr.message }
     const { error } = await supabase.from('supplier_debts').update({ deleted_at: now }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
@@ -267,8 +282,10 @@ export function useAccounting() {
     return { ok: true, data: data || [] }
   }, [])
   const editSupplierPayment = useCallback(async (id, { amount, method, note }) => {
+    const amt = Math.round(Number(amount) || 0)
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const { error } = await supabase.from('supplier_debt_payments').update({
-      amount: Math.round(Number(amount) || 0), method: method || 'transfer', note: note || '', updated_at: new Date().toISOString(),
+      amount: amt, method: method || 'transfer', note: note || '', updated_at: new Date().toISOString(),
     }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])

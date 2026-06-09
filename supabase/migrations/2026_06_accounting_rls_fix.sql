@@ -119,60 +119,14 @@ EXCEPTION WHEN OTHERS THEN
   RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
 END; $$;
 
--- Supplier debt (BEFORE trigger): tetap return NEW agar baris tersimpan.
-CREATE OR REPLACE FUNCTION public.acc_fn_post_supplier_debt()
-RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_total numeric;
-BEGIN
-  IF (TG_OP='DELETE') THEN
-    DELETE FROM public.accounting_entries WHERE source_type='supplier_debt' AND source_id=OLD.id;
-    RETURN OLD;
-  END IF;
-  NEW.remaining := greatest(0, round(coalesce(NEW.total,0)) - round(coalesce(NEW.paid,0)));
-  NEW.status := CASE WHEN NEW.remaining <= 0 THEN 'lunas' ELSE 'aktif' END;
-  BEGIN
-    DELETE FROM public.accounting_entries WHERE source_type='supplier_debt' AND source_id=NEW.id;
-    v_total := round(coalesce(NEW.total,0));
-    IF v_total > 0 THEN
-      INSERT INTO public.accounting_entries(entry_date,source_type,source_id,account_code,debit,credit,description)
-      VALUES (coalesce(NEW.created_at::date, now()::date),'supplier_debt',NEW.id,'1300',v_total,0,'Pembelian kredit '||coalesce(NEW.supplier,''));
-      INSERT INTO public.accounting_entries(entry_date,source_type,source_id,account_code,debit,credit,description)
-      VALUES (coalesce(NEW.created_at::date, now()::date),'supplier_debt',NEW.id,'2000',0,v_total,'Hutang ke '||coalesce(NEW.supplier,''));
-    END IF;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'acc_fn_post_supplier_debt jurnal dilewati: %', SQLERRM;
-  END;
-  RETURN NEW;
-END; $$;
-
-CREATE OR REPLACE FUNCTION public.acc_fn_post_supplier_payment()
-RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_amt numeric; v_cash text;
-BEGIN
-  IF (TG_OP='DELETE') THEN
-    DELETE FROM public.accounting_entries WHERE source_type='supplier_payment' AND source_id=OLD.id;
-    DELETE FROM public.cash_movements     WHERE source_type='supplier_payment' AND source_id=OLD.id;
-    UPDATE public.supplier_debts SET paid = greatest(0, round(paid) - round(OLD.amount)) WHERE id = OLD.supplier_debt_id;
-    RETURN OLD;
-  END IF;
-  DELETE FROM public.accounting_entries WHERE source_type='supplier_payment' AND source_id=NEW.id;
-  DELETE FROM public.cash_movements     WHERE source_type='supplier_payment' AND source_id=NEW.id;
-  v_amt := round(coalesce(NEW.amount,0));
-  v_cash := public.acc_cash_code(NEW.method);
-  IF v_amt > 0 THEN
-    INSERT INTO public.accounting_entries(entry_date,source_type,source_id,account_code,debit,credit,description,cashier_id)
-    VALUES (NEW.paid_at::date,'supplier_payment',NEW.id,'2000',v_amt,0,'Bayar hutang supplier',NEW.cashier_id);
-    INSERT INTO public.accounting_entries(entry_date,source_type,source_id,account_code,debit,credit,description,cashier_id)
-    VALUES (NEW.paid_at::date,'supplier_payment',NEW.id,v_cash,0,v_amt,'Kas/Bank keluar (hutang supplier)',NEW.cashier_id);
-    INSERT INTO public.cash_movements(moved_at,direction,method,amount,source_type,source_id,note,cashier_id)
-    VALUES (NEW.paid_at,'out',coalesce(NEW.method,'cash'),v_amt,'supplier_payment',NEW.id,'Bayar hutang supplier',NEW.cashier_id);
-    UPDATE public.supplier_debts SET paid = round(coalesce(paid,0)) + v_amt WHERE id = NEW.supplier_debt_id;
-  END IF;
-  RETURN NEW;
-EXCEPTION WHEN OTHERS THEN
-  RAISE WARNING 'acc_fn_post_supplier_payment dilewati: %', SQLERRM;
-  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
-END; $$;
+-- Supplier debt & supplier payment:
+-- DEFINISI FUNGSI LAMA DIHAPUS DARI FILE INI (sebelumnya logika increment
+-- `paid = paid + amount` tanpa cek deleted_at). Kalau file ini dijalankan
+-- ulang SETELAH 2026_06_accounting_history_softdelete.sql, fungsi lama
+-- menimpa versi baru sementara trigger tetap menyala di UPDATE → edit /
+-- soft-delete pembayaran membuat `paid` dobel dan jurnal ganda.
+-- Versi final fungsi + trigger ada di 2026_06_supplier_debt_fixes.sql —
+-- jalankan file itu PALING AKHIR.
 
 -- ───────────────── (C) GRANT privilege tabel + RPC ─────────────────
 GRANT USAGE ON SCHEMA public TO anon, authenticated;
