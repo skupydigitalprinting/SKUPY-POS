@@ -3,7 +3,7 @@ import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
-  HandCoins,
+  HandCoins, CreditCard, MoreHorizontal, Settings, Database,
 } from 'lucide-react'
 import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit } from '../utils/helpers'
 import { Button } from '../components/ui'
@@ -23,7 +23,54 @@ const TABS = [
   { id: 'kasbon', label: 'Kasbon Karyawan', icon: HandCoins },
   { id: 'aset', label: 'Aset', icon: Landmark },
   { id: 'sewa', label: 'Sewa Toko', icon: Home },
+  { id: 'migrasi', label: 'Migrasi Data', icon: Database },
+  { id: 'pengaturan', label: 'Pengaturan Accounting', icon: Settings },
 ]
+const TAB_META = Object.fromEntries(TABS.map(t => [t.id, t]))
+// ── Struktur navigasi ringkas (desktop muat 1 baris) ──
+// Tab utama langsung + grup dropdown "Hutang" & "More".
+const NAV_HUTANG = ['hsupplier', 'hbank', 'kasbon']
+const NAV_MORE = ['supplier', 'sewa', 'migrasi', 'pengaturan']
+
+// Tombol tab compact (padding/font kecil, icon tetap, aktif = ungu).
+function TabButton({ id, tab, setTab }) {
+  const m = TAB_META[id]; if (!m) return null
+  const Icon = m.icon; const active = tab === id
+  return (
+    <button onClick={() => setTab(id)} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap"
+      style={{ background: active ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: active ? '#fff' : 'var(--text-secondary)', border: `1px solid ${active ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>
+      {Icon && <Icon size={12} />} {m.label}
+    </button>
+  )
+}
+
+// Dropdown grup tab (Hutang / More). Aktif jika salah satu anaknya terpilih.
+function TabDropdown({ label, icon: Icon, items, tab, setTab }) {
+  const [open, setOpen] = useState(false)
+  const active = items.includes(tab)
+  const shown = active ? (TAB_META[tab]?.label || label) : label
+  return (
+    <div className="relative flex-shrink-0">
+      <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap"
+        style={{ background: active ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: active ? '#fff' : 'var(--text-secondary)', border: `1px solid ${active ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>
+        {Icon && <Icon size={12} />} {shown} <ChevronDown size={12} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0" style={{ zIndex: 40 }} onClick={() => setOpen(false)} />
+          <div className="absolute left-0 mt-1 rounded-xl py-1" style={{ zIndex: 50, minWidth: 200, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+            {items.map(id => { const m = TAB_META[id]; if (!m) return null; const A = m.icon; const sel = tab === id; return (
+              <button key={id} onClick={() => { setTab(id); setOpen(false) }} className="w-full text-left px-3 py-2 text-xs font-semibold flex items-center gap-2"
+                style={{ color: sel ? 'var(--accent-light)' : 'var(--text-primary)', background: sel ? 'rgba(139,92,246,0.12)' : 'transparent' }}>
+                {A && <A size={13} />} {m.label}
+              </button>
+            )})}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 const DEP_METHODS = [{ id: 'percentage', label: 'Persentase per Tahun' }, { id: 'straight', label: 'Garis Lurus' }, { id: 'none', label: 'Tanpa Penyusutan' }]
 const DEFAULT_ASSET_CATEGORIES = ['Mesin Produksi', 'Komputer & Elektronik', 'Kendaraan', 'Peralatan Toko', 'Furniture', 'Renovasi', 'Software', 'Lainnya']
 const ASSET_STATUS = { active: { label: 'Aktif', color: '#10d98a' }, depleted: { label: 'Habis Nilai', color: '#94a3b8' }, sold: { label: 'Dijual', color: '#3b82f6' }, broken: { label: 'Rusak', color: '#ef4444' }, deleted: { label: 'Dihapus', color: '#64748b' } }
@@ -343,6 +390,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
       else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
       else if (tab === 'sewa') await loadRents()
+      else if (tab === 'migrasi') await loadDashboard()
+      else if (tab === 'pengaturan') await loadExpCats()
       setLoading(false)
     }
     run()
@@ -630,14 +679,78 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
   return (
     <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={right}>
-      <div className="flex gap-1.5 mb-4 overflow-x-auto pb-1 acc-tabscroll" style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
-        {TABS.map(t => { const Icon = t.icon; const a = tab === t.id; return (
-          <button key={t.id} onClick={() => setTab(t.id)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap"
-            style={{ background: a ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: a ? '#fff' : 'var(--text-secondary)', border: `1px solid ${a ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}><Icon size={12} /> {t.label}</button>
-        )})}
+      {/* Desktop: tab utama + grup dropdown (Hutang / More), muat 1 baris, tanpa scroll */}
+      <div className="hidden md:flex items-center gap-1 mb-4 flex-wrap">
+        <TabButton id="ringkasan" tab={tab} setTab={setTab} />
+        <TabButton id="jurnal" tab={tab} setTab={setTab} />
+        <TabButton id="pengeluaran" tab={tab} setTab={setTab} />
+        <TabButton id="pembelian" tab={tab} setTab={setTab} />
+        <TabDropdown label="Hutang" icon={CreditCard} items={NAV_HUTANG} tab={tab} setTab={setTab} />
+        <TabButton id="aset" tab={tab} setTab={setTab} />
+        <TabDropdown label="More" icon={MoreHorizontal} items={NAV_MORE} tab={tab} setTab={setTab} />
+      </div>
+
+      {/* iPhone / mobile: dropdown select, tidak perlu scroll panjang */}
+      <div className="md:hidden mb-4">
+        <label className="block text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Pilih Menu Accounting</label>
+        <div className="relative">
+          <select value={tab} onChange={e => setTab(e.target.value)}
+            className="w-full appearance-none px-3.5 py-3 rounded-xl text-sm font-bold"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1.5px solid var(--accent)', fontFamily: 'Syne', boxShadow: '0 0 0 3px rgba(139,92,246,0.12)' }}>
+            <optgroup label="Utama">
+              {['ringkasan', 'jurnal', 'pengeluaran', 'pembelian', 'aset'].map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
+            </optgroup>
+            <optgroup label="Hutang">
+              {NAV_HUTANG.map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
+            </optgroup>
+            <optgroup label="Lainnya">
+              {NAV_MORE.map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
+            </optgroup>
+          </select>
+          <ChevronDown size={18} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--accent-light)', pointerEvents: 'none' }} />
+        </div>
       </div>
 
       {loading && <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>}
+
+      {/* ── MIGRASI DATA ── */}
+      {tab === 'migrasi' && !loading && (
+        <div className="space-y-4">
+          <FormCard icon={Database} title="Migrasi & Sinkronisasi Data" subtitle="Hitung ulang seluruh jurnal & saldo accounting, lalu ekspor data bila perlu.">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button variant="primary" className="flex-1" disabled={syncing} onClick={doSync}>{syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sinkronkan Sekarang</Button>
+              <Button variant="secondary" className="flex-1" disabled={exporting} onClick={exportExcel}>{exporting ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Export Excel</Button>
+            </div>
+            <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
+              <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Urutan Migrasi Database (Supabase → SQL Editor)</div>
+              <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master.</p>
+            </div>
+          </FormCard>
+        </div>
+      )}
+
+      {/* ── PENGATURAN ACCOUNTING ── */}
+      {tab === 'pengaturan' && !loading && (
+        <div className="space-y-4">
+          <FormCard icon={Settings} title="Pengaturan Accounting" subtitle="Atur kategori pengeluaran & pintasan pengelolaan modul accounting.">
+            {canManageCat ? (
+              <Button variant="secondary" className="w-full" onClick={() => { setCatMgr(true); setCatNew(''); setCatEdit(null); setCatSearch('') }}><Receipt size={14} /> Kelola Kategori Pengeluaran</Button>
+            ) : (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Pengelolaan kategori hanya untuk Owner / Staff Admin.</p>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Button variant="secondary" className="w-full" onClick={() => setTab('migrasi')}><Database size={14} /> Migrasi Data</Button>
+              <Button variant="secondary" className="w-full" disabled={syncing} onClick={doSync}>{syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sinkronkan</Button>
+            </div>
+            <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Periode Laporan</div><div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{dt(from)} — {dt(to)}</div></div>
+                <div><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Peran Anda</div><div className="font-semibold" style={{ color: 'var(--accent-light)' }}>{isOwner ? 'Owner' : (currentUser?.role === 'admin' ? 'Staff Admin' : 'Staff')}</div></div>
+              </div>
+            </div>
+          </FormCard>
+        </div>
+      )}
 
       {/* ── RINGKASAN ── */}
       {tab === 'ringkasan' && !loading && d && (
