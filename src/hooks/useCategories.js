@@ -1,15 +1,15 @@
 // ─────────────────────────────────────────────────────────────
-// useCategories — kategori produk yang bisa diedit user (CRUD).
+// useCategories — kategori produk (CRUD). SUMBER UTAMA: tabel Supabase
+// `product_categories`. localStorage hanya CACHE OFFLINE supaya UI tidak
+// kosong sebelum DB merespons. Pola: optimistic update (UI langsung berubah)
+// + tulis ke DB di background → realtime dalam sesi, persisten lintas device.
 //
-// Disimpan di localStorage (key: skupy_categories_v1) supaya tetap ada
-// setelah refresh, tanpa perlu mengubah skema database.
-//
-// Memakai useSyncExternalStore agar SEMUA komponen (Produk, Kasir,
-// Dashboard) ikut ter-update otomatis saat kategori berubah — tidak
-// perlu reload halaman.
+// Memakai useSyncExternalStore agar SEMUA komponen (Produk, Kasir, Dashboard)
+// ikut ter-update otomatis saat kategori berubah — tanpa reload halaman.
 // ─────────────────────────────────────────────────────────────
-import { useSyncExternalStore } from 'react'
+import { useSyncExternalStore, useEffect } from 'react'
 import { PRODUCT_CATEGORIES } from '../data/dummyData'
+import { supabase, isSupabaseConfigured } from '../lib/supabase'
 
 const KEY = 'skupy_categories_v1'
 
@@ -38,23 +38,49 @@ function load() {
 }
 
 let cats = load()
+// Map id→label dari SEMUA kategori (termasuk yang sudah dihapus) supaya produk
+// lama tetap menampilkan nama kategori terakhir walau kategori dihapus.
+let labelById = Object.fromEntries(cats.map((c) => [c.id, c.label]))
 const listeners = new Set()
 
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify(cats)) } catch { /* ignore */ }
 }
-
 function emit() {
   persist()
   listeners.forEach((l) => l())
 }
-
 function subscribe(cb) {
   listeners.add(cb)
   return () => listeners.delete(cb)
 }
-
 function getSnapshot() { return cats }
+function setCats(next) {
+  cats = next
+  // gabungkan (jangan buang label lama) → label kategori terhapus tetap dikenal
+  labelById = { ...labelById, ...Object.fromEntries(next.map((c) => [c.id, c.label])) }
+  emit()
+}
+
+// ── DB sebagai sumber utama ──
+let dbLoaded = false
+async function loadFromDB() {
+  if (!isSupabaseConfigured) return
+  try {
+    const { data, error } = await supabase
+      .from('product_categories').select('*')
+      .order('sort_order', { ascending: true }).order('label', { ascending: true })
+    if (error || !Array.isArray(data)) return
+    // label map dari SEMUA baris (termasuk deleted) → produk lama tetap ada nama
+    labelById = { ...labelById, ...Object.fromEntries(data.map((c) => [c.id, c.label])) }
+    const active = data.filter((c) => !c.deleted_at).map((c) => ({ id: c.id, label: c.label, icon: c.icon || '📦' }))
+    dbLoaded = true
+    if (active.length) { cats = active; emit() }
+  } catch { /* offline → tetap pakai cache localStorage */ }
+}
+// muat sekali saat modul dievaluasi (app start)
+loadFromDB()
+export function refreshCategories() { return loadFromDB() }
 
 function slugify(s) {
   return (
@@ -71,13 +97,19 @@ export function addCategory({ label, icon }) {
     return { ok: false, error: 'Kategori dengan nama itu sudah ada' }
   }
   let id = slugify(name)
-  if (cats.some((c) => c.id === id)) {
+  if (cats.some((c) => c.id === id) || labelById[id]) {
     let n = 2
-    while (cats.some((c) => c.id === `${id}-${n}`)) n++
+    while (cats.some((c) => c.id === `${id}-${n}`) || labelById[`${id}-${n}`]) n++
     id = `${id}-${n}`
   }
-  cats = [...cats, { id, label: name, icon: (icon || '').trim() || '📦' }]
-  emit()
+  const icn = (icon || '').trim() || '📦'
+  setCats([...cats, { id, label: name, icon: icn }])
+  // tulis ke DB (background) — upsert + restore deleted_at=null bila id pernah dipakai
+  if (isSupabaseConfigured) {
+    supabase.from('product_categories')
+      .upsert({ id, label: name, icon: icn, sort_order: cats.length, deleted_at: null, updated_at: new Date().toISOString() })
+      .then(({ error }) => { if (error) console.warn('[categories] gagal simpan ke DB:', error.message) })
+  }
   return { ok: true, id }
 }
 
@@ -87,30 +119,42 @@ export function updateCategory(id, { label, icon }) {
   if (name && cats.some((c) => c.id !== id && c.label.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'Kategori dengan nama itu sudah ada' }
   }
-  cats = cats.map((c) =>
+  const next = cats.map((c) =>
     c.id === id
       ? { ...c, label: name || c.label, icon: icon != null ? (String(icon).trim() || c.icon) : c.icon }
       : c,
   )
-  emit()
+  setCats(next)
+  if (isSupabaseConfigured) {
+    const c = next.find((x) => x.id === id)
+    if (c) supabase.from('product_categories')
+      .upsert({ id, label: c.label, icon: c.icon, updated_at: new Date().toISOString() })
+      .then(({ error }) => { if (error) console.warn('[categories] gagal update di DB:', error.message) })
+  }
   return { ok: true }
 }
 
 export function deleteCategory(id) {
   if (cats.length <= 1) return { ok: false, error: 'Minimal harus ada 1 kategori' }
-  cats = cats.filter((c) => c.id !== id)
-  emit()
+  // hapus dari dropdown; labelById tetap menyimpan nama → produk lama aman
+  setCats(cats.filter((c) => c.id !== id))
+  if (isSupabaseConfigured) {
+    supabase.from('product_categories').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+      .then(({ error }) => { if (error) console.warn('[categories] gagal hapus di DB:', error.message) })
+  }
   return { ok: true }
 }
 
 // Getter biasa (untuk util non-React seperti excelExport).
 export function getCategories() { return cats }
 export function getCatLabel(id) {
-  return cats.find((c) => c.id === id)?.label || id || '-'
+  return labelById[id] || cats.find((c) => c.id === id)?.label || id || '-'
 }
 
-// Hook React — reaktif terhadap perubahan kategori.
+// Hook React — reaktif terhadap perubahan kategori. Sekali mount memicu
+// loadFromDB() untuk memastikan data DB tersinkron (mis. setelah login).
 export function useCategories() {
   const categories = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  useEffect(() => { if (!dbLoaded) loadFromDB() }, [])
   return { categories, addCategory, updateCategory, deleteCategory }
 }

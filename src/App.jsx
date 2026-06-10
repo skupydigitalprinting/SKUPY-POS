@@ -380,6 +380,7 @@ function AppShell() {
             updateStoreInfo={store.updateStoreInfo}
             updateLogo={store.updateLogo}
             addAdmin={store.addAdmin}
+            updateAdmin={store.updateAdmin}
             deleteAdmin={store.deleteAdmin}
             changePassword={store.changePassword}
             logout={() => { setSettingsOpen(false); store.logout() }}

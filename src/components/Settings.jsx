@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import {
   Store, Image, Users, Lock, LogOut, ImagePlus,
   CheckCircle2, AlertCircle, UserPlus, Trash2, Crown,
-  Eye, EyeOff, Loader2,
+  Eye, EyeOff, Loader2, Pencil, Check,
 } from 'lucide-react'
 import Modal from './Modal'
 import { Input, Button } from './ui'
@@ -37,7 +37,7 @@ export default function Settings({
   open, onClose,
   storeInfo, admins, currentUser, busy,
   updateStoreInfo, updateLogo,
-  addAdmin, deleteAdmin, changePassword, logout,
+  addAdmin, updateAdmin, deleteAdmin, changePassword, logout,
 }) {
   const confirm = useConfirm()
   const [tab, setTab] = useState('toko')
@@ -47,6 +47,38 @@ export default function Settings({
   const [addingAdmin, setAddingAdmin] = useState(false)
   const [changingPass, setChangingPass] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
+  // Edit Admin (Owner only)
+  const [editAdmin, setEditAdmin] = useState(null) // { id, username, name, role, password, confirm }
+  const [editShowPass, setEditShowPass] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editErr, setEditErr] = useState('')
+  const isOwnerUser = currentUser?.role === 'owner'
+
+  const saveEditAdmin = async () => {
+    if (!editAdmin || savingEdit) return
+    setEditErr('')
+    const u = (editAdmin.username || '').trim().toLowerCase()
+    if (!u) return setEditErr('Username wajib diisi')
+    if (/\s/.test(u)) return setEditErr('Username tidak boleh mengandung spasi')
+    if (admins.some(a => a.id !== editAdmin.id && (a.username || '').toLowerCase() === u)) return setEditErr('Username sudah dipakai admin lain')
+    const pass = (editAdmin.password || '').trim()
+    if (pass) {
+      if (pass.length < 4) return setEditErr('Password baru minimal 4 karakter')
+      if (pass !== (editAdmin.confirm || '')) return setEditErr('Konfirmasi password tidak cocok')
+    }
+    // Konfirmasi khusus saat mengganti password admin LAIN
+    if (pass && editAdmin.id !== currentUser?.id) {
+      if (!(await confirm({ title: 'Yakin ingin mengganti password admin ini?', message: `Password untuk @${u} akan diganti.`, confirmLabel: 'Ya, Ganti', danger: false }))) return
+    }
+    setSavingEdit(true)
+    const res = await updateAdmin(editAdmin.id, {
+      username: u, name: editAdmin.name, role: editAdmin.role,
+      ...(pass ? { password: pass } : {}),
+    })
+    setSavingEdit(false)
+    if (res.ok) { flash('success', 'Admin diperbarui'); setEditAdmin(null); setEditShowPass(false) }
+    else setEditErr(res.error || 'Gagal menyimpan')
+  }
 
   const [tokoForm, setTokoForm] = useState({
     name: '', tagline: '', address: '', phone: '',
@@ -169,6 +201,7 @@ export default function Settings({
   }
 
   return (
+    <>
     <Modal
       open={open}
       onClose={onClose}
@@ -381,11 +414,21 @@ export default function Settings({
                           @{a.username} · {roleLabel(a.role)}
                         </div>
                       </div>
+                      {isOwnerUser && (
+                        <button
+                          onClick={() => { setEditAdmin({ id: a.id, username: a.username || '', name: a.name || '', role: a.role || 'staff', password: '', confirm: '' }); setEditShowPass(false); setEditErr('') }}
+                          className="px-2.5 h-8 rounded-lg flex items-center gap-1 text-xs font-semibold btn-press flex-shrink-0"
+                          style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)', fontFamily: 'Syne' }}
+                          title="Edit Admin"
+                        >
+                          <Pencil size={12} /> <span className="hidden sm:inline">Edit</span>
+                        </button>
+                      )}
                       {!isMe && (
                         <button
                           onClick={() => handleDeleteAdmin(a.id)}
                           disabled={isDeleting}
-                          className="w-8 h-8 rounded-lg flex items-center justify-center btn-press disabled:opacity-60"
+                          className="w-8 h-8 rounded-lg flex items-center justify-center btn-press disabled:opacity-60 flex-shrink-0"
                           style={{
                             background: 'rgba(255,77,106,0.08)',
                             color: 'var(--red)',
@@ -497,5 +540,44 @@ export default function Settings({
         </div>
       </div>
     </Modal>
+
+    {/* ── EDIT ADMIN (Owner only) — di atas modal Settings ── */}
+    <Modal open={!!editAdmin} zIndex={1100} onClose={() => { setEditAdmin(null); setEditShowPass(false) }} title="Edit Admin" subtitle="Ubah username, nama, role, atau password admin." size="sm">
+      {editAdmin && (
+        <div className="space-y-3">
+          {editErr && <Banner kind="error">{editErr}</Banner>}
+          <Input label="Username" value={editAdmin.username}
+            onChange={e => setEditAdmin(p => ({ ...p, username: e.target.value.toLowerCase().replace(/\s+/g, '') }))}
+            placeholder="username" />
+          <Input label="Nama Lengkap" value={editAdmin.name}
+            onChange={e => setEditAdmin(p => ({ ...p, name: e.target.value }))}
+            placeholder="Nama tampilan" />
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Role</label>
+            <select value={editAdmin.role} onChange={e => setEditAdmin(p => ({ ...p, role: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl text-sm"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+              {ROLE_OPTIONS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </div>
+          <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Kosongkan jika tidak ingin mengganti password.</div>
+            <div className="relative mb-2">
+              <Input label="Password Baru" type={editShowPass ? 'text' : 'password'} value={editAdmin.password}
+                onChange={e => setEditAdmin(p => ({ ...p, password: e.target.value }))} placeholder="min 4 karakter" />
+              <button type="button" onClick={() => setEditShowPass(s => !s)} className="absolute right-3" style={{ top: 32, color: 'var(--text-muted)' }}>
+                {editShowPass ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+            <Input label="Konfirmasi Password Baru" type={editShowPass ? 'text' : 'password'} value={editAdmin.confirm}
+              onChange={e => setEditAdmin(p => ({ ...p, confirm: e.target.value }))} placeholder="ulangi password baru" />
+          </div>
+          <Button variant="primary" className="w-full" onClick={saveEditAdmin} disabled={savingEdit}>
+            {savingEdit ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {savingEdit ? 'Menyimpan...' : 'Simpan Perubahan'}
+          </Button>
+        </div>
+      )}
+    </Modal>
+    </>
   )
 }

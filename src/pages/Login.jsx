@@ -1,11 +1,12 @@
 import React, { useState } from 'react'
-import { LogIn, User, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { LogIn, User, Lock, Eye, EyeOff, AlertCircle, Check } from 'lucide-react'
 import Logo from '../components/Logo'
 
 export default function Login({ login, storeInfo, busy }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
+  const [remember, setRemember] = useState(true)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -15,7 +16,7 @@ export default function Login({ login, storeInfo, busy }) {
     setError('')
     setLoading(true)
     try {
-      const res = await login(username, password)
+      const res = await login(username, password, remember)
       if (!res.ok) setError(res.error || 'Login gagal')
     } catch (err) {
       setError(err.message || 'Terjadi kesalahan')
@@ -121,6 +122,27 @@ export default function Login({ login, storeInfo, busy }) {
                   {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
+            </div>
+
+            {/* Ingat saya / Tetap login */}
+            <div className="flex items-start gap-2 pt-0.5">
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={remember}
+                onClick={() => setRemember(v => !v)}
+                className="mt-0.5 w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 btn-press transition-all"
+                style={{
+                  background: remember ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)',
+                  border: `1px solid ${remember ? 'transparent' : 'var(--border)'}`,
+                }}
+              >
+                {remember && <Check size={13} style={{ color: '#fff' }} />}
+              </button>
+              <label onClick={() => setRemember(v => !v)} className="cursor-pointer select-none">
+                <div className="text-xs font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>Ingat saya / Tetap login</div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Jangan aktifkan di komputer umum.</div>
+              </label>
             </div>
 
             {error && (

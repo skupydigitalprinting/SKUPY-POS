@@ -1,24 +1,59 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
 
-// Session persistence — keep user logged in across browser refresh.
-// Uses localStorage to remember the admin id; on init, we re-fetch from
-// Supabase to validate the session is still valid (admin still exists).
+// Session persistence — "Ingat saya / Tetap login".
+//   • Ingat saya ON  → localStorage, berlaku 30 hari (auto-hapus bila lewat).
+//   • Ingat saya OFF → sessionStorage saja (hilang saat tab/browser ditutup).
+// HANYA menyimpan data non-sensitif: id, username, name, role, login_time.
+// TIDAK pernah menyimpan password / PIN / hash.
 const SESSION_KEY = 'skupy_session_v2'
+const REMEMBER_TTL = 30 * 24 * 60 * 60 * 1000 // 30 hari (ms)
+
+function safeUser(u) {
+  if (!u) return null
+  return { id: u.id, username: u.username, name: u.name, role: u.role, login_time: u.login_time || Date.now() }
+}
 
 function loadSession() {
   try {
-    const raw = localStorage.getItem(SESSION_KEY)
-    return raw ? JSON.parse(raw) : null
+    // 1) sessionStorage (login tanpa "ingat saya") — prioritas dalam tab aktif.
+    const rawS = sessionStorage.getItem(SESSION_KEY)
+    if (rawS) {
+      const s = JSON.parse(rawS)
+      return safeUser(s?.user || (s?.id ? s : null))
+    }
+    // 2) localStorage ("ingat saya") — cek masa berlaku 30 hari.
+    const rawL = localStorage.getItem(SESSION_KEY)
+    if (!rawL) return null
+    const s = JSON.parse(rawL)
+    if (s?.expires && Date.now() > s.expires) { localStorage.removeItem(SESSION_KEY); return null }
+    return safeUser(s?.user || (s?.id ? s : null)) // s.id → kompat format lama
   } catch { return null }
 }
 
-function saveSession(user) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify(user)) } catch {}
+function saveSession(user, remember) {
+  try {
+    const payload = { user: safeUser(user), remember: !!remember }
+    if (remember) {
+      payload.expires = Date.now() + REMEMBER_TTL
+      localStorage.setItem(SESSION_KEY, JSON.stringify(payload))
+      sessionStorage.removeItem(SESSION_KEY)
+    } else {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload))
+      localStorage.removeItem(SESSION_KEY)
+    }
+  } catch {}
 }
 
 function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY) } catch {}
+  try { localStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(SESSION_KEY) } catch {}
+}
+
+// Apakah sesi sekarang "ingat saya" (tersimpan di localStorage)? Dipakai saat
+// menyimpan ulang sesi (mis. user yang sedang login mengganti nama/username)
+// agar tetap memakai storage yang sama.
+function sessionRemembered() {
+  try { return !!localStorage.getItem(SESSION_KEY) } catch { return false }
 }
 
 // ---------- mappers ----------
@@ -359,16 +394,16 @@ export function useStore() {
   }, [])
 
   // ---------- AUTH ----------
-  const login = useCallback(async (username, password) => wrap(async () => {
+  const login = useCallback(async (username, password, remember = false) => wrap(async () => {
     const u = (username || '').trim().toLowerCase()
     if (!u || !password) return { ok: false, error: 'Username & password wajib diisi' }
     const { data, error: e } = await supabase
       .from('admins').select('*').eq('username', u).eq('password', password).maybeSingle()
     if (e) return { ok: false, error: e.message }
     if (!data) return { ok: false, error: 'Username atau password salah' }
-    const user = { id: data.id, username: data.username, name: data.name || data.username, role: data.role }
+    const user = { id: data.id, username: data.username, name: data.name || data.username, role: data.role, login_time: Date.now() }
     setCurrentUser(user)
-    saveSession(user)
+    saveSession(user, remember)   // remember=true → localStorage 30 hari; false → sessionStorage
     return { ok: true }
   }), [wrap])
 
@@ -421,6 +456,58 @@ export function useStore() {
     if (mounted.current) setAdmins(prev => [...prev, adminFromDB(inserted)])
     return { ok: true }
   }), [wrap])
+
+  // Edit admin (Owner only): username / nama / role / password (opsional).
+  // Guard: tidak boleh menurunkan/menghapus role Owner terakhir. Jika mengedit
+  // user yang sedang login, currentUser + session ikut diperbarui.
+  const updateAdmin = useCallback(async (id, fields = {}) => wrap(async () => {
+    if (currentUser?.role !== 'owner') return { ok: false, error: 'Hanya Owner yang bisa mengubah admin' }
+    const target = admins.find(a => a.id === id)
+    if (!target) return { ok: false, error: 'Admin tidak ditemukan' }
+
+    const patch = {}
+    if (fields.username !== undefined) {
+      const u = String(fields.username || '').trim().toLowerCase()
+      if (!u) return { ok: false, error: 'Username wajib diisi' }
+      if (/\s/.test(u)) return { ok: false, error: 'Username tidak boleh mengandung spasi' }
+      if (admins.some(a => a.id !== id && (a.username || '').toLowerCase() === u)) return { ok: false, error: 'Username sudah dipakai admin lain' }
+      patch.username = u
+    }
+    if (fields.name !== undefined) {
+      const nm = String(fields.name || '').trim()
+      if (nm) patch.name = nm
+    }
+    if (fields.role !== undefined && fields.role !== target.role) {
+      const owners = admins.filter(a => a.role === 'owner')
+      if (target.role === 'owner' && fields.role !== 'owner' && owners.length <= 1) {
+        return { ok: false, error: 'Tidak boleh menurunkan role Owner terakhir' }
+      }
+      patch.role = fields.role
+    }
+    if (fields.password) {
+      if (String(fields.password).length < 4) return { ok: false, error: 'Password baru minimal 4 karakter' }
+      patch.password = String(fields.password)
+    }
+    if (Object.keys(patch).length === 0) return { ok: true } // tidak ada perubahan
+
+    // coba dengan updated_at; bila kolom belum dimigrasi → ulangi tanpa updated_at
+    let { data: updated, error } = await supabase.from('admins').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+    if (error && /updated_at|column .* does not exist|schema cache/i.test(error.message || '')) {
+      ;({ data: updated, error } = await supabase.from('admins').update(patch).eq('id', id).select().single())
+    }
+    if (error) {
+      if (/duplicate/i.test(error.message)) return { ok: false, error: 'Username sudah dipakai' }
+      return { ok: false, error: error.message }
+    }
+    if (mounted.current) setAdmins(prev => prev.map(a => a.id === id ? adminFromDB(updated) : a))
+    // Jika mengedit diri sendiri yang sedang login → segarkan currentUser + session
+    if (currentUser?.id === id) {
+      const nu = { ...currentUser, username: updated.username, name: updated.name, role: updated.role }
+      setCurrentUser(nu)
+      saveSession(nu, sessionRemembered())
+    }
+    return { ok: true }
+  }), [admins, currentUser, wrap])
 
   const deleteAdmin = useCallback(async (id) => wrap(async () => {
     if (admins.length <= 1) return { ok: false, error: 'Minimal harus ada 1 admin' }
@@ -1481,7 +1568,7 @@ export function useStore() {
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
-    login, logout, addAdmin, deleteAdmin, changePassword,
+    login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword,
     addCustomer, updateCustomer, deleteCustomer,
     payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
     editDebtPayment, deleteDebtPayment,
