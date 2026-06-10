@@ -257,6 +257,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [detailPayRows, setDetailPayRows] = useState({}) // { [advanceId]: payments[] }
   const [groupPay, setGroupPay] = useState(null) // { key, name, sisa, amount, method, date, note }
   const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
+  const [editPay, setEditPay] = useState(null) // pembayaran kasbon yang sedang diedit { id, amount, method, date, note }
   // ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ──
   const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', customer: '', amount: '', method: 'cash', note: '' }
   const blankMigOut = { type: 'old_expense', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
@@ -1845,7 +1846,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       </Modal>
 
       {/* ── EDIT KASBON KARYAWAN ── */}
-      <Modal open={!!editAdv} onClose={() => setEditAdv(null)} title="Edit Kasbon Karyawan" size="sm">
+      <Modal open={!!editAdv} zIndex={1100} onClose={() => setEditAdv(null)} title="Edit Kasbon Karyawan" size="sm">
         {editAdv && (
           <div className="space-y-3">
             <Field icon={UsersIcon} label="Nama Karyawan" required><input value={editAdv.employeeName} onChange={e => setEditAdv(p => ({ ...p, employeeName: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
@@ -1868,8 +1869,28 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         )}
       </Modal>
 
+      {/* ── EDIT PEMBAYARAN KASBON (di atas modal detail, z lebih tinggi) ── */}
+      <Modal open={!!editPay} zIndex={1100} onClose={() => setEditPay(null)} title="Edit Pembayaran Kasbon" subtitle="Perubahan langsung menghitung ulang sudah bayar, sisa, status & dashboard." size="sm">
+        {editPay && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal Pembayaran" required><input type="date" value={editPay.date} onChange={e => setEditPay(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={TrendingDown} label="Nominal Pembayaran" required><MoneyInput value={editPay.amount} onChange={v => setEditPay(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Wallet} label="Metode Pembayaran"><select value={editPay.method} onChange={e => setEditPay(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select></Field>
+            <Field icon={Pencil} label="Catatan"><input value={editPay.note} onChange={e => setEditPay(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              if (saving) return
+              if (!(parseCurrency(editPay.amount) > 0)) return toast.error('Nominal harus lebih dari 0')
+              setSaving(true)
+              const r = await acc.editAdvancePayment(editPay.id, { amount: parseCurrency(editPay.amount), method: editPay.method, note: editPay.note, date: editPay.date })
+              setSaving(false)
+              if (r.ok) { toast.success('Pembayaran diperbarui'); setEditPay(null); if (detailEmp) refreshDetailEmp(detailEmp.key); else { loadAdvances(); loadDashboard() } } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
       {/* ── DETAIL KASBON PER KARYAWAN (rincian semua kasbon + riwayat bayar) ── */}
-      <Modal open={!!detailEmp} mobileFull onClose={() => { setDetailEmp(null); setDetailPayRows({}); setAdvPayInModal(null) }} title={detailEmp ? `Kasbon — ${detailEmp.name}` : ''} subtitle={detailEmp ? `${detailEmp.items.length} kasbon` : ''} size="lg">
+      <Modal open={!!detailEmp} mobileFull zIndex={1010} lockClose={!!editAdv || !!groupPay || !!editPay} onClose={() => { setDetailEmp(null); setDetailPayRows({}); setAdvPayInModal(null) }} title={detailEmp ? `Kasbon — ${detailEmp.name}` : ''} subtitle={detailEmp ? `${detailEmp.items.length} kasbon` : ''} size="lg">
         {detailEmp && (() => {
           const todayLocal = new Date().toLocaleDateString('en-CA')
           const sum = [['Total Kasbon', fmt(detailEmp.totalAmount), 'var(--text-primary)'], ['Sudah Bayar', fmt(detailEmp.totalPaid), '#10d98a'], ['Sisa', fmt(detailEmp.totalSisa), detailEmp.totalSisa > 0 ? '#ef4444' : '#10d98a'], ['Status', detailEmp.status, detailEmp.totalSisa <= 0 ? '#10d98a' : detailEmp.overdue ? '#fb923c' : '#f59e0b']]
@@ -1920,7 +1941,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                                 <span className="font-bold" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</span>
                                 <span className="uppercase text-[9px]" style={{ color: 'var(--text-muted)' }}>{p.payment_method}</span>
                                 {p.notes && <span className="truncate" style={{ color: 'var(--text-muted)' }}>· {p.notes}</span>}
-                                {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?', message: 'Pembayaran ini akan dibatalkan. Sisa kasbon & dashboard akan menyesuaikan.' }))) return; const r = await acc.deleteAdvancePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="ml-auto w-6 h-6 rounded inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus pembayaran"><Trash2 size={10} /></button>}
+                                <div className="ml-auto flex items-center gap-1 flex-shrink-0">
+                                  <button onClick={() => setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.payment_method === 'transfer' ? 'transfer' : 'cash', date: String(p.payment_date).slice(0, 10), note: p.notes || '' })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }} title="Edit pembayaran"><Pencil size={10} /></button>
+                                  {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus pembayaran kasbon ini?', message: 'Pembayaran dibatalkan (soft delete). Sisa kasbon naik kembali; uang masuk, arus kas, piutang karyawan & dashboard menyesuaikan.' }))) return; const r = await acc.deleteAdvancePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus pembayaran"><Trash2 size={10} /></button>}
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -1954,7 +1978,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       </Modal>
 
       {/* ── BAYAR KASBON FIFO (per kelompok karyawan) ── */}
-      <Modal open={!!groupPay} onClose={() => setGroupPay(null)} title={groupPay ? `Bayar Kasbon — ${groupPay.name}` : ''} subtitle="Pembayaran otomatis masuk ke kasbon paling lama dulu (FIFO)." size="sm">
+      <Modal open={!!groupPay} zIndex={1100} onClose={() => setGroupPay(null)} title={groupPay ? `Bayar Kasbon — ${groupPay.name}` : ''} subtitle="Pembayaran otomatis masuk ke kasbon paling lama dulu (FIFO)." size="sm">
         {groupPay && (() => {
           const amt = parseCurrency(groupPay.amount)
           // Pratinjau alokasi FIFO

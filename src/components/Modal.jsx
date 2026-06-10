@@ -1,20 +1,21 @@
 import React, { useEffect } from 'react'
 import { X } from 'lucide-react'
 
-export default function Modal({ open, onClose, title, subtitle, children, size = 'md', footer, mobileFull = false }) {
+export default function Modal({ open, onClose, title, subtitle, children, size = 'md', footer, mobileFull = false, zIndex = 50, lockClose = false }) {
   useEffect(() => {
     if (open) document.body.style.overflow = 'hidden'
     else document.body.style.overflow = ''
     return () => { document.body.style.overflow = '' }
   }, [open])
 
-  // Close on ESC
+  // Close on ESC — dinonaktifkan saat lockClose (mis. ada modal anak di atasnya),
+  // supaya ESC menutup modal teratas dulu, bukan modal di bawahnya.
   useEffect(() => {
-    if (!open) return
+    if (!open || lockClose) return
     const handler = (e) => { if (e.key === 'Escape') onClose?.() }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [open, onClose])
+  }, [open, onClose, lockClose])
 
   if (!open) return null
 
@@ -27,9 +28,9 @@ export default function Modal({ open, onClose, title, subtitle, children, size =
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center animate-fadeIn ${mobileFull ? 'p-0 sm:p-4' : 'p-3 sm:p-4'}`}
-      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      className={`fixed inset-0 flex items-center justify-center animate-fadeIn ${mobileFull ? 'p-0 sm:p-4' : 'p-3 sm:p-4'}`}
+      style={{ zIndex, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}
+      onClick={(e) => { if (lockClose) return; if (e.target === e.currentTarget) onClose() }}
     >
       <div
         className={`animate-scaleIn w-full relative ${mobileFull ? 'rounded-2xl max-sm:!rounded-none max-sm:!max-w-none max-sm:!max-h-full max-sm:!h-full' : 'rounded-2xl'}`}
