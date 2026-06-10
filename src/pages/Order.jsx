@@ -78,14 +78,6 @@ export default function Order({
   const [reassignNewId, setReassignNewId] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
   const canEditOrderCustomer = (t) => currentUser?.role === 'owner' || currentUser?.role === 'admin' || t?.cashierId === currentUser?.id
-  // Muat riwayat perubahan customer saat detail order dibuka.
-  useEffect(() => {
-    let alive = true
-    if (viewTrx?.invoiceNo && getOrderCustomerChanges) {
-      getOrderCustomerChanges(viewTrx.invoiceNo).then(rows => { if (alive) setOrderChanges(rows || []) })
-    } else setOrderChanges([])
-    return () => { alive = false }
-  }, [viewTrx, getOrderCustomerChanges])
   const submitReassignOrder = async () => {
     if (!reassignTrx || reassignBusy) return
     if (!reassignNewId) return
@@ -99,6 +91,14 @@ export default function Order({
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterWorkflow, setFilterWorkflow] = useState('all')
   const [viewTrx, setViewTrx] = useState(null)
+  // Muat riwayat perubahan customer saat detail order dibuka (setelah viewTrx ada).
+  useEffect(() => {
+    let alive = true
+    if (viewTrx?.invoiceNo && getOrderCustomerChanges) {
+      getOrderCustomerChanges(viewTrx.invoiceNo).then(rows => { if (alive) setOrderChanges(rows || []) })
+    } else setOrderChanges([])
+    return () => { alive = false }
+  }, [viewTrx, getOrderCustomerChanges])
   const [printTrx, setPrintTrx] = useState(null)
   const [payTrx, setPayTrx] = useState(null)
   const [payAmount, setPayAmount] = useState('')
