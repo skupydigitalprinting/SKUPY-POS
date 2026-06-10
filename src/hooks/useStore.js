@@ -119,6 +119,8 @@ const productFromDB = (r) => ({
   price: Number(r.price) || 0, modal: Number(r.modal) || 0, stock: Number(r.stock) || 0,
   unit: (r.unit || 'pcs').toLowerCase(),
   description: r.description || '', image: r.image || '',
+  isFavorite: !!r.is_favorite,
+  createdAt: r.created_at,
 })
 
 const productToDB = (p) => ({
@@ -126,6 +128,7 @@ const productToDB = (p) => ({
   price: Number(p.price) || 0, modal: Number(p.modal) || 0, stock: Number(p.stock) || 0,
   unit: (p.unit || 'pcs').toLowerCase(),
   description: p.description || '', image: p.image || '',
+  is_favorite: !!p.isFavorite,
 })
 
 const trxFromDB = (r) => ({
@@ -228,7 +231,19 @@ export function useStore() {
   const TRX_LIMIT = 500
   const DEBT_LIMIT = 500
   // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
+  // Tidak menyertakan is_favorite di sini supaya load awal TIDAK gagal bila
+  // migrasi belum dijalankan. Favorit di-merge terpisah (resilient) setelahnya.
   const PRODUCT_LIGHT_COLS = 'id,name,category,price,modal,stock,unit,description,created_at'
+  // Ambil flag favorit terpisah & gabungkan ke state produk. Aman bila kolom
+  // is_favorite belum ada (error diabaikan).
+  const mergeFavorites = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('products').select('id,is_favorite').limit(5000)
+      if (error || !Array.isArray(data)) return
+      const fav = new Map(data.map(r => [r.id, !!r.is_favorite]))
+      if (mounted.current) setProducts(prev => prev.map(p => fav.has(p.id) ? { ...p, isFavorite: fav.get(p.id) } : p))
+    } catch { /* kolom belum ada → abaikan */ }
+  }, [])
 
   // Ambil gambar produk di latar belakang & gabungkan ke state.
   // Best-effort: kalau gagal/timeout, gambar tetap pakai fallback.
@@ -277,6 +292,7 @@ export function useStore() {
         if (mounted.current) setCurrentUser(null)
       }
       setProducts((p.data || []).map(productFromDB))
+      mergeFavorites()  // gabungkan flag favorit (resilient, non-blocking)
       // Hydrate gambar di latar belakang — tidak memblok tampilan awal.
       hydrateProductImages()
       const trxList = (t.data || []).map(trxFromDB)
@@ -402,6 +418,7 @@ export function useStore() {
           .then(({ data }) => {
             if (mounted.current && data) {
               setProducts(data.map(productFromDB))
+              mergeFavorites()
               hydrateProductImages()
             }
           })
@@ -826,6 +843,11 @@ export function useStore() {
     const payload = productToDB(data)
     let { data: row, error: e } = await supabase
       .from('products').insert(payload).select().single()
+    // Fallback: DB belum punya kolom is_favorite (migrasi belum jalan).
+    if (e && isSchemaCacheError(e, 'is_favorite')) {
+      const retry = await supabase.from('products').insert(omit(payload, ['is_favorite'])).select().single()
+      row = retry.data; e = retry.error
+    }
     // Fallback: DB may be missing `unit` column (migration not yet run).
     if (e && isSchemaCacheError(e, 'unit')) {
       // eslint-disable-next-line no-console
@@ -843,6 +865,10 @@ export function useStore() {
     const payload = productToDB(data)
     let { data: row, error: e } = await supabase
       .from('products').update(payload).eq('id', id).select().single()
+    if (e && isSchemaCacheError(e, 'is_favorite')) {
+      const retry = await supabase.from('products').update(omit(payload, ['is_favorite'])).eq('id', id).select().single()
+      row = retry.data; e = retry.error
+    }
     if (e && isSchemaCacheError(e, 'unit')) {
       // eslint-disable-next-line no-console
       console.warn('[Skupy POS] DB belum punya kolom products.unit — produk akan disimpan tanpa unit. Jalankan migrasi supabase/migrations/2026_06_add_unit_to_products.sql.')
@@ -859,6 +885,24 @@ export function useStore() {
     const { error: e } = await supabase.from('products').delete().eq('id', id)
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setProducts(prev => prev.filter(p => p.id !== id))
+    return { ok: true }
+  }), [wrap])
+
+  // Tandai / batalkan favorit produk (optimistic + realtime). Hanya mengubah
+  // is_favorite — tidak menyentuh harga/modal/kategori.
+  const setProductFavorite = useCallback(async (id, value) => wrap(async () => {
+    const fav = !!value
+    if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? { ...p, isFavorite: fav } : p))
+    const { error } = await supabase.from('products').update({ is_favorite: fav }).eq('id', id)
+    if (error && isSchemaCacheError(error, 'is_favorite')) {
+      // rollback optimistic
+      if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? { ...p, isFavorite: !fav } : p))
+      return { ok: false, error: 'Kolom favorit belum ada. Jalankan migrasi products_is_favorite.sql.' }
+    }
+    if (error) {
+      if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? { ...p, isFavorite: !fav } : p))
+      return { ok: false, error: error.message }
+    }
     return { ok: true }
   }), [wrap])
 
@@ -1783,7 +1827,7 @@ export function useStore() {
     admins, currentUser, customers, debts, debtPayments,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
-    addProduct, updateProduct, deleteProduct,
+    addProduct, updateProduct, deleteProduct, setProductFavorite,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
     updateOrderStatus,
     updateStoreInfo, updateLogo,

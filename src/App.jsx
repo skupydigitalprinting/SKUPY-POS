@@ -268,6 +268,8 @@ function AppShell() {
       customers={scopedCustomers}
       addTransaction={store.addTransaction}
       storeInfo={store.storeInfo}
+      currentUser={store.currentUser}
+      setProductFavorite={store.setProductFavorite}
       busy={store.busy}
     />,
     produk: <Produk

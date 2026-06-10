@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import {
   Search, ShoppingCart, Plus, Minus, Trash2, Tag, Receipt, Printer,
-  CheckCircle2, X, Package, User, Calendar,
+  CheckCircle2, X, Package, User, Calendar, Star,
 } from 'lucide-react'
 import { PAYMENT_METHODS } from '../data/dummyData'
 import {
@@ -129,11 +129,13 @@ function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
   )
 }
 
-export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy }) {
+export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy, currentUser, setProductFavorite }) {
   const { categories } = useCategories()
   const categoryFilters = [ALL_CATEGORY, ...categories]
+  const canEditFav = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
+  const [favOnly, setFavOnly] = useState(false)
   const [cart, setCart] = useState([])
   // Discount stored as STRING so the input can be truly empty when 0.
   // All math coerces via Number(discount || 0).
@@ -156,12 +158,20 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const [customerSearch, setCustomerSearch] = useState('')
 
   const filtered = useMemo(() => {
-    return products.filter((p) => {
+    const list = products.filter((p) => {
       const matchCat = category === 'all' || p.category === category
       const matchSearch = p.name.toLowerCase().includes(search.toLowerCase())
-      return matchCat && matchSearch
+      const matchFav = !favOnly || p.isFavorite
+      return matchCat && matchSearch && matchFav
     })
-  }, [products, search, category])
+    // Favorit di atas; dalam tiap grup urut terbaru (created_at desc) lalu nama.
+    return list.slice().sort((a, b) => {
+      if (!!a.isFavorite !== !!b.isFavorite) return a.isFavorite ? -1 : 1
+      const ta = new Date(a.createdAt || 0).getTime(), tb = new Date(b.createdAt || 0).getTime()
+      if (tb !== ta) return tb - ta
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [products, search, category, favOnly])
 
   // NO QUANTITY LIMITS — Skupy POS sells made-to-order goods (sablon, DTF,
   // jersey, kain) so customers freely order 1, 58, 500, 1.000, 10.000+ unit.
@@ -894,8 +904,22 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
               </button>
             )}
           </div>
-          {/* Categories */}
+          {/* Categories + filter Favorit */}
           <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
+            <button
+              onClick={() => setFavOnly(v => !v)}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all"
+              style={{
+                background: favOnly ? 'linear-gradient(135deg,#f59e0b,#ea580c)' : 'var(--bg-card)',
+                color: favOnly ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${favOnly ? 'transparent' : 'var(--border)'}`,
+                fontFamily: 'Syne',
+                boxShadow: favOnly ? '0 2px 12px rgba(245,158,11,0.3)' : 'none',
+              }}
+              title="Tampilkan favorit"
+            >
+              <Star size={12} fill={favOnly ? '#fff' : 'none'} /> Favorit
+            </button>
             {categoryFilters.map((c) => (
               <button
                 key={c.id}
@@ -951,6 +975,21 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                         style={{
                           background: 'linear-gradient(180deg, transparent 50%, rgba(0,0,0,0.4) 100%)',
                         }} />
+                      {/* Favorit — toggle (owner/admin) atau indikator (kasir) */}
+                      {canEditFav ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setProductFavorite && setProductFavorite(p.id, !p.isFavorite) }}
+                          className="absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center btn-press"
+                          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}
+                          title={p.isFavorite ? 'Hapus dari favorit' : 'Jadikan favorit'}
+                        >
+                          <Star size={14} fill={p.isFavorite ? '#f59e0b' : 'none'} style={{ color: p.isFavorite ? '#f59e0b' : '#fff' }} />
+                        </button>
+                      ) : (p.isFavorite && (
+                        <div className="absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.45)' }}>
+                          <Star size={14} fill="#f59e0b" style={{ color: '#f59e0b' }} />
+                        </div>
+                      ))}
                       {inCart && (
                         <div
                           className="absolute top-2 right-2 min-w-6 h-6 px-1.5 rounded-full flex items-center justify-center text-xs font-bold animate-scaleIn"

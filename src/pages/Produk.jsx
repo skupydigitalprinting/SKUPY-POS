@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import {
-  Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2, Loader2,
+  Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2, Loader2, Star,
 } from 'lucide-react'
 import { formatRupiah, compressImageToBlob } from '../utils/helpers'
 import { uploadProductImage } from '../lib/supabase'
@@ -12,7 +12,7 @@ import { useCategories, ALL_CATEGORY, getCatMeta } from '../hooks/useCategories'
 const EMPTY_FORM = {
   name: '', category: 'jersey', price: '', modal: '',
   unit: 'pcs',
-  description: '', image: '',
+  description: '', image: '', isFavorite: false,
 }
 
 const UNIT_OPTIONS = [
@@ -89,6 +89,7 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
       unit: p.unit || 'pcs',
       description: p.description || '',
       image: p.image || '',
+      isFavorite: !!p.isFavorite,
     })
     setImagePreview(p.image || '')
     setErrors({})
@@ -559,6 +560,19 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
             onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
             placeholder="Deskripsi produk..."
           />
+
+          {/* Favorit — tampil paling atas di Kasir */}
+          <button type="button" onClick={() => setForm((p) => ({ ...p, isFavorite: !p.isFavorite }))}
+            className="flex items-center justify-between w-full px-3 py-2.5 rounded-xl btn-press"
+            style={{ background: 'var(--bg-card)', border: `1px solid ${form.isFavorite ? 'rgba(245,158,11,0.4)' : 'var(--border)'}` }}>
+            <span className="flex items-center gap-2 text-xs font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+              <Star size={14} fill={form.isFavorite ? '#f59e0b' : 'none'} style={{ color: form.isFavorite ? '#f59e0b' : 'var(--text-muted)' }} />
+              Produk Favorit {form.isFavorite ? '(tampil paling atas di Kasir)' : ''}
+            </span>
+            <span className="w-10 h-6 rounded-full flex items-center px-0.5 transition-all" style={{ background: form.isFavorite ? '#f59e0b' : 'var(--bg-elevated)', justifyContent: form.isFavorite ? 'flex-end' : 'flex-start' }}>
+              <span className="w-5 h-5 rounded-full" style={{ background: '#fff' }} />
+            </span>
+          </button>
 
           {submitError && (
             <div className="px-3 py-2 rounded-xl text-xs font-semibold"

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
-  AlertTriangle, Loader2, UserCog, Check,
+  AlertTriangle, Loader2, UserCog, Check, MoreVertical,
 } from 'lucide-react'
 import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
@@ -63,8 +63,10 @@ function getStatus(key) {
 // tabel di halaman Order. Header DAN row MUST pakai constant ini agar
 // tidak ada pergeseran 1px antara label dan data di bawahnya.
 // ═══════════════════════════════════════════════════════════════════
-const ORDER_TABLE_COLUMNS = '220px 220px 150px 150px 180px 140px 180px 220px'
-const ORDER_TABLE_MIN_WIDTH = 1460  // = jumlah semua lebar di atas
+// Compact & FLUID — 7 kolom (Pembayaran digabung ke Total). Pakai fraksi +
+// minmax(0,..) supaya tabel selalu MUAT lebar layar tanpa geser kanan-kiri.
+//   Invoice · Customer · Total · Sisa · Status · Workflow · Aksi
+const ORDER_TABLE_COLUMNS = 'minmax(0,1.5fr) minmax(0,1.6fr) minmax(0,1.2fr) minmax(0,1fr) 88px minmax(0,1.1fr) 80px'
 
 export default function Order({
   transactions, storeInfo, busy, products = [], customers = [], currentUser,
@@ -72,6 +74,7 @@ export default function Order({
   updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
   const [orderChanges, setOrderChanges] = useState([])
+  const [menuFor, setMenuFor] = useState(null) // id baris yang menu "More"-nya terbuka
   const [search, setSearch] = useState('')
   // Edit Customer order: owner/admin semua; kasir hanya order miliknya.
   const [reassignTrx, setReassignTrx] = useState(null)
@@ -87,6 +90,29 @@ export default function Order({
     setReassignBusy(false)
     if (r.ok) { setReassignTrx(null); setReassignNewId('') }
     else window.alert(r.error || 'Gagal memindahkan customer')
+  }
+  // Menu "⋯ More" aksi baris order (dipakai di tabel desktop & card mobile).
+  const ActionMenu = ({ t, onClose }) => {
+    const cust = customers.find(c => c.id === t.customerId)
+    const phone = cust?.whatsapp || cust?.phone || ''
+    const statusLabel = (getStatus(t.status).label || 'Pending').toString().toUpperCase()
+    const waText = `Halo ${t.customer || 'Customer'},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo || '-'}*\nTotal: *${formatRupiah(t.total || 0)}*\nStatus: *${statusLabel}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
+    const Item = ({ icon: Ic, label, color, onClick }) => (
+      <button onClick={() => { onClose(); onClick() }} className="w-full text-left px-3 py-2 text-xs font-semibold flex items-center gap-2 hover:bg-white/[0.04]" style={{ color: color || 'var(--text-primary)' }}><Ic size={13} /> {label}</button>
+    )
+    return (
+      <>
+        <div className="fixed inset-0" style={{ zIndex: 1090 }} onClick={onClose} />
+        <div className="absolute right-1 top-9 rounded-xl py-1" style={{ zIndex: 1100, minWidth: 170, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+          <Item icon={Eye} label="Lihat Detail" onClick={() => setViewTrx(t)} />
+          {t.remaining > 0 && <Item icon={Wallet} label="Bayar" color="#10d98a" onClick={() => openPay(t)} />}
+          {canEditOrderCustomer(t) && <Item icon={UserCog} label="Edit Customer" color="#38BDF8" onClick={() => { setReassignTrx(t); setReassignNewId('') }} />}
+          <Item icon={Printer} label="Cetak Invoice" onClick={() => setPrintTrx(t)} />
+          <Item icon={MessageCircle} label="WhatsApp" color="#25d366" onClick={() => window.open(buildWaLink(phone, waText), '_blank', 'noopener,noreferrer')} />
+          <Item icon={Trash2} label="Hapus / Batalkan" color="var(--red)" onClick={() => setDelConfirm(t)} />
+        </div>
+      </>
+    )
   }
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterWorkflow, setFilterWorkflow] = useState('all')
@@ -371,37 +397,32 @@ export default function Order({
           })}
         </div>
 
-        {/* Desktop Table — horizontal scroll bila viewport sempit; lebar
-            kolom FIXED supaya header & body presisi sejajar 1px. */}
-        <div className="hidden md:block rounded-2xl overflow-x-auto"
+        {/* Desktop/Tablet Table — compact & fluid, MUAT 1 layar (tanpa geser).
+            overflow tidak di-clip agar menu "More" tidak terpotong. */}
+        <div className="hidden md:block rounded-2xl"
           style={{
             background: 'var(--bg-card)',
             border: '1px solid var(--border)',
           }}>
-          <div style={{ minWidth: ORDER_TABLE_MIN_WIDTH }}>
-          <div className="grid text-[11px] font-bold uppercase"
+          <div className="grid text-[10px] font-bold uppercase"
             style={{
               gridTemplateColumns: ORDER_TABLE_COLUMNS,
               gap: 0,
-              minHeight: 48,
+              minHeight: 42,
               alignItems: 'center',
               color: 'var(--text-muted)',
               fontFamily: 'Syne',
-              letterSpacing: '0.08em',
+              letterSpacing: '0.06em',
               borderBottom: '1px solid var(--border)',
               background: 'var(--bg-elevated)',
-              position: 'sticky',
-              top: 0,
-              zIndex: 1,
             }}>
-            <span className="px-3 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Invoice</span>
-            <span className="px-3 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Customer</span>
-            <span className="px-3 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Total</span>
-            <span className="px-3 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Sisa</span>
-            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Pembayaran</span>
-            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Status</span>
-            <span className="px-3 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Workflow</span>
-            <span className="px-3 truncate text-center">Aksi</span>
+            <span className="px-2.5 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Invoice</span>
+            <span className="px-2.5 truncate text-left"  style={{ borderRight: '1px solid var(--border)' }}>Customer</span>
+            <span className="px-2.5 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Total</span>
+            <span className="px-2.5 truncate text-right" style={{ borderRight: '1px solid var(--border)' }}>Sisa</span>
+            <span className="px-2.5 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Status</span>
+            <span className="px-2.5 truncate text-center" style={{ borderRight: '1px solid var(--border)' }}>Workflow</span>
+            <span className="px-2 truncate text-center">Aksi</span>
           </div>
 
           {filtered.length === 0 ? (
@@ -421,210 +442,61 @@ export default function Order({
                   style={{
                     gridTemplateColumns: ORDER_TABLE_COLUMNS,
                     gap: 0,
-                    minHeight: 72,
+                    minHeight: 60,
                     alignItems: 'center',
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  {/* Invoice — left aligned, ellipsis */}
-                  <div className="px-3 min-w-0" style={{ borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                    <p className="text-xs font-bold"
-                      style={{
-                        color: 'var(--accent-light)', fontFamily: 'Syne',
-                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                      }}>
-                      {t.invoiceNo}
-                    </p>
-                    {t.orderNo && (
-                      <p className="text-xs"
-                        style={{
-                          color: 'var(--text-secondary)', fontFamily: 'Syne',
-                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                        }}>
-                        {t.orderNo}
-                      </p>
-                    )}
-                    <p className="text-xs" style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                      {timeAgo(t.date)}
-                    </p>
+                  {/* Invoice — boleh 2 baris */}
+                  <div className="px-2.5 min-w-0 py-1.5" style={{ borderRight: '1px solid var(--border)' }}>
+                    <p className="text-[11px] font-bold leading-tight" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', wordBreak: 'break-all', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{t.invoiceNo}</p>
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{timeAgo(t.date)}</p>
                   </div>
-                  {/* Customer — left aligned */}
-                  <div className="px-3 min-w-0" style={{ borderRight: '1px solid var(--border)' }}>
-                    <p className="text-xs font-semibold"
-                      style={{
-                        color: 'var(--text-primary)',
-                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                      }}>
-                      {t.customer}
-                    </p>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {(t.items || []).length} item
-                    </p>
+                  {/* Customer — boleh 2 baris */}
+                  <div className="px-2.5 min-w-0 py-1.5" style={{ borderRight: '1px solid var(--border)' }}>
+                    <p className="text-[11px] font-semibold leading-tight" style={{ color: 'var(--text-primary)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{t.customer || 'Umum'}</p>
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{(t.items || []).length} item</p>
                   </div>
-                  {/* Total — right aligned, tabular-nums */}
-                  <p className="px-3 text-xs font-bold"
-                    style={{
-                      color: 'var(--text-primary)', fontFamily: 'Syne',
-                      fontVariantNumeric: 'tabular-nums',
-                      borderRight: '1px solid var(--border)',
-                      textAlign: 'right',
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>
-                    {formatRupiah(t.total)}
-                  </p>
-                  {/* Sisa — right aligned, tabular-nums */}
-                  <p className="px-3 text-xs font-semibold"
-                    style={{
-                      color: t.remaining > 0 ? 'var(--red)' : '#10d98a',
-                      fontFamily: 'Syne',
-                      fontVariantNumeric: 'tabular-nums',
-                      borderRight: '1px solid var(--border)',
-                      textAlign: 'right',
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>
-                    {formatRupiah(t.remaining)}
-                  </p>
-                  {/* Pembayaran — center */}
-                  <p className="px-3 text-xs"
-                    style={{
-                      color: 'var(--text-secondary)',
-                      borderRight: '1px solid var(--border)',
-                      textAlign: 'center',
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>
-                    {pm.icon} {pm.label}
-                  </p>
-                  {/* Status — center */}
-                  <div className="px-3" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
+                  {/* Total + metode bayar */}
+                  <div className="px-2.5 min-w-0 text-right" style={{ borderRight: '1px solid var(--border)' }}>
+                    <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(t.total)}</p>
+                    <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{pm.icon} {pm.label}</p>
+                  </div>
+                  {/* Sisa */}
+                  <p className="px-2.5 text-[11px] font-semibold text-right" style={{ color: t.remaining > 0 ? 'var(--red)' : '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums', borderRight: '1px solid var(--border)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(t.remaining)}</p>
+                  {/* Status */}
+                  <div className="px-2" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {(() => {
                       const isLunas = (t.remaining || 0) <= 0 || t.status === 'lunas'
                       return (
-                        <span
-                          className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold"
-                          style={{
-                            background: isLunas ? 'rgba(16,217,138,0.12)' : 'rgba(245,158,11,0.12)',
-                            color: isLunas ? '#10d98a' : '#f59e0b',
-                            border: `1px solid ${isLunas ? 'rgba(16,217,138,0.3)' : 'rgba(245,158,11,0.3)'}`,
-                            fontFamily: 'Syne',
-                            letterSpacing: '0.04em',
-                          }}
-                        >
-                          {isLunas ? 'LUNAS' : 'PENDING'}
-                        </span>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: isLunas ? 'rgba(16,217,138,0.12)' : 'rgba(245,158,11,0.12)', color: isLunas ? '#10d98a' : '#f59e0b', border: `1px solid ${isLunas ? 'rgba(16,217,138,0.3)' : 'rgba(245,158,11,0.3)'}`, fontFamily: 'Syne' }}>{isLunas ? 'LUNAS' : 'PENDING'}</span>
                       )
                     })()}
                   </div>
-                  {/* Workflow — center */}
-                  <div className="px-3" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
+                  {/* Workflow */}
+                  <div className="px-1.5 min-w-0" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {updateOrderStatus ? (
-                      <select
-                        value={t.orderStatus || 'menunggu'}
-                        onChange={(e) => updateOrderStatus(t.id, e.target.value)}
-                        className="text-xs px-2 py-1 rounded-lg border-0 outline-none cursor-pointer text-center"
-                        style={{
-                          background: 'transparent',
-                          color: wf.color,
-                          fontWeight: 700,
-                          fontFamily: 'Syne',
-                        }}
-                      >
+                      <select value={t.orderStatus || 'menunggu'} onChange={(e) => updateOrderStatus(t.id, e.target.value)}
+                        className="text-[10px] px-1 py-1 rounded-lg border-0 outline-none cursor-pointer w-full text-center"
+                        style={{ background: 'transparent', color: wf.color, fontWeight: 700, fontFamily: 'Syne' }}>
                         {ORDER_WORKFLOW.map((st) => (
-                          <option key={st} value={st}
-                            style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                            {getWorkflow(st).label}
-                          </option>
+                          <option key={st} value={st} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>{getWorkflow(st).label}</option>
                         ))}
                       </select>
                     ) : (
-                      <span className="text-xs font-semibold"
-                        style={{ color: wf.color, fontFamily: 'Syne' }}>
-                        {wf.label}
-                      </span>
+                      <span className="text-[10px] font-semibold truncate" style={{ color: wf.color, fontFamily: 'Syne' }}>{wf.label}</span>
                     )}
                   </div>
-                  {/* Aksi — center, flex with gap 8 */}
-                  <div className="px-3" style={{
-                    display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
-                  }}>
-                    {t.remaining > 0 && (
-                      <button
-                        onClick={() => openPay(t)}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
-                        style={{
-                          background: 'rgba(16,217,138,0.1)',
-                          color: '#10d98a',
-                          border: '1px solid rgba(16,217,138,0.2)',
-                        }}
-                        title="Bayar"
-                      >
-                        <Wallet size={12} />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => setViewTrx(t)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
-                      style={{
-                        background: 'rgba(139,92,246,0.1)',
-                        color: 'var(--accent-light)',
-                        border: '1px solid rgba(139,92,246,0.2)',
-                      }}
-                      title="Detail"
-                    >
-                      <Eye size={13} />
-                    </button>
-                    {(() => {
-                      const cust = customers.find(c => c.id === t.customerId)
-                      const phone = cust?.whatsapp || cust?.phone || ''
-                      const statusLabel = (getStatus(t.status).label || 'Pending').toString().toUpperCase()
-                      const text = `Halo ${t.customer || 'Customer'},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo || '-'}*\nTotal: *${formatRupiah(t.total || 0)}*\nStatus: *${statusLabel}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
-                      return (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            window.open(buildWaLink(phone, text), '_blank', 'noopener,noreferrer')
-                          }}
-                          className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
-                          style={{
-                            background: 'rgba(37,211,102,0.12)',
-                            color: '#25d366',
-                            border: '1px solid rgba(37,211,102,0.3)',
-                          }}
-                          title={isValidWA(phone) ? `Chat ${cust?.name || t.customer}` : 'Buka WhatsApp (pilih kontak)'}
-                        >
-                          <MessageCircle size={12} />
-                        </button>
-                      )
-                    })()}
-                    <button
-                      onClick={() => setPrintTrx(t)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
-                      style={{
-                        background: 'rgba(255,255,255,0.04)',
-                        color: 'var(--text-secondary)',
-                        border: '1px solid var(--border)',
-                      }}
-                      title="Print"
-                    >
-                      <Printer size={13} />
-                    </button>
-                    <button
-                      onClick={() => setDelConfirm(t)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center btn-press"
-                      style={{
-                        background: 'rgba(255,77,106,0.08)',
-                        color: 'var(--red)',
-                        border: '1px solid rgba(255,77,106,0.15)',
-                      }}
-                      title="Hapus"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                  {/* Aksi — Detail + More */}
+                  <div className="px-2 relative" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6 }}>
+                    <button onClick={() => setViewTrx(t)} className="w-7 h-7 rounded-lg flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }} title="Detail"><Eye size={13} /></button>
+                    <button onClick={() => setMenuFor(menuFor === t.id ? null : t.id)} className="w-7 h-7 rounded-lg flex items-center justify-center btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }} title="Lainnya"><MoreVertical size={14} /></button>
+                    {menuFor === t.id && <ActionMenu t={t} onClose={() => setMenuFor(null)} />}
                   </div>
                 </div>
               )
             })
           )}
-          </div>{/* end minWidth wrapper for horizontal scroll */}
         </div>
 
         {/* Mobile Card View */}
@@ -639,10 +511,11 @@ export default function Order({
               if (!t) return null
               const s = getStatus(t.status)
               const pm = getPayment(t.paymentMethod)
+              const wf = getWorkflow(t.orderStatus || 'menunggu')
               return (
                 <div
                   key={t.id}
-                  className="rounded-2xl p-4 animate-fadeIn"
+                  className="rounded-2xl p-4 animate-fadeIn min-w-0"
                   style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
                 >
                   <div className="flex items-start justify-between mb-3">
@@ -668,63 +541,38 @@ export default function Order({
                       )
                     })()}
                   </div>
-                  <div className="flex items-end justify-between mb-3">
-                    <div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total</p>
-                      <p className="font-bold text-base"
-                        style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-                        {formatRupiah(t.total)}
-                      </p>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total</p>
+                      <p className="font-bold text-base truncate" style={{ fontFamily: 'Syne', color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(t.total)}</p>
+                      <p className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{pm.icon} {pm.label}</p>
                     </div>
-                    {t.remaining > 0 && (
-                      <div className="text-right">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Sisa</p>
-                        <p className="font-bold text-sm"
-                          style={{ color: 'var(--red)', fontFamily: 'Syne' }}>
-                          {formatRupiah(t.remaining)}
-                        </p>
-                      </div>
-                    )}
+                    <div className="min-w-0 text-right">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</p>
+                      <p className="font-bold text-base truncate" style={{ color: t.remaining > 0 ? 'var(--red)' : '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(t.remaining)}</p>
+                      <p className="text-[11px] font-semibold truncate" style={{ color: wf.color }}>{wf.label}</p>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {t.remaining > 0 && (
-                      <button
-                        onClick={() => openPay(t)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
-                        style={{
-                          background: 'rgba(16,217,138,0.1)',
-                          color: '#10d98a',
-                          border: '1px solid rgba(16,217,138,0.2)',
-                          fontFamily: 'Syne',
-                        }}
-                      >
+                      <button onClick={() => openPay(t)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', border: '1px solid rgba(16,217,138,0.2)', fontFamily: 'Syne' }}>
                         <Wallet size={11} /> Bayar
                       </button>
                     )}
-                    <button
-                      onClick={() => setViewTrx(t)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
-                      style={{
-                        background: 'rgba(139,92,246,0.1)',
-                        color: 'var(--accent-light)',
-                        border: '1px solid rgba(139,92,246,0.2)',
-                        fontFamily: 'Syne',
-                      }}
-                    >
+                    <button onClick={() => setViewTrx(t)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)', fontFamily: 'Syne' }}>
                       <Eye size={11} /> Detail
                     </button>
-                    <button
-                      onClick={() => setPrintTrx(t)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
-                      style={{
-                        background: 'rgba(255,255,255,0.04)',
-                        color: 'var(--text-secondary)',
-                        border: '1px solid var(--border)',
-                        fontFamily: 'Syne',
-                      }}
-                    >
-                      <Printer size={11} /> Print
-                    </button>
+                    {canEditOrderCustomer(t) && (
+                      <button onClick={() => { setReassignTrx(t); setReassignNewId('') }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', border: '1px solid rgba(56,189,248,0.2)', fontFamily: 'Syne' }}>
+                        <UserCog size={11} /> Customer
+                      </button>
+                    )}
+                    <div className="relative">
+                      <button onClick={() => setMenuFor(menuFor === t.id ? null : t.id)} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}>
+                        <MoreVertical size={12} /> Lainnya
+                      </button>
+                      {menuFor === t.id && <ActionMenu t={t} onClose={() => setMenuFor(null)} />}
+                    </div>
                   </div>
                 </div>
               )
