@@ -10,17 +10,20 @@ import { formatRupiah, formatRupiahShort, formatDate, timeAgo } from '../utils/h
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 
-const EMPTY = { name: '', phone: '', whatsapp: '', address: '', email: '', notes: '' }
+const EMPTY = { name: '', phone: '', whatsapp: '', address: '', email: '', notes: '', ownerUserId: '' }
 
 export default function Customers({
-  customers, transactions, currentUser,
+  customers, transactions, currentUser, admins = [],
   addCustomer, updateCustomer, deleteCustomer,
 }) {
   const toast = useToast()
-  // Owner & Staff Admin melihat "Dibuat oleh" agar tahu customer milik kasir siapa.
+  // Owner & Staff Admin melihat "Dibuat oleh" + bisa mengatur PIC.
   const canSeeOwner = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const canManagePIC = canSeeOwner
+  const adminName = (id) => { const a = admins.find(x => x.id === id); return a?.name || a?.username || '' }
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all') // all | debt | lunas
+  const [picFilter, setPicFilter] = useState('all') // all | <adminId>
   const [modalOpen, setModalOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
@@ -37,20 +40,24 @@ export default function Customers({
         filter === 'all' ? true :
         filter === 'debt' ? c.totalDebt > 0 :
         c.totalDebt === 0
-      return matchQ && matchFilter
+      const matchPic = picFilter === 'all' || c.ownerUserId === picFilter
+      return matchQ && matchFilter && matchPic
     })
-  }, [customers, search, filter])
+  }, [customers, search, filter, picFilter])
 
   const totalSpent = customers.reduce((s, c) => s + c.totalSpent, 0)
   const totalDebt = customers.reduce((s, c) => s + c.totalDebt, 0)
   const debtorCount = customers.filter(c => c.totalDebt > 0).length
+  // Statistik PIC: Customer Saya vs Customer Semua.
+  const myCustomerCount = customers.filter(c => c.ownerUserId === currentUser?.id).length
 
-  const openAdd = () => { setEditId(null); setForm(EMPTY); setModalOpen(true) }
+  const openAdd = () => { setEditId(null); setForm({ ...EMPTY, ownerUserId: currentUser?.id || '' }); setModalOpen(true) }
   const openEdit = (c) => {
     setEditId(c.id)
     setForm({
       name: c.name || '', phone: c.phone || '', whatsapp: c.whatsapp || c.phone || '',
       address: c.address || '', email: c.email || '', notes: c.notes || '',
+      ownerUserId: c.ownerUserId || currentUser?.id || '',
     })
     setModalOpen(true)
   }
@@ -156,7 +163,23 @@ export default function Customers({
               </button>
             ))}
           </div>
+          {canManagePIC && (
+            <select value={picFilter} onChange={(e) => setPicFilter(e.target.value)}
+              className="px-3 py-2 rounded-xl text-xs font-semibold"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontFamily: 'Syne' }}>
+              <option value="all">Semua PIC</option>
+              {admins.map(a => <option key={a.id} value={a.id}>{a.name || a.username}</option>)}
+            </select>
+          )}
         </div>
+
+        {canSeeOwner && (
+          <div className="flex gap-3 mb-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+            <span>Customer Saya: <b style={{ color: 'var(--accent-light)' }}>{myCustomerCount}</b></span>
+            <span>·</span>
+            <span>Customer Semua: <b style={{ color: 'var(--text-primary)' }}>{customers.length}</b></span>
+          </div>
+        )}
 
         {/* List */}
         {filtered.length === 0 ? (
@@ -197,8 +220,13 @@ export default function Customers({
                           ? <Badge color="amber">Hutang</Badge>
                           : c.totalTransactions > 0 ? <Badge color="green">Lunas</Badge> : <Badge color="gray">Baru</Badge>}
                         {canSeeOwner && c.createdByName && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }}>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap" style={{ background: 'rgba(136,136,168,0.14)', color: 'var(--text-muted)' }}>
                             Dibuat oleh: {c.createdByName}
+                          </span>
+                        )}
+                        {canSeeOwner && (c.ownerName || adminName(c.ownerUserId)) && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.14)', color: 'var(--accent-light)' }}>
+                            PIC: {c.ownerName || adminName(c.ownerUserId)}
                           </span>
                         )}
                       </div>
@@ -328,6 +356,19 @@ export default function Customers({
                 color: 'var(--text-primary)', fontFamily: 'DM Sans',
               }} />
           </div>
+          {canManagePIC && (
+            <div>
+              <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
+                PIC Customer (Penanggung Jawab)
+              </label>
+              <select value={form.ownerUserId || ''} onChange={(e) => setForm(p => ({ ...p, ownerUserId: e.target.value }))}
+                className="w-full px-3 py-2.5 rounded-xl text-sm"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+                {admins.map(a => <option key={a.id} value={a.id}>{a.name || a.username}{a.role === 'owner' ? ' (Owner)' : a.role === 'admin' ? ' (Admin)' : ' (Kasir)'}</option>)}
+              </select>
+              {editId && <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>Mengubah PIC memindahkan kepemilikan customer ini (piutang ikut mengikuti PIC baru).</p>}
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <Button variant="secondary" className="flex-1" onClick={() => setModalOpen(false)} disabled={saving}>

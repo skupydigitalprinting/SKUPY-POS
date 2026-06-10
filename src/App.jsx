@@ -224,23 +224,28 @@ function AppShell() {
   //   • admin/cashier → hanya transaksi yang dia buat (cashier_id == user.id)
   // Owner dashboard menerima FULL list (untuk filter per-admin di UI).
   // Halaman lain (Order/Customers/Piutang) menerima list yang sudah disaring.
-  const scopedTransactions = isOwner
+  // Hak akses tampilan: Owner & Staff Admin lihat SEMUA; Staff Kasir hanya
+  // miliknya. Customer/piutang kini berbasis PIC (owner_user_id), order tetap
+  // berbasis kasir pembuat. Tidak mengubah data — hanya menyaring tampilan.
+  const canSeeAll = role === 'owner' || role === 'admin'
+  const myId = store.currentUser?.id
+  const ownerOfCustomer = (cid) => store.customers.find(c => c.id === cid)?.ownerUserId || null
+  const scopedTransactions = canSeeAll
     ? store.transactions
-    : store.transactions.filter(t => t.cashierId === store.currentUser?.id)
-  const scopedDebts = isOwner
+    : store.transactions.filter(t => t.cashierId === myId)
+  const scopedCustomers = canSeeAll
+    ? store.customers
+    : store.customers.filter(c => c.ownerUserId === myId)
+  // Piutang mengikuti PIC customer: kasir hanya lihat piutang customer miliknya.
+  const scopedDebts = canSeeAll
     ? store.debts
     : store.debts.filter(d => {
-        // Hutang dianggap milik kasir yang membuat transaksi-nya
+        const pic = ownerOfCustomer(d.customerId)
+        if (pic) return pic === myId
+        // fallback (customer tak ketemu): pakai kasir pembuat transaksi
         const linked = store.transactions.find(t => t.id === d.transactionId)
-        return !linked || linked.cashierId === store.currentUser?.id
+        return !linked || linked.cashierId === myId
       })
-  // Customer per kasir: Owner & Staff Admin lihat semua; Staff Kasir hanya
-  // customer miliknya (created_by). Customer lama (created_by null) tidak tampil
-  // ke kasir. Tidak mengubah data — hanya menyaring tampilan/pilihan.
-  const canSeeAllCustomers = role === 'owner' || role === 'admin'
-  const scopedCustomers = canSeeAllCustomers
-    ? store.customers
-    : store.customers.filter(c => c.createdBy === store.currentUser?.id)
 
   const pages = {
     dashboard: <Dashboard
@@ -291,6 +296,7 @@ function AppShell() {
       customers={scopedCustomers}
       transactions={scopedTransactions}
       currentUser={store.currentUser}
+      admins={store.admins}
       addCustomer={store.addCustomer}
       updateCustomer={store.updateCustomer}
       deleteCustomer={store.deleteCustomer}
@@ -395,6 +401,7 @@ function AppShell() {
             addAdmin={store.addAdmin}
             updateAdmin={store.updateAdmin}
             deleteAdmin={store.deleteAdmin}
+            reassignAdminCustomers={store.reassignAdminCustomers}
             changePassword={store.changePassword}
             logout={() => { setSettingsOpen(false); store.logout() }}
           />

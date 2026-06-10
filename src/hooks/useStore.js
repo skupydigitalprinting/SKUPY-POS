@@ -97,6 +97,9 @@ const customerFromDB = (r) => ({
   createdBy: r.created_by || null,
   createdByName: r.created_by_name || '',
   createdByRole: r.created_by_role || '',
+  ownerUserId: r.owner_user_id || null,
+  ownerUsername: r.owner_username || '',
+  ownerName: r.owner_name || '',
   deletedAt: r.deleted_at || null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -167,6 +170,8 @@ const trxToDB = (t) => ({
   cashier_id: t.cashierId || null,
   cashier_role: t.cashierRole || '',
   due_date: t.dueDate || null,
+  // PIC (owner) — hanya disertakan bila di-set (hindari error bila kolom belum ada)
+  ...(t.ownerUserId ? { owner_user_id: t.ownerUserId, owner_name: t.ownerName || '' } : {}),
 })
 
 // Order workflow statuses (separate from payment status)
@@ -554,11 +559,37 @@ export function useStore() {
   const deleteAdmin = useCallback(async (id) => wrap(async () => {
     if (admins.length <= 1) return { ok: false, error: 'Minimal harus ada 1 admin' }
     if (currentUser?.id === id) return { ok: false, error: 'Tidak bisa menghapus diri sendiri' }
+    // Cegah hapus admin yang masih jadi PIC customer → minta pindahkan dulu.
+    const { count } = await supabase.from('customers').select('id', { count: 'exact', head: true }).eq('owner_user_id', id).is('deleted_at', null)
+    if ((count || 0) > 0) {
+      return { ok: false, needsReassign: true, customerCount: count, error: `Admin ini masih menjadi PIC ${count} customer. Pindahkan customer ke admin lain dulu.` }
+    }
     const { error: e } = await supabase.from('admins').delete().eq('id', id)
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setAdmins(prev => prev.filter(a => a.id !== id))
     return { ok: true }
   }), [admins, currentUser, wrap])
+
+  // Pindahkan semua customer milik 1 admin (PIC) ke admin lain. Dipakai sebelum
+  // menghapus admin, atau untuk perapian. Tidak mengubah transaksi/piutang/nominal.
+  const reassignAdminCustomers = useCallback(async (fromId, toId) => wrap(async () => {
+    if (!fromId || !toId || fromId === toId) return { ok: false, error: 'Admin tujuan tidak valid' }
+    const to = admins.find(a => a.id === toId)
+    if (!to) return { ok: false, error: 'Admin tujuan tidak ditemukan' }
+    const { error } = await supabase.from('customers')
+      .update({ owner_user_id: toId, owner_username: to.username, owner_name: to.name || to.username })
+      .eq('owner_user_id', fromId)
+    if (error) return { ok: false, error: error.message }
+    const from = admins.find(a => a.id === fromId)
+    supabase.from('customer_owner_changes').insert({
+      customer_id: null, customer_name: '(semua customer)',
+      old_owner_id: fromId, old_owner_name: from?.name || from?.username || '',
+      new_owner_id: toId, new_owner_name: to.name || to.username,
+      changed_by: currentUser?.id || null, changed_by_name: currentUser?.name || currentUser?.username || '',
+    }).then(() => {}, () => {})
+    await refreshCustomers()
+    return { ok: true }
+  }), [admins, currentUser, wrap, refreshCustomers])
 
   const changePassword = useCallback(async (oldPass, newPass) => wrap(async () => {
     if (!currentUser) return { ok: false, error: 'Belum login' }
@@ -575,30 +606,59 @@ export function useStore() {
   // ---------- CUSTOMERS ----------
   const addCustomer = useCallback(async (data) => wrap(async () => {
     if (!data.name?.trim()) return { ok: false, error: 'Nama wajib diisi' }
-    // Kepemilikan: customer dibuat oleh user yang sedang login (untuk hak akses kasir)
+    // created_by = pembuat; owner_user_id = PIC (default user login, owner/admin boleh override)
     const payload = customerToDB(data)
     if (currentUser?.id) {
       payload.created_by = currentUser.id
       payload.created_by_name = currentUser.name || currentUser.username || ''
       payload.created_by_role = currentUser.role || ''
     }
+    const ownerId = data.ownerUserId || currentUser?.id || null
+    if (ownerId) {
+      const a = admins.find(x => x.id === ownerId)
+      payload.owner_user_id = ownerId
+      payload.owner_username = a?.username || currentUser?.username || ''
+      payload.owner_name = a?.name || a?.username || currentUser?.name || ''
+    }
     let { data: row, error: e } = await supabase.from('customers').insert(payload).select().single()
-    // Fallback bila kolom created_by belum dimigrasi
-    if (e && /created_by|does not exist|schema cache/i.test(e.message || '')) {
+    if (e && /(created_by|owner_user_id|does not exist|schema cache)/i.test(e.message || '')) {
       const base = customerToDB(data)
       ;({ data: row, error: e } = await supabase.from('customers').insert(base).select().single())
     }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setCustomers(prev => [customerFromDB(row), ...prev])
     return { ok: true, data: customerFromDB(row) }
-  }), [wrap, currentUser])
+  }), [wrap, currentUser, admins])
 
   const updateCustomer = useCallback(async (id, data) => wrap(async () => {
-    const { data: row, error: e } = await supabase.from('customers').update(customerToDB(data)).eq('id', id).select().single()
+    const prevCust = customers.find(c => c.id === id)
+    const patch = customerToDB(data)
+    const oldOwnerId = prevCust?.ownerUserId || null
+    let ownerChanged = false
+    if (data.ownerUserId && data.ownerUserId !== oldOwnerId) {
+      const a = admins.find(x => x.id === data.ownerUserId)
+      patch.owner_user_id = data.ownerUserId
+      patch.owner_username = a?.username || ''
+      patch.owner_name = a?.name || a?.username || ''
+      ownerChanged = true
+    }
+    let { data: row, error: e } = await supabase.from('customers').update(patch).eq('id', id).select().single()
+    if (e && /owner_user_id|does not exist|schema cache/i.test(e.message || '')) {
+      ;({ data: row, error: e } = await supabase.from('customers').update(customerToDB(data)).eq('id', id).select().single())
+    }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setCustomers(prev => prev.map(c => c.id === id ? customerFromDB(row) : c))
+    if (ownerChanged) {
+      const na = admins.find(x => x.id === data.ownerUserId)
+      supabase.from('customer_owner_changes').insert({
+        customer_id: id, customer_name: prevCust?.name || row?.name || '',
+        old_owner_id: oldOwnerId, old_owner_name: prevCust?.ownerName || '',
+        new_owner_id: data.ownerUserId, new_owner_name: na?.name || na?.username || '',
+        changed_by: currentUser?.id || null, changed_by_name: currentUser?.name || currentUser?.username || '',
+      }).then(() => {}, () => {})
+    }
     return { ok: true }
-  }), [wrap])
+  }), [wrap, customers, admins, currentUser])
 
   const deleteCustomer = useCallback(async (id) => wrap(async () => {
     // Cegah hard delete bila customer masih punya transaksi/piutang → soft delete.
@@ -864,6 +924,10 @@ export function useStore() {
       const cashierId = currentUser?.id || null
       const cashierRole = currentUser?.role || 'cashier'
       const nowIso = new Date().toISOString()
+      // PIC order = PIC customer (kalau ada), fallback ke kasir yang melayani.
+      const _cust = (trx.customerId && customers.find(c => c.id === trx.customerId)) || null
+      const ownerUserId = _cust?.ownerUserId || cashierId || null
+      const ownerName = _cust?.ownerName || cashier || ''
       const statusHistory = [{
         order_status: trx.orderStatus || 'menunggu',
         changed_at: nowIso,
@@ -891,6 +955,7 @@ export function useStore() {
           ...trx,
           invoiceNo, orderNo,
           cashier, cashierId, cashierRole,
+          ownerUserId, ownerName,
           statusHistory,
           orderStatus: trx.orderStatus || 'menunggu',
         })
@@ -909,6 +974,10 @@ export function useStore() {
           console.warn('[useStore] DB belum punya kolom transactions.cashier_role — transaksi disimpan tanpa role.')
           res = await supabase
             .from('transactions').insert(omit(payload, ['cashier_role'])).select().single()
+        }
+        if (res.error && (isSchemaCacheError(res.error, 'owner_user_id') || isSchemaCacheError(res.error, 'owner_name'))) {
+          res = await supabase
+            .from('transactions').insert(omit(payload, ['owner_user_id', 'owner_name'])).select().single()
         }
         row = res.data
         e = res.error
@@ -994,7 +1063,7 @@ export function useStore() {
       }
       return { ok: true, data: newTrx }
     } catch (err) { return { ok: false, error: err.message || String(err) } }
-  }), [products, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary])
+  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary])
 
   // ---------- SYNC DEBT ↔ TRANSACTION ↔ CUSTOMER ----------
   // syncDebtPaymentStatus(invoiceNo)
@@ -1718,7 +1787,7 @@ export function useStore() {
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
-    login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword,
+    login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword, reassignAdminCustomers,
     addCustomer, updateCustomer, deleteCustomer,
     reassignReceivableCustomer, reassignOrderCustomer,
     getOrderCustomerChanges, getReceivableCustomerChanges,

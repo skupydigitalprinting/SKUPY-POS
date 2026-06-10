@@ -42,7 +42,7 @@ export default function Settings({
   open, onClose,
   storeInfo, admins, currentUser, busy, products = [],
   updateStoreInfo, updateLogo,
-  addAdmin, updateAdmin, deleteAdmin, changePassword, logout,
+  addAdmin, updateAdmin, deleteAdmin, changePassword, logout, reassignAdminCustomers,
 }) {
   const confirm = useConfirm()
   const { addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories } = useCategories()
@@ -221,16 +221,31 @@ export default function Settings({
     }
   }
 
+  const [reassignAdmin, setReassignAdmin] = useState(null) // { id, count, toId }
   const handleDeleteAdmin = async (id) => {
     if (!(await confirm({ title: 'Hapus admin ini?', message: 'Akun admin akan dihapus dan tidak bisa login lagi. Tindakan ini bisa memengaruhi data terkait.' }))) return
     setDeletingId(id)
     try {
       const res = await deleteAdmin(id)
-      if (res.ok) flash('success', 'Admin dihapus')
-      else flash('error', res.error || 'Gagal menghapus')
+      if (res.ok) { flash('success', 'Admin dihapus'); return }
+      if (res.needsReassign) {
+        // Admin masih jadi PIC customer → minta pindahkan dulu.
+        const others = admins.filter(a => a.id !== id)
+        setReassignAdmin({ id, count: res.customerCount || 0, toId: others[0]?.id || '' })
+        return
+      }
+      flash('error', res.error || 'Gagal menghapus')
     } finally {
       setDeletingId(null)
     }
+  }
+  const confirmReassignAndDelete = async () => {
+    if (!reassignAdmin?.toId) return flash('error', 'Pilih admin tujuan')
+    const rr = await reassignAdminCustomers(reassignAdmin.id, reassignAdmin.toId)
+    if (!rr.ok) return flash('error', rr.error || 'Gagal memindahkan customer')
+    const del = await deleteAdmin(reassignAdmin.id)
+    if (del.ok) { flash('success', 'Customer dipindahkan & admin dihapus'); setReassignAdmin(null) }
+    else flash('error', del.error || 'Gagal menghapus admin')
   }
 
   const [passForm, setPassForm] = useState({ old: '', new1: '', new2: '' })
@@ -681,6 +696,26 @@ export default function Settings({
           </button>
 
           <Button variant="primary" className="w-full" onClick={saveCat} disabled={catBusy}>{catBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {catModal.id ? 'Simpan' : 'Tambah Kategori'}</Button>
+        </div>
+      )}
+    </Modal>
+
+    {/* ── PINDAHKAN CUSTOMER SEBELUM HAPUS ADMIN ── */}
+    <Modal open={!!reassignAdmin} zIndex={1100} onClose={() => setReassignAdmin(null)} title="Admin masih punya customer" subtitle="Tidak boleh ada customer tanpa PIC." size="sm">
+      {reassignAdmin && (
+        <div className="space-y-3">
+          <Banner kind="error">Admin ini masih menjadi PIC {reassignAdmin.count} customer. Pindahkan ke admin lain dulu, atau batalkan.</Banner>
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Pindahkan customer ke</label>
+            <select value={reassignAdmin.toId} onChange={e => setReassignAdmin(p => ({ ...p, toId: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+              {admins.filter(a => a.id !== reassignAdmin.id).map(a => <option key={a.id} value={a.id}>{a.name || a.username}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" className="flex-1" onClick={() => setReassignAdmin(null)}>Batalkan Penghapusan</Button>
+            <Button variant="primary" className="flex-1" onClick={confirmReassignAndDelete}><Check size={14} /> Pindahkan & Hapus</Button>
+          </div>
         </div>
       )}
     </Modal>
