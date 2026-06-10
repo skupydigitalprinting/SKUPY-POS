@@ -376,6 +376,7 @@ function AppShell() {
             storeInfo={store.storeInfo}
             admins={store.admins}
             currentUser={store.currentUser}
+            products={store.products}
             busy={store.busy}
             updateStoreInfo={store.updateStoreInfo}
             updateLogo={store.updateLogo}

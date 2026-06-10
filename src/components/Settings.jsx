@@ -2,20 +2,25 @@ import React, { useState, useEffect } from 'react'
 import {
   Store, Image, Users, Lock, LogOut, ImagePlus,
   CheckCircle2, AlertCircle, UserPlus, Trash2, Crown,
-  Eye, EyeOff, Loader2, Pencil, Check,
+  Eye, EyeOff, Loader2, Pencil, Check, Tag, Plus, Power,
 } from 'lucide-react'
 import Modal from './Modal'
 import { Input, Button } from './ui'
 import Logo from './Logo'
 import { useConfirm } from './Confirm'
-import { ROLE_OPTIONS, roleLabel } from '../utils/helpers'
+import { useCategories } from '../hooks/useCategories'
+import { ROLE_OPTIONS, roleLabel, compressImage } from '../utils/helpers'
 
 const TABS = [
   { id: 'toko', label: 'Toko', icon: Store },
+  { id: 'kategori', label: 'Kategori Produk', icon: Tag },
   { id: 'logo', label: 'Logo', icon: Image },
   { id: 'admin', label: 'Admin', icon: Users },
   { id: 'password', label: 'Password', icon: Lock },
 ]
+
+const CAT_COLORS = ['#8b5cf6', '#3b82f6', '#10d98a', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#64748b']
+const CAT_EMOJIS = ['👕', '👚', '🧥', '🩳', '🧢', '🚩', '✨', '🖨️', '🎒', '📦', '🎨', '🧵', '📏', '🏷️', '🔖', '⭐']
 
 function Banner({ kind = 'success', children }) {
   const map = {
@@ -35,11 +40,52 @@ function Banner({ kind = 'success', children }) {
 
 export default function Settings({
   open, onClose,
-  storeInfo, admins, currentUser, busy,
+  storeInfo, admins, currentUser, busy, products = [],
   updateStoreInfo, updateLogo,
   addAdmin, updateAdmin, deleteAdmin, changePassword, logout,
 }) {
   const confirm = useConfirm()
+  const { addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories } = useCategories()
+  // ── Kategori Produk (manajemen) ──
+  const [catList, setCatList] = useState([])
+  const [catModal, setCatModal] = useState(null) // { id?, label, icon, color, thumbnail, active }
+  const [catErr, setCatErr] = useState('')
+  const [catBusy, setCatBusy] = useState(false)
+  const blankCat = { label: '', icon: '📦', color: CAT_COLORS[0], thumbnail: '', active: true }
+  const loadCats = async () => { try { setCatList(await listAllCategories()) } catch { /* ignore */ } }
+  const catCount = (id) => (products || []).filter(p => (p.category || '') === id).length
+  const onCatThumb = async (file) => {
+    if (!file) return
+    try { const url = await compressImage(file, { maxSize: 200, quality: 0.7 }); setCatModal(p => ({ ...p, thumbnail: url })) }
+    catch { setCatErr('Gagal memproses gambar') }
+  }
+  const saveCat = () => {
+    if (!catModal || catBusy) return
+    setCatErr('')
+    if (!catModal.label.trim()) return setCatErr('Nama kategori wajib diisi')
+    setCatBusy(true)
+    const payload = { label: catModal.label, icon: catModal.icon, color: catModal.color, thumbnail: catModal.thumbnail || null, active: catModal.active }
+    const res = catModal.id ? updateCategory(catModal.id, payload) : addCategory(payload)
+    setCatBusy(false)
+    if (!res.ok) return setCatErr(res.error || 'Gagal menyimpan')
+    flash('success', catModal.id ? 'Kategori diperbarui' : 'Kategori ditambahkan')
+    setCatModal(null); loadCats()
+  }
+  const handleCatDelete = async (cat) => {
+    const used = catCount(cat.id)
+    if (used > 0) {
+      if (!(await confirm({
+        title: 'Kategori masih dipakai produk',
+        message: `${used} produk memakai kategori ini. Kategori akan DINONAKTIFKAN (bukan dihapus permanen). Produk lama tetap memakai nama kategori terakhir.`,
+        confirmLabel: 'Nonaktifkan', danger: false,
+      }))) return
+      setCategoryActive(cat.id, false); flash('success', 'Kategori dinonaktifkan'); loadCats()
+    } else {
+      if (!(await confirm({ title: 'Yakin ingin menghapus kategori ini?', message: 'Kategori tidak dipakai produk mana pun dan akan dihapus.' }))) return
+      const r = deleteCategory(cat.id)
+      if (r.ok) { flash('success', 'Kategori dihapus'); loadCats() } else flash('error', r.error)
+    }
+  }
   const [tab, setTab] = useState('toko')
   const [msg, setMsg] = useState(null)
   const [savingToko, setSavingToko] = useState(false)
@@ -99,6 +145,12 @@ export default function Settings({
       setMsg(null)
     }
   }, [open, storeInfo])
+
+  // Muat daftar kategori saat membuka tab Kategori Produk.
+  useEffect(() => {
+    if (open && tab === 'kategori') loadCats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, tab])
 
   const flash = (kind, text) => {
     setMsg({ kind, text })
@@ -301,6 +353,43 @@ export default function Settings({
                   {savingToko ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                   {savingToko ? 'Menyimpan...' : 'Simpan Perubahan'}
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {/* === KATEGORI PRODUK === */}
+          {tab === 'kategori' && (
+            <div className="space-y-4 animate-fadeIn">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Kategori dipakai di Tambah/Edit Produk, Filter, & Distribusi Kategori. Tersimpan permanen di database.</p>
+                <Button variant="primary" size="sm" onClick={() => { setCatModal({ ...blankCat }); setCatErr('') }}><Plus size={13} /> Tambah Kategori</Button>
+              </div>
+
+              <div className="space-y-2">
+                {catList.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Memuat kategori…</p>}
+                {catList.map(c => {
+                  const used = catCount(c.id)
+                  const col = c.color || '#8b5cf6'
+                  return (
+                    <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', opacity: c.active ? 1 : 0.6 }}>
+                      {c.thumbnail
+                        ? <img src={c.thumbnail} alt="" className="w-10 h-10 rounded-lg object-cover flex-shrink-0" style={{ border: `1px solid ${col}55` }} />
+                        : <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg flex-shrink-0" style={{ background: `${col}1f`, border: `1px solid ${col}55` }}>{c.icon || '📦'}</div>}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{c.label}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: c.active ? 'rgba(16,217,138,0.12)' : 'rgba(136,136,168,0.15)', color: c.active ? '#10d98a' : 'var(--text-muted)' }}>{c.active ? 'Aktif' : 'Nonaktif'}</span>
+                        </div>
+                        <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{used} produk</div>
+                      </div>
+                      {!c.active && (
+                        <button onClick={() => { setCategoryActive(c.id, true); flash('success', 'Kategori diaktifkan'); loadCats() }} className="px-2.5 h-8 rounded-lg flex items-center gap-1 text-xs font-semibold btn-press flex-shrink-0" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', border: '1px solid rgba(16,217,138,0.2)', fontFamily: 'Syne' }} title="Aktifkan"><Power size={12} /></button>
+                      )}
+                      <button onClick={() => { setCatModal({ id: c.id, label: c.label, icon: c.icon || '📦', color: col, thumbnail: c.thumbnail || '', active: c.active }); setCatErr('') }} className="w-8 h-8 rounded-lg flex items-center justify-center btn-press flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }} title="Edit"><Pencil size={12} /></button>
+                      <button onClick={() => handleCatDelete(c)} className="w-8 h-8 rounded-lg flex items-center justify-center btn-press flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.15)' }} title={used > 0 ? 'Nonaktifkan' : 'Hapus'}>{used > 0 ? <Power size={12} /> : <Trash2 size={12} />}</button>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -539,6 +628,61 @@ export default function Settings({
           )}
         </div>
       </div>
+    </Modal>
+
+    {/* ── TAMBAH / EDIT KATEGORI PRODUK ── */}
+    <Modal open={!!catModal} zIndex={1100} onClose={() => { setCatModal(null); setCatErr('') }} title={catModal?.id ? 'Edit Kategori' : 'Tambah Kategori'} subtitle="Kategori tersimpan permanen di database." size="sm">
+      {catModal && (
+        <div className="space-y-3">
+          {catErr && <Banner kind="error">{catErr}</Banner>}
+          <Input label="Nama Kategori" value={catModal.label} onChange={e => setCatModal(p => ({ ...p, label: e.target.value }))} placeholder="cth: Mug, Topi, Spanduk…" />
+
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Icon / Emoji</label>
+            <div className="flex flex-wrap gap-1.5">
+              {CAT_EMOJIS.map(ic => (
+                <button key={ic} type="button" onClick={() => setCatModal(p => ({ ...p, icon: ic }))} className="w-8 h-8 rounded-lg flex items-center justify-center text-base btn-press"
+                  style={{ background: catModal.icon === ic ? 'rgba(139,92,246,0.18)' : 'var(--bg-card)', border: `1px solid ${catModal.icon === ic ? 'var(--accent)' : 'var(--border)'}` }}>{ic}</button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Warna Kategori</label>
+            <div className="flex flex-wrap gap-2">
+              {CAT_COLORS.map(col => (
+                <button key={col} type="button" onClick={() => setCatModal(p => ({ ...p, color: col }))} className="w-8 h-8 rounded-lg btn-press flex items-center justify-center"
+                  style={{ background: col, border: `2px solid ${catModal.color === col ? '#fff' : 'transparent'}`, boxShadow: catModal.color === col ? `0 0 0 2px ${col}` : 'none' }}>
+                  {catModal.color === col && <Check size={14} style={{ color: '#fff' }} />}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Thumbnail / Logo (opsional)</label>
+            <div className="flex items-center gap-3">
+              {catModal.thumbnail
+                ? <img src={catModal.thumbnail} alt="" className="w-12 h-12 rounded-lg object-cover" style={{ border: '1px solid var(--border)' }} />
+                : <div className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><ImagePlus size={18} style={{ color: 'var(--text-muted)' }} /></div>}
+              <label className="px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                Pilih Gambar
+                <input type="file" accept="image/*" className="hidden" onChange={e => onCatThumb(e.target.files?.[0])} />
+              </label>
+              {catModal.thumbnail && <button type="button" onClick={() => setCatModal(p => ({ ...p, thumbnail: '' }))} className="text-xs" style={{ color: 'var(--red)' }}>Hapus</button>}
+            </div>
+          </div>
+
+          <button type="button" onClick={() => setCatModal(p => ({ ...p, active: !p.active }))} className="flex items-center justify-between w-full px-3 py-2.5 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>Status: {catModal.active ? 'Aktif' : 'Nonaktif'}</span>
+            <span className="w-10 h-6 rounded-full flex items-center px-0.5 transition-all" style={{ background: catModal.active ? '#10d98a' : 'var(--bg-elevated)', justifyContent: catModal.active ? 'flex-end' : 'flex-start' }}>
+              <span className="w-5 h-5 rounded-full" style={{ background: '#fff' }} />
+            </span>
+          </button>
+
+          <Button variant="primary" className="w-full" onClick={saveCat} disabled={catBusy}>{catBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {catModal.id ? 'Simpan' : 'Tambah Kategori'}</Button>
+        </div>
+      )}
     </Modal>
 
     {/* ── EDIT ADMIN (Owner only) — di atas modal Settings ── */}
