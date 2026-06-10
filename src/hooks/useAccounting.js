@@ -813,6 +813,15 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true, id: ins.id }
   }, [])
 
+  // Sinkronkan kolom denormalisasi customers.total_debt = Σ sisa debts aktif.
+  // (Hanya menyegarkan angka cache — TIDAK mengubah rumus piutang mana pun.)
+  const syncCustomerDebt = useCallback(async (customerId) => {
+    if (!customerId) return
+    const { data } = await supabase.from('debts').select('remaining').eq('customer_id', customerId).eq('status', 'aktif').is('deleted_at', null)
+    const td = (data || []).reduce((s, d) => s + Math.max(0, Math.round(+d.remaining || 0)), 0)
+    await supabase.from('customers').update({ total_debt: td }).eq('id', customerId)
+  }, [])
+
   // Piutang Customer Lama → baris debts (is_opening) TANPA transaksi/invoice POS.
   const addOldReceivable = useCallback(async (p, cashierId) => {
     const amt = Math.round(Number(p.amount) || 0)
@@ -832,8 +841,10 @@ export function useAccounting() {
       delete row.is_opening
       ;({ error } = await supabase.from('debts').insert(row))
     }
-    return error ? { ok: false, error: error.message } : { ok: true, customerId: c.id }
-  }, [findOrCreateCustomer])
+    if (error) return { ok: false, error: error.message }
+    await syncCustomerDebt(c.id)
+    return { ok: true, customerId: c.id }
+  }, [findOrCreateCustomer, syncCustomerDebt])
 
   const listOpeningReceivables = useCallback(async () => {
     const { data, error } = await supabase.from('debts')
@@ -845,19 +856,24 @@ export function useAccounting() {
   const editOldReceivable = useCallback(async (id, p) => {
     const amt = Math.round(Number(p.amount) || 0)
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const { data: cur } = await supabase.from('debts').select('paid').eq('id', id).single()
+    const { data: cur } = await supabase.from('debts').select('paid, customer_id').eq('id', id).single()
     const paid = Math.round(Number(cur?.paid) || 0)
     const remaining = Math.max(0, amt - paid)
     const patch = { total_debt: amt, remaining, status: remaining <= 0 ? 'lunas' : 'aktif', due_date: p.dueDate || null, notes: p.note || '', updated_at: new Date().toISOString() }
     if (p.date) patch.created_at = new Date(`${p.date}T12:00:00`).toISOString()
     const { error } = await supabase.from('debts').update(patch).eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
+    if (error) return { ok: false, error: error.message }
+    await syncCustomerDebt(cur?.customer_id)
+    return { ok: true }
+  }, [syncCustomerDebt])
   // Hapus piutang lama → hard delete (konsisten dgn modul Piutang; cascade pembayaran).
   const deleteOldReceivable = useCallback(async (id) => {
+    const { data: row } = await supabase.from('debts').select('customer_id').eq('id', id).maybeSingle()
     const { error } = await supabase.from('debts').delete().eq('id', id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }, [])
+    if (error) return { ok: false, error: error.message }
+    await syncCustomerDebt(row?.customer_id)
+    return { ok: true }
+  }, [syncCustomerDebt])
 
   // Kasbon Karyawan Lama → baris employee_cash_advances (is_opening) — bukan Uang Keluar.
   const addOldKasbon = useCallback(async (p, cashierId) => {
