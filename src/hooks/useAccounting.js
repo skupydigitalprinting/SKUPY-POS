@@ -431,8 +431,8 @@ export function useAccounting() {
       }
       // MIGRASI DATA LAMA — pemasukan ('old_income') / pengeluaran ('old_expense')
       const pushMigration = async (t) => {
-        const { data } = await supabase.from('migration_details').select('id,trx_date,name,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
-        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data Lama', ref: x.name, party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
+        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
 
       if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay(); await pushMigration('old_expense') }
@@ -750,17 +750,33 @@ export function useAccounting() {
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
+  // Bersihkan satu baris migrasi → payload insert valid (dipakai add & import).
+  const migRowPayload = (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
+    return {
+      type: p.type, trx_date: p.date, name: (p.name || '').trim(),
+      customer: p.type === 'old_income' ? ((p.customer || '').trim()) : '',
+      amount: amt, method: m, notes: p.note || '', cashier_id: cashierId || null,
+    }
+  }
   const addMigrationDetail = useCallback(async (p, cashierId) => {
     const amt = Math.round(Number(p.amount) || 0)
     if (!['old_income', 'old_expense'].includes(p.type)) return { ok: false, error: 'Jenis migrasi tidak valid' }
-    if (!p.name?.trim()) return { ok: false, error: p.type === 'old_income' ? 'Sumber pemasukan wajib diisi' : 'Kategori pengeluaran wajib diisi' }
+    if (!p.name?.trim()) return { ok: false, error: p.type === 'old_income' ? 'Nama transaksi wajib diisi' : 'Kategori pengeluaran wajib diisi' }
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     if (!p.date) return { ok: false, error: 'Tanggal wajib diisi' }
-    const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
-    const { error } = await supabase.from('migration_details').insert({
-      type: p.type, trx_date: p.date, name: p.name.trim(), amount: amt, method: m, notes: p.note || '', cashier_id: cashierId || null,
-    })
+    const { error } = await supabase.from('migration_details').insert(migRowPayload(p, cashierId))
     return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // Import massal (Excel) — sisipkan banyak baris sekaligus. Baris invalid dilewati.
+  const bulkAddMigrationDetails = useCallback(async (rows, cashierId) => {
+    const valid = (rows || []).filter(p =>
+      ['old_income', 'old_expense'].includes(p.type) && (p.name || '').trim() && p.date && Math.round(Number(p.amount) || 0) > 0
+    ).map(p => migRowPayload(p, cashierId))
+    if (valid.length === 0) return { ok: false, error: 'Tidak ada baris valid untuk diimpor', count: 0 }
+    const { error } = await supabase.from('migration_details').insert(valid)
+    return error ? { ok: false, error: error.message, count: 0 } : { ok: true, count: valid.length }
   }, [])
   const updateMigrationDetail = useCallback(async (id, p) => {
     const amt = Math.round(Number(p.amount) || 0)
@@ -768,6 +784,7 @@ export function useAccounting() {
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
     const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
     const patch = { name: p.name.trim(), amount: amt, method: m, notes: p.note || '', updated_at: new Date().toISOString() }
+    if (p.type === 'old_income') patch.customer = (p.customer || '').trim()
     if (p.date) patch.trx_date = p.date
     const { error } = await supabase.from('migration_details').update(patch).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
@@ -775,6 +792,12 @@ export function useAccounting() {
   const deleteMigrationDetail = useCallback(async (id) => {
     const { error } = await supabase.from('migration_details').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // "Buat Database Otomatis" — jalankan bootstrap RPC (idempotent).
+  const bootstrapMigrationDetails = useCallback(async () => {
+    const { error } = await supabase.rpc('acc_bootstrap_migration_details')
+    if (!error) return { ok: true }
+    return { ok: false, error: error.message, missingFn: /could not find the function|does not exist|schema cache/i.test(error.message || '') }
   }, [])
 
   const editEmployeeAdvance = useCallback(async (id, p) => {
@@ -862,5 +885,6 @@ export function useAccounting() {
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
     listMigrationDetails, addMigrationDetail, updateMigrationDetail, deleteMigrationDetail,
+    bulkAddMigrationDetails, bootstrapMigrationDetails,
   }
 }

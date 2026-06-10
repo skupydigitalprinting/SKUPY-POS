@@ -3,7 +3,7 @@ import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
-  HandCoins, CreditCard, MoreHorizontal, Settings, Database,
+  HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download,
 } from 'lucide-react'
 import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit } from '../utils/helpers'
 import { Button } from '../components/ui'
@@ -258,13 +258,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [groupPay, setGroupPay] = useState(null) // { key, name, sisa, amount, method, date, note }
   const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
   // ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ──
-  const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
+  const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', customer: '', amount: '', method: 'cash', note: '' }
   const blankMigOut = { type: 'old_expense', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
   const [migRows, setMigRows] = useState([])
   const [migIn, setMigIn] = useState(blankMigIn); const [migInErr, setMigInErr] = useState({})
   const [migOut, setMigOut] = useState(blankMigOut); const [migOutErr, setMigOutErr] = useState({})
   const [editMig, setEditMig] = useState(null)
-  const [migNeedsMigration, setMigNeedsMigration] = useState(false)
+  const [migNeedsMigration, setMigNeedsMigration] = useState(false); const [bootstrapping, setBootstrapping] = useState(false)
+  const [migImport, setMigImport] = useState(null) // { rows:[{type,date,name,customer,amount,method,note,_ok}], fileName }
+  const [importing, setImporting] = useState(false)
 
   // forms (default metode TRANSFER)
   const [expForm, setExpForm] = useState({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'transfer', note: '' })
@@ -734,7 +736,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           const setErr = which === 'in' ? setMigInErr : setMigOutErr
           const e = {}
           if (!f.date) e.date = 'Tanggal wajib diisi'
-          if (!f.name.trim()) e.name = which === 'in' ? 'Sumber pemasukan wajib diisi' : 'Kategori wajib diisi'
+          if (!f.name.trim()) e.name = which === 'in' ? 'Nama transaksi wajib diisi' : 'Kategori wajib diisi'
           if (!(parseCurrency(f.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
           setErr(e); if (Object.keys(e).length) return
           setSaving(true)
@@ -746,15 +748,89 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             loadMig(); loadDashboard()
           } else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setMigNeedsMigration(true) } else toast.error(r.error)
         }
+        const doBootstrap = async () => {
+          if (bootstrapping) return; setBootstrapping(true)
+          const r = await acc.bootstrapMigrationDetails()
+          setBootstrapping(false)
+          if (r.ok) { toast.success('Database migrasi siap dipakai'); setMigNeedsMigration(false); loadMig(); loadDashboard() }
+          else if (r.missingFn) toast.error('Fungsi bootstrap belum ada di DB. Jalankan migration_details.sql sekali di Supabase → SQL Editor.')
+          else toast.error(r.error)
+        }
+        const downloadTemplate = async () => {
+          try {
+            const mod = await import('xlsx'); const XLSX = mod.default || mod
+            const inSheet = XLSX.utils.json_to_sheet([{ 'Tanggal': '2026-01-31', 'Nama Transaksi': 'Contoh penjualan tunai', 'Customer': 'Umum', 'Metode': 'cash', 'Nominal': 1500000, 'Catatan': 'opsional' }])
+            const outSheet = XLSX.utils.json_to_sheet([{ 'Tanggal': '2026-01-31', 'Kategori': 'Operasional', 'Metode': 'transfer', 'Nominal': 500000, 'Catatan': 'opsional' }])
+            const wb = XLSX.utils.book_new()
+            XLSX.utils.book_append_sheet(wb, inSheet, 'Pemasukan Lama')
+            XLSX.utils.book_append_sheet(wb, outSheet, 'Pengeluaran Lama')
+            XLSX.writeFile(wb, 'template-migrasi-data.xlsx')
+          } catch (er) { toast.error('Gagal membuat template: ' + (er?.message || er)) }
+        }
+        const onPickImport = async (file) => {
+          if (!file) return
+          try {
+            const buf = await file.arrayBuffer()
+            const mod = await import('xlsx'); const XLSX = mod.default || mod
+            const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+            const toISO = (v) => {
+              if (v == null || v === '') return ''
+              if (v instanceof Date) return new Date(v.getTime() - v.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+              const s = String(v).trim(); const d = new Date(s)
+              return isNaN(d.getTime()) ? s.slice(0, 10) : new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+            }
+            const meth = (v) => { const s = String(v || '').toLowerCase(); if (s.includes('trans')) return 'transfer'; if (s.includes('qr')) return 'qris'; return 'cash' }
+            const out = []
+            const readSheet = (sheetName, type) => {
+              const ws = wb.Sheets[sheetName]; if (!ws) return
+              XLSX.utils.sheet_to_json(ws, { defval: '' }).forEach(r => {
+                const get = (keys) => { for (const k of keys) { const kk = Object.keys(r).find(x => x.toLowerCase().trim() === k); if (kk != null) return r[kk] } return '' }
+                const date = toISO(get(['tanggal', 'date']))
+                const name = String(get(['nama transaksi', 'nama', 'kategori', 'sumber']) || '').trim()
+                const customer = String(get(['customer', 'pelanggan']) || '').trim()
+                const amount = parseCurrency(get(['nominal', 'amount', 'jumlah']))
+                const method = meth(get(['metode', 'metode pembayaran', 'method']))
+                const note = String(get(['catatan', 'note']) || '').trim()
+                out.push({ type, date, name, customer: type === 'old_income' ? customer : '', amount: String(amount), method, note, _ok: !!(date && name && amount > 0) })
+              })
+            }
+            readSheet('Pemasukan Lama', 'old_income')
+            readSheet('Pengeluaran Lama', 'old_expense')
+            if (out.length === 0) { toast.error('Sheet "Pemasukan Lama" / "Pengeluaran Lama" tidak ditemukan atau kosong'); return }
+            setMigImport({ rows: out, fileName: file.name })
+          } catch (er) { toast.error('Gagal membaca Excel: ' + (er?.message || er)) }
+        }
+        const confirmImport = async () => {
+          if (importing || !migImport) return
+          const valid = migImport.rows.filter(r => r._ok).map(r => ({ ...r, amount: parseCurrency(r.amount) }))
+          if (valid.length === 0) return toast.error('Tidak ada baris valid untuk diimpor')
+          setImporting(true)
+          const r = await acc.bulkAddMigrationDetails(valid, currentUser?.id)
+          setImporting(false)
+          if (r.ok) { toast.success(`${r.count} data berhasil diimpor`); setMigImport(null); loadMig(); loadDashboard() } else toast.error(r.error)
+        }
+        const totIn = migRows.filter(x => x.type === 'old_income').reduce((s, x) => s + Math.round(x.amount || 0), 0)
+        const totOut = migRows.filter(x => x.type === 'old_expense').reduce((s, x) => s + Math.round(x.amount || 0), 0)
+        const importValidCount = (migImport?.rows || []).filter(r => r._ok).length
         return (
         <div className="space-y-4">
           {migNeedsMigration && (
             <div className="rounded-2xl p-4" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
               <div className="flex items-center gap-2 mb-1" style={{ color: '#f59e0b' }}><AlertTriangle size={14} /> <span className="font-bold text-xs" style={{ fontFamily: 'Syne' }}>Tabel Migrasi belum dibuat</span></div>
-              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan <code>supabase/migrations/2026_06_migration_details.sql</code> di Supabase → SQL Editor, lalu klik Coba lagi.</p>
-              <button onClick={loadMig} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><RefreshCw size={11} /> Coba lagi</button>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Klik <b>Buat Database Otomatis</b> untuk membuat tabel langsung dari aplikasi. Jika gagal, jalankan <code>supabase/migrations/2026_06_migration_details.sql</code> sekali di Supabase → SQL Editor.</p>
+              <div className="flex flex-wrap gap-2 mt-2.5">
+                <button onClick={doBootstrap} disabled={bootstrapping} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold btn-press" style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>{bootstrapping ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />} Buat Database Otomatis</button>
+                <button onClick={loadMig} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold btn-press" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><RefreshCw size={11} /> Coba lagi</button>
+              </div>
             </div>
           )}
+
+          {/* RINGKASAN MIGRASI */}
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(16,217,138,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Pemasukan Lama</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(totIn)}</div></div>
+            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(239,68,68,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Pengeluaran Lama</div><div className="text-sm font-bold truncate" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(totOut)}</div></div>
+            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Selisih</div><div className="text-sm font-bold truncate" style={{ color: (totIn - totOut) >= 0 ? '#10d98a' : '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(totIn - totOut)}</div></div>
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* PEMASUKAN LAMA */}
@@ -762,14 +838,17 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               <Field icon={Receipt} label="Tanggal" required error={migInErr.date}>
                 <input type="date" value={migIn.date} onChange={e => setMigIn(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migInErr.date), colorScheme: 'dark' }} />
               </Field>
-              <Field icon={UsersIcon} label="Nama / Sumber Pemasukan" required error={migInErr.name}>
+              <Field icon={UsersIcon} label="Nama Transaksi" required error={migInErr.name}>
                 <input value={migIn.name} onChange={e => setMigIn(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Penjualan tunai bulan lalu" className={FIELD_CLS} style={inpErr(migInErr.name)} />
               </Field>
-              <Field icon={TrendingUp} label="Nominal" required error={migInErr.amount}>
-                <MoneyInput value={migIn.amount} onChange={v => setMigIn(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migInErr.amount)} />
+              <Field icon={UsersIcon} label="Customer" hint="Opsional">
+                <input value={migIn.customer} onChange={e => setMigIn(p => ({ ...p, customer: e.target.value }))} placeholder="Nama customer (opsional)" className={FIELD_CLS} style={inp} />
               </Field>
               <Field icon={Wallet} label="Metode Pembayaran">
                 <select value={migIn.method} onChange={e => setMigIn(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              </Field>
+              <Field icon={TrendingUp} label="Nominal" required error={migInErr.amount}>
+                <MoneyInput value={migIn.amount} onChange={v => setMigIn(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migInErr.amount)} />
               </Field>
               <Field icon={BookOpen} label="Catatan">
                 <input value={migIn.note} onChange={e => setMigIn(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
@@ -782,14 +861,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               <Field icon={Receipt} label="Tanggal" required error={migOutErr.date}>
                 <input type="date" value={migOut.date} onChange={e => setMigOut(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migOutErr.date), colorScheme: 'dark' }} />
               </Field>
-              <Field icon={Receipt} label="Kategori Pengeluaran" required error={migOutErr.name}>
+              <Field icon={Receipt} label="Kategori" required error={migOutErr.name}>
                 <Combo value={migOut.name} onChange={v => setMigOut(p => ({ ...p, name: v }))} options={catOptions} error={migOutErr.name} baseStyle={inp} errStyle={inpErr(true)} placeholder="Pilih / cari kategori" allowCreate onCreate={async (name) => { const r = await acc.addExpenseCategory(name); if (r.ok) { toast.success('Kategori ditambah'); loadExpCats() } else if (!/relation|does not exist|schema cache/i.test(r.error || '')) toast.error(r.error) }} />
-              </Field>
-              <Field icon={TrendingDown} label="Nominal" required error={migOutErr.amount}>
-                <MoneyInput value={migOut.amount} onChange={v => setMigOut(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migOutErr.amount)} />
               </Field>
               <Field icon={Wallet} label="Metode Pembayaran">
                 <select value={migOut.method} onChange={e => setMigOut(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              </Field>
+              <Field icon={TrendingDown} label="Nominal" required error={migOutErr.amount}>
+                <MoneyInput value={migOut.amount} onChange={v => setMigOut(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migOutErr.amount)} />
               </Field>
               <Field icon={BookOpen} label="Catatan">
                 <input value={migOut.note} onChange={e => setMigOut(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
@@ -798,11 +877,50 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             </FormCard>
           </div>
 
+          {/* IMPORT EXCEL */}
+          <FormCard icon={FileSpreadsheet} title="Import Excel" subtitle="Unggah banyak data sekaligus. 2 sheet: 'Pemasukan Lama' & 'Pengeluaran Lama'.">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button variant="secondary" className="flex-1" onClick={downloadTemplate}><Download size={14} /> Download Template</Button>
+              <label className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold cursor-pointer btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.25)', fontFamily: 'Syne' }}>
+                <Upload size={14} /> Upload Excel
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={e => { onPickImport(e.target.files?.[0]); e.target.value = '' }} />
+              </label>
+            </div>
+            {migImport && (
+              <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                  <span className="text-xs font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>Preview: {migImport.fileName}</span>
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{importValidCount} valid / {migImport.rows.length} baris</span>
+                  <button onClick={() => setMigImport(null)} className="ml-auto text-[11px]" style={{ color: 'var(--red)' }}>Batal</button>
+                </div>
+                <div className="overflow-x-auto -mx-1" style={{ maxHeight: 260, overflowY: 'auto' }}>
+                  <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 520 }}>
+                    <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Jenis', 'Tanggal', 'Nama/Kategori', 'Customer', 'Metode', 'Nominal', 'OK'].map(h => <th key={h} className={`px-2 py-1.5 ${h === 'Nominal' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontSize: 10 }}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {migImport.rows.map((r, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid var(--border)', opacity: r._ok ? 1 : 0.5 }}>
+                          <td className="px-2 py-1.5"><span style={{ color: r.type === 'old_income' ? '#10d98a' : '#ef4444' }}>{r.type === 'old_income' ? 'Masuk' : 'Keluar'}</span></td>
+                          <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>{r.date || '—'}</td>
+                          <td className="px-2 py-1.5 truncate" style={{ color: 'var(--text-primary)', maxWidth: 160 }}>{r.name || '—'}</td>
+                          <td className="px-2 py-1.5 truncate" style={{ color: 'var(--text-muted)', maxWidth: 110 }}>{r.customer || '—'}</td>
+                          <td className="px-2 py-1.5 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{r.method}</td>
+                          <td className="px-2 py-1.5 text-right font-bold" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(parseCurrency(r.amount))}</td>
+                          <td className="px-2 py-1.5">{r._ok ? <Check size={12} style={{ color: '#10d98a' }} /> : <X size={12} style={{ color: '#ef4444' }} />}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <Button variant="primary" className="w-full mt-2" disabled={importing || importValidCount === 0} onClick={confirmImport}>{importing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Konfirmasi Import ({importValidCount})</Button>
+              </div>
+            )}
+          </FormCard>
+
           {/* RIWAYAT MIGRASI */}
           <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <div className="flex items-center gap-2 mb-3">
               <BookOpen size={15} style={{ color: 'var(--accent-light)' }} />
-              <h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Riwayat Migrasi Data Lama</h3>
+              <h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Riwayat Migrasi Data</h3>
               <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>{migRows.length} data</span>
             </div>
             {migRows.length === 0 ? <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada data migrasi</p> : (
@@ -815,13 +933,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                       <div className="flex items-center gap-2 flex-wrap min-w-0">
                         <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: `${c}22`, color: c }}>{inc ? 'Pemasukan' : 'Pengeluaran'}</span>
                         <span className="text-xs font-semibold truncate min-w-0" style={{ color: 'var(--text-primary)' }}>{x.name || '—'}</span>
+                        {inc && x.customer && <span className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }}>{x.customer}</span>}
                         <span className="text-[10px] uppercase flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{x.method}</span>
                         <span className="ml-auto text-sm font-bold flex-shrink-0" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{inc ? '+' : '−'}{fmt(x.amount)}</span>
                       </div>
                       <div className="flex items-center gap-2 mt-1.5">
                         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.trx_date)}{x.notes ? ` · ${x.notes}` : ''}</span>
                         <div className="ml-auto flex gap-1.5 flex-shrink-0">
-                          <button onClick={() => setEditMig({ id: x.id, type: x.type, date: x.trx_date, name: x.name || '', amount: String(Math.round(x.amount || 0)), method: x.method || 'cash', note: x.notes || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
+                          <button onClick={() => setEditMig({ id: x.id, type: x.type, date: x.trx_date, name: x.name || '', customer: x.customer || '', amount: String(Math.round(x.amount || 0)), method: x.method || 'cash', note: x.notes || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
                           <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data migrasi ini?', message: 'Data akan disembunyikan. Dashboard (omset/pengeluaran/uang masuk/keluar/laba) akan menyesuaikan.' }))) return; const r = await acc.deleteMigrationDetail(x.id); if (r.ok) { toast.success('Data migrasi dihapus'); loadMig(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
                         </div>
                       </div>
@@ -2149,6 +2268,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                 ? <input value={editMig.name} onChange={e => setEditMig(p => ({ ...p, name: e.target.value }))} className={FIELD_CLS} style={inp} />
                 : <Combo value={editMig.name} onChange={v => setEditMig(p => ({ ...p, name: v }))} options={catOptions} baseStyle={inp} errStyle={inpErr(true)} placeholder="Pilih / cari kategori" allowCreate onCreate={async (name) => { const r = await acc.addExpenseCategory(name); if (r.ok) loadExpCats() }} />}
             </Field>
+            {editMig.type === 'old_income' && <Field icon={UsersIcon} label="Customer" hint="Opsional"><input value={editMig.customer || ''} onChange={e => setEditMig(p => ({ ...p, customer: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>}
             <Field icon={editMig.type === 'old_income' ? TrendingUp : TrendingDown} label="Nominal" required><MoneyInput value={editMig.amount} onChange={v => setEditMig(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
             <Field icon={Wallet} label="Metode Pembayaran"><select value={editMig.method} onChange={e => setEditMig(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
             <Field icon={Pencil} label="Catatan"><input value={editMig.note} onChange={e => setEditMig(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
@@ -2179,7 +2299,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                       return (
                         <tr key={row.kind + row.id + i} style={{ borderBottom: '1px solid var(--border)' }}>
                           <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{dt(row.date)}</td>
-                          <td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>{row.source}</td>
+                          <td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>{row.kind === 'migration' ? <span className="inline-flex items-center gap-1"><span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: 'rgba(167,139,250,0.18)', color: '#a78bfa' }}>Migrasi Data</span></span> : row.source}</td>
                           <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 120 }}>{row.ref || '—'}</td>
                           <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 120 }}>{row.party || '—'}</td>
                           <td className="px-2 py-2" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>{row.method || '—'}</td>

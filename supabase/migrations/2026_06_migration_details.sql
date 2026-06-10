@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS public.migration_details (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   type        text NOT NULL CHECK (type IN ('old_income','old_expense')),
   trx_date    date NOT NULL DEFAULT now()::date,
-  name        text NOT NULL DEFAULT '',     -- sumber pemasukan / kategori pengeluaran
+  name        text NOT NULL DEFAULT '',     -- nama transaksi / sumber / kategori
+  customer    text DEFAULT '',              -- customer (opsional, hanya pemasukan)
   amount      numeric NOT NULL DEFAULT 0,
   method      text DEFAULT 'cash',          -- cash | transfer | qris
   notes       text DEFAULT '',
@@ -25,6 +26,8 @@ CREATE TABLE IF NOT EXISTS public.migration_details (
   updated_at  timestamptz DEFAULT now(),
   deleted_at  timestamptz
 );
+-- Untuk instalasi lama yang sudah punya tabel tanpa kolom customer.
+ALTER TABLE public.migration_details ADD COLUMN IF NOT EXISTS customer text DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_migdet_type    ON public.migration_details (type);
 CREATE INDEX IF NOT EXISTS idx_migdet_date    ON public.migration_details (trx_date);
 CREATE INDEX IF NOT EXISTS idx_migdet_deleted ON public.migration_details (deleted_at);
@@ -35,6 +38,41 @@ DO $$ BEGIN
   CREATE POLICY "anon all migration_details" ON public.migration_details FOR ALL USING (true) WITH CHECK (true);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.migration_details TO anon, authenticated;
+
+-- ---------- BOOTSTRAP RPC: "Buat Database Otomatis" dari aplikasi ----------
+-- Membuat/menyelaraskan tabel migration_details secara idempotent. Dipanggil
+-- frontend lewat supabase.rpc('acc_bootstrap_migration_details') saat tabel
+-- belum ada — owner tidak perlu buka SQL Editor.
+CREATE OR REPLACE FUNCTION public.acc_bootstrap_migration_details()
+RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  CREATE TABLE IF NOT EXISTS public.migration_details (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    type text NOT NULL CHECK (type IN ('old_income','old_expense')),
+    trx_date date NOT NULL DEFAULT now()::date,
+    name text NOT NULL DEFAULT '',
+    customer text DEFAULT '',
+    amount numeric NOT NULL DEFAULT 0,
+    method text DEFAULT 'cash',
+    notes text DEFAULT '',
+    cashier_id uuid,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+    deleted_at timestamptz
+  );
+  ALTER TABLE public.migration_details ADD COLUMN IF NOT EXISTS customer text DEFAULT '';
+  CREATE INDEX IF NOT EXISTS idx_migdet_type    ON public.migration_details (type);
+  CREATE INDEX IF NOT EXISTS idx_migdet_date    ON public.migration_details (trx_date);
+  CREATE INDEX IF NOT EXISTS idx_migdet_deleted ON public.migration_details (deleted_at);
+  ALTER TABLE public.migration_details ENABLE ROW LEVEL SECURITY;
+  BEGIN
+    CREATE POLICY "anon all migration_details" ON public.migration_details FOR ALL USING (true) WITH CHECK (true);
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON public.migration_details TO anon, authenticated;
+  NOTIFY pgrst, 'reload schema';
+  RETURN json_build_object('ok', true);
+END; $$;
+GRANT EXECUTE ON FUNCTION public.acc_bootstrap_migration_details() TO anon, authenticated;
 
 -- ---------- acc_dashboard: + Pemasukan/Pengeluaran Lama (migrasi) ----------
 CREATE OR REPLACE FUNCTION public.acc_dashboard(p_from date, p_to date)
