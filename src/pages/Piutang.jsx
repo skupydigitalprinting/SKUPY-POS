@@ -1,10 +1,10 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useEffect } from 'react'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
-  Receipt, Layers,
+  Receipt, Layers, UserCog, Check,
 } from 'lucide-react'
-import { Button, Badge, EmptyState } from '../components/ui'
+import { Button, Badge, EmptyState, CustomerPicker } from '../components/ui'
 import Modal from '../components/Modal'
 import WhatsAppButton from '../components/WhatsAppButton'
 import WhatsAppReminder from '../components/WhatsAppReminder'
@@ -36,9 +36,32 @@ function allocateFIFO(invoicesAsc, amount) {
 export default function Piutang({
   debts, customers, transactions, admins = [], currentUser,
   payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
+  reassignReceivableCustomer, getReceivableCustomerChanges,
 }) {
   const toast = useToast()
+  const [recvChanges, setRecvChanges] = useState([])
   const isOwner = currentUser?.role === 'owner'
+  const canEditCustomer = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const [reassign, setReassign] = useState(null) // { group } | null
+  const [reassignNewId, setReassignNewId] = useState('')
+  const [reassignBusy, setReassignBusy] = useState(false)
+  const submitReassign = async () => {
+    if (!reassign || reassignBusy) return
+    if (!reassignNewId) return toast.error('Pilih customer baru dulu')
+    const g = reassign
+    if (g.customerId && g.customerId === reassignNewId) return toast.error('Customer tujuan sama dengan customer saat ini.')
+    setReassignBusy(true)
+    const r = await reassignReceivableCustomer({
+      debtIds: g.invoices.map(i => i.id).filter(Boolean),
+      invoiceNos: g.invoices.map(i => i.invoiceNo).filter(Boolean),
+      oldCustomerId: g.customerId || null,
+      oldCustomerName: g.customer?.name || 'Customer dihapus',
+      newCustomerId: reassignNewId,
+    })
+    setReassignBusy(false)
+    if (r.ok) { toast.success('Piutang dipindahkan ke customer baru'); setReassign(null); setReassignNewId('') }
+    else toast.error(r.error || 'Gagal memindahkan')
+  }
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('aktif')
   // Owner bisa filter per admin/kasir. Staff: debts sudah di-scope di App
@@ -53,6 +76,16 @@ export default function Piutang({
   const [historyTarget, setHistoryTarget] = useState(null) // group
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+
+  // Riwayat perubahan customer (audit) untuk grup yang dibuka di modal Riwayat.
+  useEffect(() => {
+    let alive = true
+    if (historyTarget?.customerId && getReceivableCustomerChanges) {
+      getReceivableCustomerChanges(historyTarget.customerId).then(rows => { if (alive) setRecvChanges(rows || []) })
+    } else setRecvChanges([])
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyTarget])
 
   // Peta debt → cashierId (lewat transaksi terkait) untuk filter per-admin owner.
   const cashierOf = useMemo(() => {
@@ -446,6 +479,16 @@ export default function Piutang({
                       }}>
                       <History size={11} /> Riwayat
                     </button>
+                    {canEditCustomer && (
+                      <button onClick={() => { setReassign(g); setReassignNewId('') }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press"
+                        style={{
+                          background: 'rgba(56,189,248,0.1)', color: '#38BDF8',
+                          border: '1px solid rgba(56,189,248,0.2)', fontFamily: 'Syne',
+                        }}>
+                        <UserCog size={11} /> Edit Customer
+                      </button>
+                    )}
                   </div>
                 </div>
               )
@@ -689,6 +732,18 @@ export default function Piutang({
       {/* History modal — gabungan semua nota customer */}
       <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)}
         title="Riwayat Pembayaran" subtitle={historyTarget?.customer?.name} size="md">
+        {recvChanges.length > 0 && (
+          <div className="rounded-xl p-3 mb-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Perubahan Customer</div>
+            <div className="space-y-1">
+              {recvChanges.map(ch => (
+                <div key={ch.id} className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                  Piutang dipindahkan dari <b>{ch.old_customer_name || '—'}</b> ke <b>{ch.new_customer_name || '—'}</b> oleh {ch.changed_by_name || 'Admin'} · {formatDate(ch.changed_at)}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {loadingHistory ? (
           <div className="flex items-center justify-center py-10">
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
@@ -730,6 +785,29 @@ export default function Piutang({
             <Button variant="danger" className="flex-1" onClick={handleDelete}>Ya, Hapus</Button>
           </div>
         </div>
+      </Modal>
+
+      {/* ── PINDAHKAN PIUTANG KE CUSTOMER (Owner/Admin) ── */}
+      <Modal open={!!reassign} onClose={() => { setReassign(null); setReassignNewId('') }} title="Pindahkan Piutang ke Customer" subtitle="Perbaiki relasi customer pada nota piutang ini." size="sm">
+        {reassign && (
+          <div className="space-y-3">
+            <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
+              <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Customer Saat Ini</div>
+              <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{reassign.customer?.name || 'Customer dihapus'}</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{reassign.invoices.length} nota · sisa {formatRupiah(reassign.totalRemaining || 0)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Pilih Customer Baru</div>
+              <CustomerPicker customers={customers} value={reassignNewId} onChange={setReassignNewId} />
+            </div>
+            <div className="flex gap-2">
+              <Button variant="secondary" className="flex-1" onClick={() => { setReassign(null); setReassignNewId('') }}>Batal</Button>
+              <Button variant="primary" className="flex-1" disabled={reassignBusy || !reassignNewId} onClick={submitReassign}>
+                {reassignBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Simpan Perubahan
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )

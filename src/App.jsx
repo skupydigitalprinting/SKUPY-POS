@@ -283,6 +283,8 @@ function AppShell() {
       updateTransactionPayment={store.updateTransactionPayment}
       updateOrderStatus={store.updateOrderStatus}
       deleteTransaction={store.deleteTransaction}
+      reassignOrderCustomer={store.reassignOrderCustomer}
+      getOrderCustomerChanges={store.getOrderCustomerChanges}
       busy={store.busy}
     />,
     customers: <Customers
@@ -303,6 +305,8 @@ function AppShell() {
       payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}
+      reassignReceivableCustomer={store.reassignReceivableCustomer}
+      getReceivableCustomerChanges={store.getReceivableCustomerChanges}
     />,
     // Accounting (owner/staff admin saja) — lazy, owner-gated di setActivePage.
     accounting: canSeeDashboard

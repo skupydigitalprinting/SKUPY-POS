@@ -1,5 +1,40 @@
 import React from 'react'
+import { Check, Search } from 'lucide-react'
 import { DEFAULT_PRODUCT_IMAGE, formatCurrency } from '../utils/helpers'
+
+// Searchable customer picker (cari nama / no HP). Hanya menampilkan customer
+// yang diberikan (sudah difilter aktif + sesuai hak akses role oleh pemanggil).
+export function CustomerPicker({ customers = [], value, onChange, placeholder = 'Cari nama / no HP…' }) {
+  const [q, setQ] = React.useState('')
+  const s = q.toLowerCase().trim()
+  const list = (customers || []).filter((c) => {
+    if (!s) return true
+    return (c.name || '').toLowerCase().includes(s) || String(c.phone || '').includes(s) || String(c.whatsapp || '').includes(s)
+  }).slice(0, 60)
+  const inp = { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
+  return (
+    <div>
+      <div className="relative mb-2">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm" style={inp} />
+      </div>
+      <div style={{ maxHeight: 240, overflowY: 'auto' }} className="space-y-1">
+        {list.length === 0 && <p className="text-xs text-center py-3" style={{ color: 'var(--text-muted)' }}>Tidak ada customer cocok</p>}
+        {list.map((c) => (
+          <button key={c.id} type="button" onClick={() => onChange(c.id)}
+            className="w-full text-left px-3 py-2 rounded-lg flex items-center justify-between gap-2"
+            style={{ background: value === c.id ? 'rgba(139,92,246,0.14)' : 'var(--bg-card)', border: `1px solid ${value === c.id ? 'var(--accent)' : 'var(--border)'}` }}>
+            <span className="min-w-0 truncate">
+              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{c.name}</span>
+              {c.phone && <span className="text-[11px] ml-2" style={{ color: 'var(--text-muted)' }}>{c.phone}</span>}
+            </span>
+            {value === c.id && <Check size={14} style={{ color: 'var(--accent-light)', flexShrink: 0 }} />}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export function Label({ children, required }) {
   return (

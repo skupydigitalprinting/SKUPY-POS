@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
-  AlertTriangle, Loader2,
+  AlertTriangle, Loader2, UserCog, Check,
 } from 'lucide-react'
 import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
@@ -11,7 +11,7 @@ import {
   parseCurrency, toMoney,
 } from '../utils/helpers'
 import { exportTransactionsXLSX } from '../utils/excelExport'
-import { Badge, Button, Input, ProductImage, EmptyState } from '../components/ui'
+import { Badge, Button, Input, ProductImage, EmptyState, CustomerPicker } from '../components/ui'
 import Modal from '../components/Modal'
 const Invoice = React.lazy(() => import('../components/Invoice'))
 import { ORDER_STATUS } from '../data/dummyData'
@@ -67,11 +67,35 @@ const ORDER_TABLE_COLUMNS = '220px 220px 150px 150px 180px 140px 180px 220px'
 const ORDER_TABLE_MIN_WIDTH = 1460  // = jumlah semua lebar di atas
 
 export default function Order({
-  transactions, storeInfo, busy, products = [], customers = [],
+  transactions, storeInfo, busy, products = [], customers = [], currentUser,
   updateTransactionStatus, updateTransactionPayment, deleteTransaction,
-  updateOrderStatus,
+  updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
+  const [orderChanges, setOrderChanges] = useState([])
   const [search, setSearch] = useState('')
+  // Edit Customer order: owner/admin semua; kasir hanya order miliknya.
+  const [reassignTrx, setReassignTrx] = useState(null)
+  const [reassignNewId, setReassignNewId] = useState('')
+  const [reassignBusy, setReassignBusy] = useState(false)
+  const canEditOrderCustomer = (t) => currentUser?.role === 'owner' || currentUser?.role === 'admin' || t?.cashierId === currentUser?.id
+  // Muat riwayat perubahan customer saat detail order dibuka.
+  useEffect(() => {
+    let alive = true
+    if (viewTrx?.invoiceNo && getOrderCustomerChanges) {
+      getOrderCustomerChanges(viewTrx.invoiceNo).then(rows => { if (alive) setOrderChanges(rows || []) })
+    } else setOrderChanges([])
+    return () => { alive = false }
+  }, [viewTrx, getOrderCustomerChanges])
+  const submitReassignOrder = async () => {
+    if (!reassignTrx || reassignBusy) return
+    if (!reassignNewId) return
+    if (reassignTrx.customerId && reassignTrx.customerId === reassignNewId) { window.alert('Customer tujuan sama dengan customer saat ini.'); return }
+    setReassignBusy(true)
+    const r = await reassignOrderCustomer({ transactionId: reassignTrx.id, invoiceNo: reassignTrx.invoiceNo, newCustomerId: reassignNewId })
+    setReassignBusy(false)
+    if (r.ok) { setReassignTrx(null); setReassignNewId('') }
+    else window.alert(r.error || 'Gagal memindahkan customer')
+  }
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterWorkflow, setFilterWorkflow] = useState('all')
   const [viewTrx, setViewTrx] = useState(null)
@@ -763,6 +787,27 @@ export default function Order({
               ))}
             </div>
 
+            {canEditOrderCustomer(viewTrx) && (
+              <button onClick={() => { setReassignTrx(viewTrx); setReassignNewId(''); setViewTrx(null) }}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold btn-press"
+                style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', border: '1px solid rgba(56,189,248,0.25)', fontFamily: 'Syne' }}>
+                <UserCog size={13} /> Edit Customer Order
+              </button>
+            )}
+
+            {orderChanges.length > 0 && (
+              <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Perubahan Customer</div>
+                <div className="space-y-1">
+                  {orderChanges.map(ch => (
+                    <div key={ch.id} className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                      Customer order dipindahkan dari <b>{ch.old_customer_name || '—'}</b> ke <b>{ch.new_customer_name || '—'}</b> oleh {ch.changed_by_name || 'Admin'} · {formatDateTime(ch.changed_at)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Workflow status history */}
             {Array.isArray(viewTrx.statusHistory) && viewTrx.statusHistory.length > 0 && (
               <div className="rounded-xl p-4"
@@ -1338,6 +1383,34 @@ export default function Order({
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* ── UBAH CUSTOMER ORDER ── */}
+      <Modal open={!!reassignTrx} onClose={() => { setReassignTrx(null); setReassignNewId('') }} title="Ubah Customer Order" subtitle="Invoice & nominal tidak berubah — hanya customer." size="sm">
+        {reassignTrx && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
+                <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Invoice</div>
+                <div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{reassignTrx.invoiceNo}</div>
+              </div>
+              <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
+                <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Customer Saat Ini</div>
+                <div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{reassignTrx.customer || 'Umum'}</div>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Pilih Customer Baru</div>
+              <CustomerPicker customers={customers} value={reassignNewId} onChange={setReassignNewId} />
+            </div>
+            <div className="flex gap-2">
+              <Button variant="secondary" className="flex-1" onClick={() => { setReassignTrx(null); setReassignNewId('') }}>Batal</Button>
+              <Button variant="primary" className="flex-1" disabled={reassignBusy || !reassignNewId} onClick={submitReassignOrder}>
+                {reassignBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Simpan Perubahan
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Print Invoice — lazy (html2canvas chunk hanya saat cetak) */}

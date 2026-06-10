@@ -97,6 +97,7 @@ const customerFromDB = (r) => ({
   createdBy: r.created_by || null,
   createdByName: r.created_by_name || '',
   createdByRole: r.created_by_role || '',
+  deletedAt: r.deleted_at || null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -275,7 +276,7 @@ export function useStore() {
       hydrateProductImages()
       const trxList = (t.data || []).map(trxFromDB)
       setTransactions(trxList)
-      setCustomers((c.data || []).map(customerFromDB))
+      setCustomers((c.data || []).map(customerFromDB).filter(x => !x.deletedAt))
       setDebts((d.data || []).map(debtFromDB))
       // debt_payments dipakai dashboard owner; kalau query gagal, biarkan kosong.
       if (!dp.error) setDebtPayments(dp.data || [])
@@ -304,7 +305,7 @@ export function useStore() {
       .from('customers').select('*')
       .order('created_at', { ascending: false })
       .limit(1000)
-    if (!e && mounted.current) setCustomers((data || []).map(customerFromDB))
+    if (!e && mounted.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
   }, [])
 
   const refreshDebtPayments = useCallback(async () => {
@@ -562,11 +563,142 @@ export function useStore() {
   }), [wrap])
 
   const deleteCustomer = useCallback(async (id) => wrap(async () => {
+    // Cegah hard delete bila customer masih punya transaksi/piutang → soft delete.
+    const [{ count: trxCount }, { count: debtCount }] = await Promise.all([
+      supabase.from('transactions').select('id', { count: 'exact', head: true }).eq('customer_id', id),
+      supabase.from('debts').select('id', { count: 'exact', head: true }).eq('customer_id', id),
+    ])
+    const hasRelated = (trxCount || 0) > 0 || (debtCount || 0) > 0
+    if (hasRelated) {
+      const { error } = await supabase.from('customers').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+      if (error && /deleted_at|does not exist|schema cache/i.test(error.message || '')) {
+        return { ok: false, error: 'Customer masih memiliki transaksi/piutang. Jalankan migrasi customer_reassign agar bisa dinonaktifkan.' }
+      }
+      if (error) return { ok: false, error: error.message }
+      if (mounted.current) setCustomers(prev => prev.filter(c => c.id !== id))
+      return { ok: true, deactivated: true, message: 'Customer ini masih memiliki transaksi/piutang. Customer hanya dinonaktifkan, bukan dihapus permanen.' }
+    }
     const { error: e } = await supabase.from('customers').delete().eq('id', id)
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setCustomers(prev => prev.filter(c => c.id !== id))
     return { ok: true }
   }), [wrap])
+
+  // ── PINDAH CUSTOMER (perbaiki relasi customer pada nota yang sudah ada) ──
+  // Tidak mengubah invoice/nominal/status — hanya customer_id + snapshot nama/HP.
+  const _moveInvoiceToCustomer = async (trx, debt, newCust) => {
+    const newName = newCust.name
+    const newPhone = newCust.phone || newCust.whatsapp || ''
+    const newAddr = newCust.address || ''
+    let trxUpdated = 0, debtUpdated = 0
+    if (trx) {
+      let { error } = await supabase.from('transactions')
+        .update({ customer_id: newCust.id, customer: newName, customer_name: newName, customer_phone: newPhone, customer_address: newAddr }).eq('id', trx.id)
+      if (error && /customer_name|does not exist|schema cache/i.test(error.message || '')) {
+        await supabase.from('transactions').update({ customer_id: newCust.id, customer: newName, customer_phone: newPhone, customer_address: newAddr }).eq('id', trx.id)
+      }
+      trxUpdated = 1
+    }
+    if (debt) {
+      let { error } = await supabase.from('debts')
+        .update({ customer_id: newCust.id, customer_name: newName, customer_phone: newPhone }).eq('id', debt.id)
+      if (error && /customer_name|customer_phone|does not exist|schema cache/i.test(error.message || '')) {
+        await supabase.from('debts').update({ customer_id: newCust.id }).eq('id', debt.id)
+      }
+      debtUpdated = 1
+      // pembayaran milik debt ini
+      const pe = await supabase.from('debt_payments').update({ customer_id: newCust.id, customer_name: newName }).eq('debt_id', debt.id)
+      if (pe.error && !/customer_id|customer_name|does not exist|schema cache/i.test(pe.error.message || '')) {
+        // error lain diabaikan (kolom opsional)
+      }
+    }
+    return { trxUpdated, debtUpdated }
+  }
+
+  // PIUTANG: pindahkan semua nota hutang sebuah grup customer ke customer baru.
+  const reassignReceivableCustomer = useCallback(async ({ debtIds = [], invoiceNos = [], oldCustomerId = null, oldCustomerName = '', newCustomerId, notes = '' }) => wrap(async () => {
+    if (currentUser?.role !== 'owner' && currentUser?.role !== 'admin') return { ok: false, error: 'Hanya Owner & Staff Admin yang bisa memindahkan piutang' }
+    if (!newCustomerId) return { ok: false, error: 'Customer baru wajib dipilih' }
+    const newCust = customers.find(c => c.id === newCustomerId)
+    if (!newCust) return { ok: false, error: 'Customer baru tidak ditemukan' }
+    if (oldCustomerId && oldCustomerId === newCustomerId) return { ok: false, error: 'Customer tujuan sama dengan customer saat ini.' }
+
+    let debtRows = []
+    if (debtIds.length) { const r = await supabase.from('debts').select('*').in('id', debtIds); debtRows = r.data || [] }
+    else if (invoiceNos.length) { const r = await supabase.from('debts').select('*').in('invoice_no', invoiceNos); debtRows = r.data || [] }
+    const invSet = new Set([...invoiceNos, ...debtRows.map(d => d.invoice_no).filter(Boolean)])
+    let trxRows = []
+    if (invSet.size) { const r = await supabase.from('transactions').select('*').in('invoice_no', [...invSet]); trxRows = r.data || [] }
+    const trxIds = debtRows.map(d => d.transaction_id).filter(Boolean)
+    if (trxIds.length) { const r2 = await supabase.from('transactions').select('*').in('id', trxIds); (r2.data || []).forEach(t => { if (!trxRows.find(x => x.id === t.id)) trxRows.push(t) }) }
+
+    const oldId = oldCustomerId || debtRows[0]?.customer_id || trxRows[0]?.customer_id || null
+    const oldName = oldCustomerName || trxRows[0]?.customer || debtRows[0]?.customer_name || 'Customer dihapus'
+
+    let affDebt = 0
+    for (const d of debtRows) {
+      const trx = trxRows.find(t => t.id === d.transaction_id || t.invoice_no === d.invoice_no)
+      const r = await _moveInvoiceToCustomer(trx, d, newCust); affDebt += r.debtUpdated
+    }
+    // Transaksi tanpa baris debt (jaga-jaga) tetap dipindah
+    for (const t of trxRows) {
+      if (!debtRows.find(d => d.transaction_id === t.id || d.invoice_no === t.invoice_no)) await _moveInvoiceToCustomer(t, null, newCust)
+    }
+
+    await supabase.from('receivable_customer_changes').insert({
+      old_customer_id: oldId, old_customer_name: oldName,
+      new_customer_id: newCustomerId, new_customer_name: newCust.name,
+      affected_invoice_count: invSet.size, affected_debt_count: affDebt,
+      changed_by: currentUser?.id || null, changed_by_name: currentUser?.name || currentUser?.username || '', notes,
+    }).then(() => {}, () => {})
+
+    if (oldId) await recalculateCustomerSummary(oldId)
+    await recalculateCustomerSummary(newCustomerId)
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+    return { ok: true, affectedInvoice: invSet.size, affectedDebt: affDebt }
+  }), [customers, currentUser, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+
+  // Riwayat perubahan customer (audit) — untuk ditampilkan di UI.
+  const getOrderCustomerChanges = useCallback(async (invoiceNo) => {
+    if (!invoiceNo) return []
+    const { data } = await supabase.from('order_customer_changes').select('*').eq('invoice_no', invoiceNo).order('changed_at', { ascending: false })
+    return data || []
+  }, [])
+  const getReceivableCustomerChanges = useCallback(async (customerId) => {
+    let q = supabase.from('receivable_customer_changes').select('*').order('changed_at', { ascending: false }).limit(50)
+    if (customerId) q = q.or(`new_customer_id.eq.${customerId},old_customer_id.eq.${customerId}`)
+    const { data } = await q
+    return data || []
+  }, [])
+
+  // ORDER: pindahkan customer satu invoice/order (invoice tetap sama).
+  const reassignOrderCustomer = useCallback(async ({ transactionId, invoiceNo, newCustomerId, notes = '' }) => wrap(async () => {
+    if (!newCustomerId) return { ok: false, error: 'Customer baru wajib dipilih' }
+    const newCust = customers.find(c => c.id === newCustomerId)
+    if (!newCust) return { ok: false, error: 'Customer baru tidak ditemukan' }
+    let trx = null
+    if (transactionId) { const r = await supabase.from('transactions').select('*').eq('id', transactionId).maybeSingle(); trx = r.data }
+    if (!trx && invoiceNo) { const r = await supabase.from('transactions').select('*').eq('invoice_no', invoiceNo).maybeSingle(); trx = r.data }
+    if (!trx) return { ok: false, error: 'Order tidak ditemukan' }
+    const role = currentUser?.role
+    if (role !== 'owner' && role !== 'admin' && trx.cashier_id !== currentUser?.id) return { ok: false, error: 'Anda hanya bisa mengubah order milik sendiri' }
+    if (trx.customer_id && trx.customer_id === newCustomerId) return { ok: false, error: 'Customer tujuan sama dengan customer saat ini.' }
+    const oldId = trx.customer_id || null, oldName = trx.customer || 'Customer'
+    let debt = null
+    { const r = await supabase.from('debts').select('*').eq('invoice_no', trx.invoice_no).maybeSingle(); debt = r.data }
+    if (!debt) { const r = await supabase.from('debts').select('*').eq('transaction_id', trx.id).maybeSingle(); debt = r.data }
+    await _moveInvoiceToCustomer(trx, debt, newCust)
+    await supabase.from('order_customer_changes').insert({
+      invoice_no: trx.invoice_no, order_id: trx.id,
+      old_customer_id: oldId, old_customer_name: oldName,
+      new_customer_id: newCustomerId, new_customer_name: newCust.name,
+      changed_by: currentUser?.id || null, changed_by_name: currentUser?.name || currentUser?.username || '', notes,
+    }).then(() => {}, () => {})
+    if (oldId) await recalculateCustomerSummary(oldId)
+    await recalculateCustomerSummary(newCustomerId)
+    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+    return { ok: true }
+  }), [customers, currentUser, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   // ---------- PRODUCTS ----------
   // Detect "missing column" errors from PostgREST (Supabase REST API)
@@ -1585,6 +1717,8 @@ export function useStore() {
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword,
     addCustomer, updateCustomer, deleteCustomer,
+    reassignReceivableCustomer, reassignOrderCustomer,
+    getOrderCustomerChanges, getReceivableCustomerChanges,
     payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
     editDebtPayment, deleteDebtPayment,
   }
