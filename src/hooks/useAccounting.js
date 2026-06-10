@@ -429,13 +429,18 @@ export function useAccounting() {
         const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'debt_payment', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
+      // MIGRASI DATA LAMA — pemasukan ('old_income') / pengeluaran ('old_expense')
+      const pushMigration = async (t) => {
+        const { data } = await supabase.from('migration_details').select('id,trx_date,name,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data Lama', ref: x.name, party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
+      }
 
-      if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay() }
-      else if (kind === 'penjualan') { await pushTransactions() }
-      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay() }
+      if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay(); await pushMigration('old_expense') }
+      else if (kind === 'penjualan') { await pushTransactions(); await pushMigration('old_income') }
+      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushMigration('old_income') }
       // BEBAN = operasional + gaji + bunga bank. TANPA pokok cicilan bank,
       // bayar hutang supplier, pembelian bahan/aset/persediaan.
-      else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga() }
+      else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga(); await pushMigration('old_expense') }
       else if (kind === 'pembelian_bahan' || kind === 'modal_barang' || kind === 'persediaan') { await pushPurchases(false); await pushExpenses(c => c === 'Pembelian Bahan') }
       else if (kind === 'sudah_bayar') {
         const { data } = await supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid').is('deleted_at', null)
@@ -734,6 +739,44 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── MIGRASI DATA AWAL (migration_details) ──
+  // Pemasukan/pengeluaran lama sebelum POS dipakai. Tidak membuat invoice/order,
+  // tidak memotong stok. Soft delete → tidak dihitung. acc_dashboard mengurus
+  // efek ke Omset / Uang Masuk-Keluar / Arus Kas / Laba (lihat migrasi SQL).
+  const listMigrationDetails = useCallback(async () => {
+    const { data, error } = await supabase.from('migration_details')
+      .select('*').is('deleted_at', null)
+      .order('trx_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addMigrationDetail = useCallback(async (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!['old_income', 'old_expense'].includes(p.type)) return { ok: false, error: 'Jenis migrasi tidak valid' }
+    if (!p.name?.trim()) return { ok: false, error: p.type === 'old_income' ? 'Sumber pemasukan wajib diisi' : 'Kategori pengeluaran wajib diisi' }
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    if (!p.date) return { ok: false, error: 'Tanggal wajib diisi' }
+    const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
+    const { error } = await supabase.from('migration_details').insert({
+      type: p.type, trx_date: p.date, name: p.name.trim(), amount: amt, method: m, notes: p.note || '', cashier_id: cashierId || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const updateMigrationDetail = useCallback(async (id, p) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!p.name?.trim()) return { ok: false, error: 'Nama / kategori wajib diisi' }
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
+    const patch = { name: p.name.trim(), amount: amt, method: m, notes: p.note || '', updated_at: new Date().toISOString() }
+    if (p.date) patch.trx_date = p.date
+    const { error } = await supabase.from('migration_details').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteMigrationDetail = useCallback(async (id) => {
+    const { error } = await supabase.from('migration_details').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   const editEmployeeAdvance = useCallback(async (id, p) => {
     const amt = Math.round(Number(p.amount) || 0)
     if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
@@ -818,5 +861,6 @@ export function useAccounting() {
     listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
+    listMigrationDetails, addMigrationDetail, updateMigrationDetail, deleteMigrationDetail,
   }
 }

@@ -257,6 +257,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [detailPayRows, setDetailPayRows] = useState({}) // { [advanceId]: payments[] }
   const [groupPay, setGroupPay] = useState(null) // { key, name, sisa, amount, method, date, note }
   const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
+  // ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ──
+  const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
+  const blankMigOut = { type: 'old_expense', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
+  const [migRows, setMigRows] = useState([])
+  const [migIn, setMigIn] = useState(blankMigIn); const [migInErr, setMigInErr] = useState({})
+  const [migOut, setMigOut] = useState(blankMigOut); const [migOutErr, setMigOutErr] = useState({})
+  const [editMig, setEditMig] = useState(null)
+  const [migNeedsMigration, setMigNeedsMigration] = useState(false)
 
   // forms (default metode TRANSFER)
   const [expForm, setExpForm] = useState({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'transfer', note: '' })
@@ -346,6 +354,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
   const [kasbonNeedsMigration, setKasbonNeedsMigration] = useState(false)
   const loadEmployees = async () => { const r = await acc.listEmployees(); if (r.ok) setEmployees(r.data) }
+  const loadMig = async () => {
+    const r = await acc.listMigrationDetails()
+    if (r.ok) { setMigRows(r.data); setMigNeedsMigration(false) }
+    else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setMigRows([]); setMigNeedsMigration(true) }
+    else toast.error(r.error || 'Gagal memuat data migrasi')
+  }
   const loadAdvances = async () => {
     const r = await acc.listEmployeeAdvances()
     if (r.ok) { setAdvances(r.data); setKasbonNeedsMigration(false) }
@@ -390,7 +404,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
       else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
       else if (tab === 'sewa') await loadRents()
-      else if (tab === 'migrasi') await loadDashboard()
+      else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats() }
       else if (tab === 'pengaturan') await loadExpCats()
       setLoading(false)
     }
@@ -660,7 +674,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
         <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
           <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}><AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span></div>
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master.</p>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master → migration_details.</p>
           <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadDashboard() }}><RefreshCw size={13} /> Coba lagi</Button>
         </div>
       </Page>
@@ -713,21 +727,125 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
       {loading && <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>}
 
-      {/* ── MIGRASI DATA ── */}
-      {tab === 'migrasi' && !loading && (
+      {/* ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ── */}
+      {tab === 'migrasi' && !loading && (() => {
+        const submitMig = async (which) => {
+          const f = which === 'in' ? migIn : migOut
+          const setErr = which === 'in' ? setMigInErr : setMigOutErr
+          const e = {}
+          if (!f.date) e.date = 'Tanggal wajib diisi'
+          if (!f.name.trim()) e.name = which === 'in' ? 'Sumber pemasukan wajib diisi' : 'Kategori wajib diisi'
+          if (!(parseCurrency(f.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
+          setErr(e); if (Object.keys(e).length) return
+          setSaving(true)
+          const r = await acc.addMigrationDetail({ ...f, amount: parseCurrency(f.amount) }, currentUser?.id)
+          setSaving(false)
+          if (r.ok) {
+            toast.success(which === 'in' ? 'Pemasukan lama dicatat' : 'Pengeluaran lama dicatat')
+            if (which === 'in') { setMigIn(blankMigIn); setMigInErr({}) } else { setMigOut(blankMigOut); setMigOutErr({}) }
+            loadMig(); loadDashboard()
+          } else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setMigNeedsMigration(true) } else toast.error(r.error)
+        }
+        return (
         <div className="space-y-4">
-          <FormCard icon={Database} title="Migrasi & Sinkronisasi Data" subtitle="Hitung ulang seluruh jurnal & saldo accounting, lalu ekspor data bila perlu.">
+          {migNeedsMigration && (
+            <div className="rounded-2xl p-4" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
+              <div className="flex items-center gap-2 mb-1" style={{ color: '#f59e0b' }}><AlertTriangle size={14} /> <span className="font-bold text-xs" style={{ fontFamily: 'Syne' }}>Tabel Migrasi belum dibuat</span></div>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan <code>supabase/migrations/2026_06_migration_details.sql</code> di Supabase → SQL Editor, lalu klik Coba lagi.</p>
+              <button onClick={loadMig} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><RefreshCw size={11} /> Coba lagi</button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* PEMASUKAN LAMA */}
+            <FormCard icon={TrendingUp} title="Tambah Pemasukan Lama" subtitle="Transaksi masuk sebelum POS dipakai. Menambah Omset & Uang Masuk — tanpa invoice / order / potong stok.">
+              <Field icon={Receipt} label="Tanggal" required error={migInErr.date}>
+                <input type="date" value={migIn.date} onChange={e => setMigIn(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migInErr.date), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={UsersIcon} label="Nama / Sumber Pemasukan" required error={migInErr.name}>
+                <input value={migIn.name} onChange={e => setMigIn(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Penjualan tunai bulan lalu" className={FIELD_CLS} style={inpErr(migInErr.name)} />
+              </Field>
+              <Field icon={TrendingUp} label="Nominal" required error={migInErr.amount}>
+                <MoneyInput value={migIn.amount} onChange={v => setMigIn(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migInErr.amount)} />
+              </Field>
+              <Field icon={Wallet} label="Metode Pembayaran">
+                <select value={migIn.method} onChange={e => setMigIn(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              </Field>
+              <Field icon={BookOpen} label="Catatan">
+                <input value={migIn.note} onChange={e => setMigIn(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Button variant="primary" className="w-full" disabled={saving} onClick={() => submitMig('in')}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pemasukan Lama</Button>
+            </FormCard>
+
+            {/* PENGELUARAN LAMA */}
+            <FormCard icon={TrendingDown} title="Tambah Pengeluaran Lama" subtitle="Pengeluaran sebelum POS dipakai. Menambah Total Pengeluaran & Uang Keluar; mengurangi Arus Kas & Laba.">
+              <Field icon={Receipt} label="Tanggal" required error={migOutErr.date}>
+                <input type="date" value={migOut.date} onChange={e => setMigOut(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migOutErr.date), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Receipt} label="Kategori Pengeluaran" required error={migOutErr.name}>
+                <Combo value={migOut.name} onChange={v => setMigOut(p => ({ ...p, name: v }))} options={catOptions} error={migOutErr.name} baseStyle={inp} errStyle={inpErr(true)} placeholder="Pilih / cari kategori" allowCreate onCreate={async (name) => { const r = await acc.addExpenseCategory(name); if (r.ok) { toast.success('Kategori ditambah'); loadExpCats() } else if (!/relation|does not exist|schema cache/i.test(r.error || '')) toast.error(r.error) }} />
+              </Field>
+              <Field icon={TrendingDown} label="Nominal" required error={migOutErr.amount}>
+                <MoneyInput value={migOut.amount} onChange={v => setMigOut(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(migOutErr.amount)} />
+              </Field>
+              <Field icon={Wallet} label="Metode Pembayaran">
+                <select value={migOut.method} onChange={e => setMigOut(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              </Field>
+              <Field icon={BookOpen} label="Catatan">
+                <input value={migOut.note} onChange={e => setMigOut(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Button variant="primary" className="w-full" disabled={saving} onClick={() => submitMig('out')}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pengeluaran Lama</Button>
+            </FormCard>
+          </div>
+
+          {/* RIWAYAT MIGRASI */}
+          <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="flex items-center gap-2 mb-3">
+              <BookOpen size={15} style={{ color: 'var(--accent-light)' }} />
+              <h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Riwayat Migrasi Data Lama</h3>
+              <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>{migRows.length} data</span>
+            </div>
+            {migRows.length === 0 ? <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada data migrasi</p> : (
+              <div className="space-y-2">
+                {migRows.map(x => {
+                  const inc = x.type === 'old_income'
+                  const c = inc ? '#10d98a' : '#ef4444'
+                  return (
+                    <div key={x.id} className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: `${c}22`, color: c }}>{inc ? 'Pemasukan' : 'Pengeluaran'}</span>
+                        <span className="text-xs font-semibold truncate min-w-0" style={{ color: 'var(--text-primary)' }}>{x.name || '—'}</span>
+                        <span className="text-[10px] uppercase flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{x.method}</span>
+                        <span className="ml-auto text-sm font-bold flex-shrink-0" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{inc ? '+' : '−'}{fmt(x.amount)}</span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.trx_date)}{x.notes ? ` · ${x.notes}` : ''}</span>
+                        <div className="ml-auto flex gap-1.5 flex-shrink-0">
+                          <button onClick={() => setEditMig({ id: x.id, type: x.type, date: x.trx_date, name: x.name || '', amount: String(Math.round(x.amount || 0)), method: x.method || 'cash', note: x.notes || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
+                          <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data migrasi ini?', message: 'Data akan disembunyikan. Dashboard (omset/pengeluaran/uang masuk/keluar/laba) akan menyesuaikan.' }))) return; const r = await acc.deleteMigrationDetail(x.id); if (r.ok) { toast.success('Data migrasi dihapus'); loadMig(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Sinkronisasi & urutan migrasi DB */}
+          <FormCard icon={Database} title="Sinkronisasi & Migrasi Database" subtitle="Hitung ulang seluruh jurnal & saldo accounting, lalu ekspor data bila perlu.">
             <div className="flex flex-col sm:flex-row gap-2">
               <Button variant="primary" className="flex-1" disabled={syncing} onClick={doSync}>{syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sinkronkan Sekarang</Button>
               <Button variant="secondary" className="flex-1" disabled={exporting} onClick={exportExcel}>{exporting ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Export Excel</Button>
             </div>
             <div className="rounded-xl p-3" style={{ background: 'var(--bg-elevated)' }}>
               <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Urutan Migrasi Database (Supabase → SQL Editor)</div>
-              <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master.</p>
+              <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>… → supplier_debt_fixes → employee_cash_advances → employees_master → migration_details.</p>
             </div>
           </FormCard>
         </div>
-      )}
+        )
+      })()}
 
       {/* ── PENGATURAN ACCOUNTING ── */}
       {tab === 'pengaturan' && !loading && (
@@ -2021,6 +2139,31 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       </Modal>
 
       {/* ── DETAIL SUMBER ANGKA (klik card ringkasan) ── */}
+      {/* ── EDIT MIGRASI DATA LAMA ── */}
+      <Modal open={!!editMig} onClose={() => setEditMig(null)} title={editMig ? (editMig.type === 'old_income' ? 'Edit Pemasukan Lama' : 'Edit Pengeluaran Lama') : ''} size="sm">
+        {editMig && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal" required><input type="date" value={editMig.date} onChange={e => setEditMig(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={editMig.type === 'old_income' ? UsersIcon : Receipt} label={editMig.type === 'old_income' ? 'Nama / Sumber Pemasukan' : 'Kategori Pengeluaran'} required>
+              {editMig.type === 'old_income'
+                ? <input value={editMig.name} onChange={e => setEditMig(p => ({ ...p, name: e.target.value }))} className={FIELD_CLS} style={inp} />
+                : <Combo value={editMig.name} onChange={v => setEditMig(p => ({ ...p, name: v }))} options={catOptions} baseStyle={inp} errStyle={inpErr(true)} placeholder="Pilih / cari kategori" allowCreate onCreate={async (name) => { const r = await acc.addExpenseCategory(name); if (r.ok) loadExpCats() }} />}
+            </Field>
+            <Field icon={editMig.type === 'old_income' ? TrendingUp : TrendingDown} label="Nominal" required><MoneyInput value={editMig.amount} onChange={v => setEditMig(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Wallet} label="Metode Pembayaran"><select value={editMig.method} onChange={e => setEditMig(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+            <Field icon={Pencil} label="Catatan"><input value={editMig.note} onChange={e => setEditMig(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              if (!editMig.name.trim()) return toast.error('Nama / kategori wajib diisi')
+              if (!(parseCurrency(editMig.amount) > 0)) return toast.error('Nominal harus lebih dari 0')
+              setSaving(true)
+              const r = await acc.updateMigrationDetail(editMig.id, { ...editMig, amount: parseCurrency(editMig.amount) })
+              setSaving(false)
+              if (r.ok) { toast.success('Data migrasi diperbarui'); setEditMig(null); loadMig(); loadDashboard() } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? `Detail — ${detail.title}` : ''} size="lg">
         {detail && (
           detail.loading ? <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
