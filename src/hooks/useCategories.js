@@ -1,92 +1,82 @@
 // ─────────────────────────────────────────────────────────────
-// useCategories — kategori produk (CRUD). SUMBER UTAMA: tabel Supabase
-// `product_categories`. localStorage hanya CACHE OFFLINE supaya UI tidak
-// kosong sebelum DB merespons. Pola: optimistic update (UI langsung berubah)
-// + tulis ke DB di background → realtime dalam sesi, persisten lintas device.
+// useCategories — kategori produk. SUMBER UTAMA: tabel Supabase
+// `product_categories`. TIDAK memakai localStorage sebagai cache permanen
+// (cache lama dibersihkan). Default hanya dipakai untuk paint pertama
+// sebelum DB merespons / bila DB benar-benar kosong.
 //
-// Memakai useSyncExternalStore agar SEMUA komponen (Produk, Kasir, Dashboard)
-// ikut ter-update otomatis saat kategori berubah — tanpa reload halaman.
+// Reaktif lewat useSyncExternalStore + realtime Supabase: tambah/edit/
+// nonaktifkan kategori → SEMUA komponen (Produk, Kasir, Dashboard, Pengaturan)
+// langsung update tanpa refresh.
 // ─────────────────────────────────────────────────────────────
 import { useSyncExternalStore, useEffect } from 'react'
 import { PRODUCT_CATEGORIES } from '../data/dummyData'
 import { supabase, isSupabaseConfigured } from '../lib/supabase'
 
-const KEY = 'skupy_categories_v1'
+// Bersihkan cache lama localStorage (kategori tidak lagi disimpan permanen).
+try { localStorage.removeItem('skupy_categories_v1') } catch { /* ignore */ }
 
-// Kategori "Semua" untuk bar filter — tidak bisa diedit / dihapus.
 export const ALL_CATEGORY = { id: 'all', label: 'Semua', icon: '🎨' }
 
 function seed() {
-  // Default mengikuti kategori bawaan (tanpa "Semua").
-  return PRODUCT_CATEGORIES.map((c) => ({ id: c.id, label: c.label, icon: c.icon }))
+  return PRODUCT_CATEGORIES.map((c) => ({ id: c.id, label: c.label, icon: c.icon, color: null, thumbnail: null, active: true }))
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (!raw) return seed()
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed) && parsed.length) {
-      return parsed
-        .filter((c) => c && c.id && c.id !== 'all')
-        .map((c) => ({ id: String(c.id), label: String(c.label || c.id), icon: c.icon || '📦' }))
-    }
-    return seed()
-  } catch {
-    return seed()
-  }
-}
-
-let cats = load()
-// Map id→label dari SEMUA kategori (termasuk yang sudah dihapus) supaya produk
-// lama tetap menampilkan nama kategori terakhir walau kategori dihapus.
-let labelById = Object.fromEntries(cats.map((c) => [c.id, c.label]))
+// cats = kategori AKTIF (untuk dropdown/filter, reaktif).
+let cats = seed()
+// metaById = meta SEMUA kategori (termasuk nonaktif & terhapus) → produk lama
+// tetap menampilkan nama/icon kategori terakhir.
+let metaById = Object.fromEntries(cats.map((c) => [c.id, { label: c.label, icon: c.icon, color: c.color }]))
 const listeners = new Set()
 
-function persist() {
-  try { localStorage.setItem(KEY, JSON.stringify(cats)) } catch { /* ignore */ }
-}
-function emit() {
-  persist()
-  listeners.forEach((l) => l())
-}
-function subscribe(cb) {
-  listeners.add(cb)
-  return () => listeners.delete(cb)
-}
+function emit() { listeners.forEach((l) => l()) }
+function subscribe(cb) { listeners.add(cb); return () => listeners.delete(cb) }
 function getSnapshot() { return cats }
-function setCats(next) {
+function mergeMeta(rows) {
+  metaById = { ...metaById, ...Object.fromEntries(rows.map((c) => [c.id, { label: c.label, icon: c.icon || '📦', color: c.color || null }])) }
+}
+function setCats(next, metaRows) {
   cats = next
-  // gabungkan (jangan buang label lama) → label kategori terhapus tetap dikenal
-  labelById = { ...labelById, ...Object.fromEntries(next.map((c) => [c.id, c.label])) }
+  if (metaRows) mergeMeta(metaRows)
+  else mergeMeta(next.map((c) => ({ id: c.id, label: c.label, icon: c.icon, color: c.color })))
   emit()
 }
 
 // ── DB sebagai sumber utama ──
 let dbLoaded = false
-async function loadFromDB() {
+async function loadProductCategories() {
   if (!isSupabaseConfigured) return
   try {
+    // Ambil SEMUA baris (termasuk nonaktif & terhapus) untuk peta nama/icon,
+    // supaya produk lama tetap menampilkan nama kategori terakhir.
     const { data, error } = await supabase
       .from('product_categories').select('*')
       .order('sort_order', { ascending: true }).order('label', { ascending: true })
     if (error || !Array.isArray(data)) return
-    // label map dari SEMUA baris (termasuk deleted/nonaktif) → produk lama tetap ada nama
-    labelById = { ...labelById, ...Object.fromEntries(data.map((c) => [c.id, c.label])) }
-    // Dropdown = aktif (tidak deleted, is_active != false)
+    mergeMeta(data)
     const active = data
       .filter((c) => !c.deleted_at && c.is_active !== false)
-      .map((c) => ({ id: c.id, label: c.label, icon: c.icon || '📦', color: c.color || null, thumbnail: c.thumbnail_url || null, active: c.is_active !== false }))
+      .map((c) => ({ id: c.id, label: c.label, icon: c.icon || '📦', color: c.color || null, thumbnail: c.thumbnail_url || null, active: true }))
     dbLoaded = true
-    // Hanya ganti store bila tabel memang berisi baris (hindari menimpa cache
-    // localStorage dengan array kosong saat fetch belum siap). Bila tabel ada
-    // isinya tapi semua nonaktif, active boleh kosong — itu memang benar.
     if (data.length) { cats = active; emit() }
-  } catch { /* offline → tetap pakai cache localStorage */ }
+  } catch { /* offline → tetap pakai default in-memory */ }
 }
-// muat sekali saat modul dievaluasi (app start)
-loadFromDB()
-export function refreshCategories() { return loadFromDB() }
+// alias kompatibilitas
+export function refreshCategories() { return loadProductCategories() }
+export { loadProductCategories }
+
+// muat sekali saat modul dievaluasi + langganan realtime
+loadProductCategories()
+let realtimeStarted = false
+function startRealtime() {
+  if (realtimeStarted || !isSupabaseConfigured) return
+  realtimeStarted = true
+  try {
+    supabase.channel('product-categories-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'product_categories' }, () => { loadProductCategories() })
+      .subscribe()
+  } catch { /* realtime opsional */ }
+}
+startRealtime()
 
 function slugify(s) {
   return (
@@ -96,7 +86,6 @@ function slugify(s) {
   )
 }
 
-// addCategory menerima field opsional: color, thumbnail (→thumbnail_url), active.
 export function addCategory({ label, icon, color, thumbnail, active = true }) {
   const name = (label || '').trim()
   if (!name) return { ok: false, error: 'Nama kategori wajib diisi' }
@@ -104,16 +93,16 @@ export function addCategory({ label, icon, color, thumbnail, active = true }) {
     return { ok: false, error: 'Kategori dengan nama itu sudah ada' }
   }
   let id = slugify(name)
-  if (cats.some((c) => c.id === id) || labelById[id]) {
+  if (cats.some((c) => c.id === id) || metaById[id]) {
     let n = 2
-    while (cats.some((c) => c.id === `${id}-${n}`) || labelById[`${id}-${n}`]) n++
+    while (cats.some((c) => c.id === `${id}-${n}`) || metaById[`${id}-${n}`]) n++
     id = `${id}-${n}`
   }
   const icn = (icon || '').trim() || '📦'
   const item = { id, label: name, icon: icn, color: color || null, thumbnail: thumbnail || null, active: !!active }
-  // hanya tampil di dropdown bila aktif
+  mergeMeta([{ id, label: name, icon: icn, color: color || null }])
   if (active) setCats([...cats, item])
-  else { labelById = { ...labelById, [id]: name }; emit() }
+  else emit()
   if (isSupabaseConfigured) {
     supabase.from('product_categories')
       .upsert({ id, label: name, icon: icn, color: color || null, thumbnail_url: thumbnail || null, is_active: !!active, sort_order: cats.length, deleted_at: null, updated_at: new Date().toISOString() })
@@ -128,16 +117,16 @@ export function updateCategory(id, { label, icon, color, thumbnail, active }) {
   if (name && cats.some((c) => c.id !== id && c.label.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'Kategori dengan nama itu sudah ada' }
   }
-  // simpan label ke peta (untuk kategori yang mungkin sedang nonaktif/tak di cats)
-  if (name) labelById = { ...labelById, [id]: name }
+  // selalu segarkan meta (nama/icon terbaru) → list & dashboard ikut berubah
+  const prevMeta = metaById[id] || {}
+  mergeMeta([{ id, label: name || prevMeta.label || id, icon: (icon != null ? String(icon).trim() : '') || prevMeta.icon || '📦', color: color !== undefined ? color : prevMeta.color }])
   const exists = cats.some((c) => c.id === id)
   let next
   if (active === false) {
-    // nonaktif → keluarkan dari dropdown
     next = cats.filter((c) => c.id !== id)
   } else if (active === true && !exists) {
-    // aktifkan kembali → masukkan ke dropdown
-    next = [...cats, { id, label: name || labelById[id] || id, icon: (icon != null ? String(icon).trim() : '') || '📦', color: color || null, thumbnail: thumbnail || null, active: true }]
+    const m = metaById[id]
+    next = [...cats, { id, label: m.label, icon: m.icon, color: m.color || null, thumbnail: thumbnail || null, active: true }]
   } else {
     next = cats.map((c) => c.id === id ? {
       ...c,
@@ -161,15 +150,13 @@ export function updateCategory(id, { label, icon, color, thumbnail, active }) {
   return { ok: true }
 }
 
-// Aktif/nonaktifkan tanpa menghapus (produk lama tetap aman).
 export function setCategoryActive(id, active) {
   return updateCategory(id, { active: !!active })
 }
 
 export function deleteCategory(id) {
   if (cats.length <= 1) return { ok: false, error: 'Minimal harus ada 1 kategori aktif' }
-  // hapus dari dropdown; labelById tetap menyimpan nama → produk lama aman
-  setCats(cats.filter((c) => c.id !== id))
+  setCats(cats.filter((c) => c.id !== id)) // metaById tetap simpan nama → produk lama aman
   if (isSupabaseConfigured) {
     supabase.from('product_categories').update({ deleted_at: new Date().toISOString() }).eq('id', id)
       .then(({ error }) => { if (error) console.warn('[categories] gagal hapus di DB:', error.message) })
@@ -185,8 +172,7 @@ export async function listAllCategories() {
       .from('product_categories').select('*').is('deleted_at', null)
       .order('sort_order', { ascending: true }).order('label', { ascending: true })
     if (error || !Array.isArray(data)) return getCategories()
-    // segarkan labelById juga
-    labelById = { ...labelById, ...Object.fromEntries(data.map((c) => [c.id, c.label])) }
+    mergeMeta(data)
     return data.map((c) => ({ id: c.id, label: c.label, icon: c.icon || '📦', color: c.color || null, thumbnail: c.thumbnail_url || null, active: c.is_active !== false }))
   } catch { return getCategories() }
 }
@@ -194,13 +180,18 @@ export async function listAllCategories() {
 // Getter biasa (untuk util non-React seperti excelExport).
 export function getCategories() { return cats }
 export function getCatLabel(id) {
-  return labelById[id] || cats.find((c) => c.id === id)?.label || id || '-'
+  return metaById[id]?.label || cats.find((c) => c.id === id)?.label || id || '-'
+}
+// Meta lengkap (label, icon, color) — termasuk kategori nonaktif/terhapus.
+export function getCatMeta(id) {
+  const m = metaById[id]
+  if (m) return { label: m.label, icon: m.icon || '📦', color: m.color || null }
+  const c = cats.find((x) => x.id === id)
+  return { label: c?.label || id || '-', icon: c?.icon || '📦', color: c?.color || null }
 }
 
-// Hook React — reaktif terhadap perubahan kategori. Sekali mount memicu
-// loadFromDB() untuk memastikan data DB tersinkron (mis. setelah login).
 export function useCategories() {
   const categories = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-  useEffect(() => { if (!dbLoaded) loadFromDB() }, [])
-  return { categories, addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories, refreshCategories }
+  useEffect(() => { if (!dbLoaded) loadProductCategories(); startRealtime() }, [])
+  return { categories, addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories, refreshCategories, loadProductCategories }
 }

@@ -13,10 +13,12 @@ import { useToast } from '../components/Toast'
 const EMPTY = { name: '', phone: '', whatsapp: '', address: '', email: '', notes: '' }
 
 export default function Customers({
-  customers, transactions,
+  customers, transactions, currentUser,
   addCustomer, updateCustomer, deleteCustomer,
 }) {
   const toast = useToast()
+  // Owner & Staff Admin melihat "Dibuat oleh" agar tahu customer milik kasir siapa.
+  const canSeeOwner = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all') // all | debt | lunas
   const [modalOpen, setModalOpen] = useState(false)
@@ -194,6 +196,11 @@ export default function Customers({
                         {c.totalDebt > 0
                           ? <Badge color="amber">Hutang</Badge>
                           : c.totalTransactions > 0 ? <Badge color="green">Lunas</Badge> : <Badge color="gray">Baru</Badge>}
+                        {canSeeOwner && c.createdByName && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }}>
+                            Dibuat oleh: {c.createdByName}
+                          </span>
+                        )}
                       </div>
                       {c.phone && (
                         <p className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>

@@ -94,6 +94,9 @@ const customerFromDB = (r) => ({
   totalTransactions: Number(r.total_transactions) || 0,
   totalSpent: Number(r.total_spent) || 0,
   totalDebt: Number(r.total_debt) || 0,
+  createdBy: r.created_by || null,
+  createdByName: r.created_by_name || '',
+  createdByRole: r.created_by_role || '',
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -533,11 +536,23 @@ export function useStore() {
   // ---------- CUSTOMERS ----------
   const addCustomer = useCallback(async (data) => wrap(async () => {
     if (!data.name?.trim()) return { ok: false, error: 'Nama wajib diisi' }
-    const { data: row, error: e } = await supabase.from('customers').insert(customerToDB(data)).select().single()
+    // Kepemilikan: customer dibuat oleh user yang sedang login (untuk hak akses kasir)
+    const payload = customerToDB(data)
+    if (currentUser?.id) {
+      payload.created_by = currentUser.id
+      payload.created_by_name = currentUser.name || currentUser.username || ''
+      payload.created_by_role = currentUser.role || ''
+    }
+    let { data: row, error: e } = await supabase.from('customers').insert(payload).select().single()
+    // Fallback bila kolom created_by belum dimigrasi
+    if (e && /created_by|does not exist|schema cache/i.test(e.message || '')) {
+      const base = customerToDB(data)
+      ;({ data: row, error: e } = await supabase.from('customers').insert(base).select().single())
+    }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setCustomers(prev => [customerFromDB(row), ...prev])
     return { ok: true, data: customerFromDB(row) }
-  }), [wrap])
+  }), [wrap, currentUser])
 
   const updateCustomer = useCallback(async (id, data) => wrap(async () => {
     const { data: row, error: e } = await supabase.from('customers').update(customerToDB(data)).eq('id', id).select().single()

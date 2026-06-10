@@ -234,6 +234,13 @@ function AppShell() {
         const linked = store.transactions.find(t => t.id === d.transactionId)
         return !linked || linked.cashierId === store.currentUser?.id
       })
+  // Customer per kasir: Owner & Staff Admin lihat semua; Staff Kasir hanya
+  // customer miliknya (created_by). Customer lama (created_by null) tidak tampil
+  // ke kasir. Tidak mengubah data — hanya menyaring tampilan/pilihan.
+  const canSeeAllCustomers = role === 'owner' || role === 'admin'
+  const scopedCustomers = canSeeAllCustomers
+    ? store.customers
+    : store.customers.filter(c => c.createdBy === store.currentUser?.id)
 
   const pages = {
     dashboard: <Dashboard
@@ -253,7 +260,7 @@ function AppShell() {
     />,
     kasir: <Kasir
       products={store.products}
-      customers={store.customers}
+      customers={scopedCustomers}
       addTransaction={store.addTransaction}
       storeInfo={store.storeInfo}
       busy={store.busy}
@@ -269,7 +276,7 @@ function AppShell() {
     order: <Order
       transactions={scopedTransactions}
       products={store.products}
-      customers={store.customers}
+      customers={scopedCustomers}
       storeInfo={store.storeInfo}
       currentUser={store.currentUser}
       updateTransactionStatus={store.updateTransactionStatus}
@@ -279,15 +286,16 @@ function AppShell() {
       busy={store.busy}
     />,
     customers: <Customers
-      customers={store.customers}
+      customers={scopedCustomers}
       transactions={scopedTransactions}
+      currentUser={store.currentUser}
       addCustomer={store.addCustomer}
       updateCustomer={store.updateCustomer}
       deleteCustomer={store.deleteCustomer}
     />,
     piutang: <Piutang
       debts={scopedDebts}
-      customers={store.customers}
+      customers={scopedCustomers}
       transactions={scopedTransactions}
       admins={store.admins}
       currentUser={store.currentUser}

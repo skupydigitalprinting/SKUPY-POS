@@ -7,7 +7,7 @@ import { uploadProductImage } from '../lib/supabase'
 import { Input, MoneyInput, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import CategoryManager from '../components/CategoryManager'
-import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
+import { useCategories, ALL_CATEGORY, getCatMeta } from '../hooks/useCategories'
 
 const EMPTY_FORM = {
   name: '', category: 'jersey', price: '', modal: '',
@@ -30,7 +30,14 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
   // Harga modal (cost) hanya boleh dilihat & diubah oleh Owner.
   const isOwner = currentUser?.role === 'owner'
   const { categories, addCategory, updateCategory, deleteCategory } = useCategories()
-  const filterCats = [ALL_CATEGORY, ...categories]
+  // Filter = Semua + kategori aktif + kategori NONAKTIF yang masih dipakai produk
+  // (agar produk lama tetap bisa difilter). Pakai getCatMeta untuk nama/icon.
+  const usedInactive = useMemo(() => {
+    const activeIds = new Set(categories.map((c) => c.id))
+    const used = [...new Set((products || []).map((p) => p.category).filter(Boolean))]
+    return used.filter((id) => !activeIds.has(id)).map((id) => { const m = getCatMeta(id); return { id, label: m.label, icon: m.icon, inactive: true } })
+  }, [products, categories])
+  const filterCats = [ALL_CATEGORY, ...categories, ...usedInactive]
 
   const [search, setSearch] = useState('')
   const [filterCat, setFilterCat] = useState('all')
@@ -265,7 +272,7 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
                   />
                   <div className="absolute top-2 left-2">
                     <Badge color={CAT_COLOR[p.category] || 'accent'}>
-                      {catLabels[p.category]?.icon} {catLabels[p.category]?.label}
+                      {getCatMeta(p.category).icon} {getCatMeta(p.category).label}
                     </Badge>
                   </div>
                   {/* Unit badge top-right */}
