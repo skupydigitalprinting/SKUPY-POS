@@ -333,6 +333,44 @@ export function useStore() {
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
   }, [])
 
+  // Recompute denormalized customer summary (dipakai banyak fungsi).
+  // PENTING: dideklarasikan AWAL agar tersedia di dependency array fungsi-fungsi
+  // yang memakainya (hindari TDZ "Cannot access ... before initialization").
+  const recalculateCustomerSummary = useCallback(async (customerId) => {
+    if (!customerId) return
+    try {
+      const [trxRes, debtRes] = await Promise.all([
+        supabase.from('transactions')
+          .select('total, remaining, status')
+          .eq('customer_id', customerId),
+        supabase.from('debts')
+          .select('remaining, status')
+          .eq('customer_id', customerId)
+          .eq('status', 'aktif'),
+      ])
+      const trxs = trxRes.data || []
+      const activeDebts = debtRes.data || []
+      const totalTransactions = trxs.length
+      const totalSpent = trxs.reduce((s, t) => s + (+t.total || 0), 0)
+      const totalDebt = activeDebts.reduce((s, d) => s + (+d.remaining || 0), 0)
+      const { error: e } = await supabase
+        .from('customers')
+        .update({
+          total_transactions: totalTransactions,
+          total_spent: totalSpent,
+          total_debt: totalDebt,
+        })
+        .eq('id', customerId)
+      if (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[useStore] recalculateCustomerSummary update gagal:', e)
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[useStore] recalculateCustomerSummary error:', err)
+    }
+  }, [])
+
   // ─── Realtime subscriptions ───────────────────────────────────────
   // Satu channel, satu subscription. Setiap perubahan dipush ke handler
   // yang DI-DEBOUNCE: kalau payDebt mengupdate 4 tabel dalam 100ms, kita
@@ -820,41 +858,6 @@ export function useStore() {
   // transactions + debts. Dipanggil setelah checkout / payDebt / delete agar
   // tidak ada drift antar tabel (trigger DB hanya menambah saat INSERT, tidak
   // mengurangi saat DELETE).
-  const recalculateCustomerSummary = useCallback(async (customerId) => {
-    if (!customerId) return
-    try {
-      const [trxRes, debtRes] = await Promise.all([
-        supabase.from('transactions')
-          .select('total, remaining, status')
-          .eq('customer_id', customerId),
-        supabase.from('debts')
-          .select('remaining, status')
-          .eq('customer_id', customerId)
-          .eq('status', 'aktif'),
-      ])
-      const trxs = trxRes.data || []
-      const activeDebts = debtRes.data || []
-      const totalTransactions = trxs.length
-      const totalSpent = trxs.reduce((s, t) => s + (+t.total || 0), 0)
-      const totalDebt = activeDebts.reduce((s, d) => s + (+d.remaining || 0), 0)
-      const { error: e } = await supabase
-        .from('customers')
-        .update({
-          total_transactions: totalTransactions,
-          total_spent: totalSpent,
-          total_debt: totalDebt,
-        })
-        .eq('id', customerId)
-      if (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[useStore] recalculateCustomerSummary update gagal:', e)
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] recalculateCustomerSummary error:', err)
-    }
-  }, [])
-
   const addTransaction = useCallback(async (trx) => wrap(async () => {
     try {
       const cashier = currentUser?.name || currentUser?.username || ''
