@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react'
 import { X } from 'lucide-react'
 
-export default function Modal({ open, onClose, title, subtitle, children, size = 'md', footer }) {
+export default function Modal({ open, onClose, title, subtitle, children, size = 'md', footer, mobileFull = false }) {
   useEffect(() => {
     if (open) document.body.style.overflow = 'hidden'
     else document.body.style.overflow = ''
@@ -27,12 +27,12 @@ export default function Modal({ open, onClose, title, subtitle, children, size =
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 animate-fadeIn"
+      className={`fixed inset-0 z-50 flex items-center justify-center animate-fadeIn ${mobileFull ? 'p-0 sm:p-4' : 'p-3 sm:p-4'}`}
       style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="animate-scaleIn rounded-2xl w-full relative"
+        className={`animate-scaleIn w-full relative ${mobileFull ? 'rounded-2xl max-sm:!rounded-none max-sm:!max-w-none max-sm:!max-h-full max-sm:!h-full' : 'rounded-2xl'}`}
         style={{
           maxWidth: sizes[size],
           maxHeight: '92vh',

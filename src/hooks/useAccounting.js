@@ -654,16 +654,84 @@ export function useAccounting() {
     if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
     if (amt <= 0) return { ok: false, error: 'Nominal kasbon harus > 0' }
     if (!p.date) return { ok: false, error: 'Tanggal kasbon wajib diisi' }
-    const { data, error } = await supabase.from('employee_cash_advances').insert({
-      employee_name: p.employeeName.trim(),
+    const row = {
+      employee_name: p.employeeName.trim(),       // snapshot nama
       amount: amt, paid: 0, remaining: amt,
       advance_date: p.date,
       due_date: p.dueDate || null,
       payment_method: p.method === 'transfer' ? 'transfer' : 'cash',
       notes: p.note || '',
       cashier_id: cashierId || null,
-    }).select('id').single()
+    }
+    if (p.employeeId) row.employee_id = p.employeeId   // tautan master (opsional)
+    let { data, error } = await supabase.from('employee_cash_advances').insert(row).select('id').single()
+    // Fallback bila kolom employee_id belum dimigrasi: ulangi tanpa tautan.
+    if (error && /employee_id|column .* does not exist|schema cache/i.test(error.message || '') && row.employee_id) {
+      delete row.employee_id
+      ;({ data, error } = await supabase.from('employee_cash_advances').insert(row).select('id').single())
+    }
     return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
+  }, [])
+
+  // Pembayaran FIFO: satu nominal dibagi ke kasbon karyawan PALING LAMA dulu.
+  // advList = daftar kasbon karyawan tsb (objek {id, amount, paid, advance_date,
+  // created_at}). Mengembalikan { ok, applied, count }.
+  const payEmployeeFIFO = useCallback(async (advList, { amount, method, date, note }, cashierId) => {
+    let left = Math.round(Number(amount) || 0)
+    if (left <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    // Urut paling lama dulu: advance_date asc, lalu created_at asc.
+    const queue = [...(advList || [])]
+      .map(a => ({ id: a.id, rem: Math.max(0, Math.round(a.amount || 0) - Math.round(a.paid || 0)), date: a.advance_date, created: a.created_at }))
+      .filter(a => a.rem > 0)
+      .sort((x, y) => (String(x.date).localeCompare(String(y.date))) || (String(x.created || '').localeCompare(String(y.created || ''))))
+    if (queue.length === 0) return { ok: false, error: 'Tidak ada sisa kasbon untuk dibayar' }
+    const pm = method === 'transfer' ? 'transfer' : 'cash'
+    const payDate = date || todayISO()
+    const rows = []
+    for (const a of queue) {
+      if (left <= 0) break
+      const pay = Math.min(left, a.rem)
+      rows.push({ cash_advance_id: a.id, amount: pay, payment_date: payDate, payment_method: pm, notes: note || '', cashier_id: cashierId || null })
+      left -= pay
+    }
+    if (rows.length === 0) return { ok: false, error: 'Tidak ada sisa kasbon untuk dibayar' }
+    const { error } = await supabase.from('employee_cash_advance_payments').insert(rows)
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, applied: rows.reduce((s, r) => s + r.amount, 0), count: rows.length }
+  }, [])
+
+  // ── MASTER KARYAWAN (employees) ──
+  const listEmployees = useCallback(async (q = '') => {
+    let query = supabase.from('employees').select('*').is('deleted_at', null).order('name', { ascending: true }).limit(1000)
+    if (q) query = query.ilike('name', `%${q}%`)
+    const { data, error } = await query
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addEmployee = useCallback(async (p) => {
+    const name = (p.name || '').trim()
+    if (!name) return { ok: false, error: 'Nama karyawan wajib diisi' }
+    const { data, error } = await supabase.from('employees').insert({
+      name, phone: p.phone || '', position: p.position || '', notes: p.notes || '',
+    }).select('*').single()
+    return error ? { ok: false, error: error.message } : { ok: true, data }
+  }, [])
+  const updateEmployee = useCallback(async (id, p) => {
+    const name = (p.name || '').trim()
+    if (!name) return { ok: false, error: 'Nama karyawan wajib diisi' }
+    const { error } = await supabase.from('employees').update({
+      name, phone: p.phone || '', position: p.position || '', notes: p.notes || '',
+      updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    if (error) return { ok: false, error: error.message }
+    // Sinkronkan snapshot nama di kasbon yang tertaut karyawan ini.
+    await supabase.from('employee_cash_advances').update({ employee_name: name }).eq('employee_id', id).is('deleted_at', null)
+    return { ok: true }
+  }, [])
+  const deleteEmployee = useCallback(async (id) => {
+    // soft delete master saja; kasbon lama tetap ada (snapshot nama tersimpan).
+    const { error } = await supabase.from('employees').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
   const editEmployeeAdvance = useCallback(async (id, p) => {
@@ -747,7 +815,8 @@ export function useAccounting() {
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
-    listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance,
+    listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
+    listEmployees, addEmployee, updateEmployee, deleteEmployee,
   }
 }

@@ -199,9 +199,17 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // ── KASBON KARYAWAN ──
   const blankKasbon = { employeeName: '', amount: '', date: acc.todayISO(), dueDate: '', method: 'cash', note: '' }
   const [advances, setAdvances] = useState([]); const [kasbonForm, setKasbonForm] = useState(blankKasbon); const [kasbonErr, setKasbonErr] = useState({})
-  const [editAdv, setEditAdv] = useState(null); const [detailAdv, setDetailAdv] = useState(null); const [detailAdvRows, setDetailAdvRows] = useState([])
-  const [advPayId, setAdvPayId] = useState(null); const [advPay, setAdvPay] = useState({ amount: '', method: 'cash', date: acc.todayISO(), note: '' })
+  const [editAdv, setEditAdv] = useState(null)
+  const [advPay, setAdvPay] = useState({ amount: '', method: 'cash', date: acc.todayISO(), note: '' })
   const [kasbonFilter, setKasbonFilter] = useState('all') // all | aktif | lunas | tempo
+  // Master karyawan + modal tambah/edit karyawan + detail grup + bayar FIFO grup
+  const [employees, setEmployees] = useState([])
+  const blankEmp = { id: null, name: '', phone: '', position: '', notes: '' }
+  const [empModal, setEmpModal] = useState(null) // { id?, name, phone, position, notes }
+  const [detailEmp, setDetailEmp] = useState(null) // group object yang sedang dibuka
+  const [detailPayRows, setDetailPayRows] = useState({}) // { [advanceId]: payments[] }
+  const [groupPay, setGroupPay] = useState(null) // { key, name, sisa, amount, method, date, note }
+  const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
 
   // forms (default metode TRANSFER)
   const [expForm, setExpForm] = useState({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'transfer', note: '' })
@@ -290,6 +298,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const loadRents = async () => { const r = await acc.listRents(); if (r.ok) setRents(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
   const [kasbonNeedsMigration, setKasbonNeedsMigration] = useState(false)
+  const loadEmployees = async () => { const r = await acc.listEmployees(); if (r.ok) setEmployees(r.data) }
   const loadAdvances = async () => {
     const r = await acc.listEmployeeAdvances()
     if (r.ok) { setAdvances(r.data); setKasbonNeedsMigration(false) }
@@ -297,6 +306,28 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     // notice khusus di tab Kasbon saja, jangan set setupNeeded global.
     else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setAdvances([]); setKasbonNeedsMigration(true) }
     else toast.error(r.error || 'Gagal memuat kasbon')
+  }
+  // Refresh data realtime + bangun ulang grup karyawan yang sedang dibuka di
+  // modal detail (dipakai setelah bayar / edit / hapus kasbon / hapus pembayaran).
+  const groupKeyOf = (a) => a.employee_id || ('name:' + (a.employee_name || '').trim().toLowerCase())
+  const refreshDetailEmp = async (key) => {
+    const r = await acc.listEmployeeAdvances()
+    const list = r.ok ? r.data : []
+    setAdvances(list)
+    loadDashboard()
+    if (!key) return
+    const items = list.filter(a => groupKeyOf(a) === key)
+      .sort((x, y) => (String(x.advance_date).localeCompare(String(y.advance_date))) || (String(x.created_at || '').localeCompare(String(y.created_at || ''))))
+    if (items.length === 0) { setDetailEmp(null); setDetailPayRows({}); return }
+    const totalAmount = items.reduce((s, x) => s + Math.round(x.amount || 0), 0)
+    const totalPaid = items.reduce((s, x) => s + Math.round(x.paid || 0), 0)
+    const totalSisa = Math.max(0, totalAmount - totalPaid)
+    const todayLocal = new Date().toLocaleDateString('en-CA')
+    const overdue = items.some(x => { const rem = Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0)); return x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0 })
+    setDetailEmp({ key, employeeId: items[0].employee_id || null, name: items[0].employee_name || '—', items, totalAmount, totalPaid, totalSisa, overdue, status: totalSisa <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif' })
+    const map = {}
+    for (const it of items) { const pr = await acc.listAdvancePayments(it.id); map[it.id] = pr.ok ? pr.data : [] }
+    setDetailPayRows(map)
   }
 
   useEffect(() => {
@@ -309,7 +340,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'supplier') await loadSuppliers()
       else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
       else if (tab === 'hbank') await loadBankLoans()
-      else if (tab === 'kasbon') await loadAdvances()
+      else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
       else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
       else if (tab === 'sewa') await loadRents()
       setLoading(false)
@@ -580,7 +611,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
         <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
           <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}><AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span></div>
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances.</p>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master.</p>
           <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadDashboard() }}><RefreshCw size={13} /> Coba lagi</Button>
         </div>
       </Page>
@@ -1085,29 +1116,49 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
       {/* ── KASBON KARYAWAN (Piutang Karyawan / Aset) ── */}
       {tab === 'kasbon' && !loading && (() => {
-        const empSuggestions = [...new Set(advances.map(a => a.employee_name).filter(Boolean))]
         const todayLocal = new Date().toLocaleDateString('en-CA')
-        const filtered = advances.filter(x => {
-          const rem = Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0))
-          const overdue = x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0
-          if (kasbonFilter === 'aktif') return rem > 0
-          if (kasbonFilter === 'lunas') return rem <= 0
-          if (kasbonFilter === 'tempo') return overdue
+        // Opsi nama untuk dropdown: master karyawan + nama yang sudah dipakai di kasbon.
+        const empMap = new Map()
+        ;(employees || []).forEach(e => empMap.set(e.name.trim().toLowerCase(), { id: e.id, name: e.name }))
+        ;(advances || []).forEach(a => { const n = (a.employee_name || '').trim(); if (n && !empMap.has(n.toLowerCase())) empMap.set(n.toLowerCase(), { id: 'adv:' + n, name: n }) })
+        const employeeOptions = [...empMap.values()].sort((a, b) => a.name.localeCompare(b.name))
+        const empIdByName = (name) => (employees || []).find(e => e.name.trim().toLowerCase() === (name || '').trim().toLowerCase())?.id || null
+        // ── Kelompokkan kasbon per karyawan (employee_id bila ada, fallback nama) ──
+        const gmap = new Map()
+        ;(advances || []).forEach(a => {
+          const key = a.employee_id || ('name:' + (a.employee_name || '').trim().toLowerCase())
+          if (!gmap.has(key)) gmap.set(key, { key, employeeId: a.employee_id || null, name: (a.employee_name || '—'), items: [] })
+          gmap.get(key).items.push(a)
+        })
+        const groupsAll = [...gmap.values()].map(g => {
+          // FIFO: urut paling lama dulu untuk tampilan & alokasi pembayaran.
+          const items = [...g.items].sort((x, y) => (String(x.advance_date).localeCompare(String(y.advance_date))) || (String(x.created_at || '').localeCompare(String(y.created_at || ''))))
+          const totalAmount = items.reduce((s, x) => s + Math.round(x.amount || 0), 0)
+          const totalPaid = items.reduce((s, x) => s + Math.round(x.paid || 0), 0)
+          const totalSisa = Math.max(0, totalAmount - totalPaid)
+          const overdue = items.some(x => { const rem = Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0)); return x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0 })
+          return { ...g, items, totalAmount, totalPaid, totalSisa, overdue, status: totalSisa <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif' }
+        }).sort((a, b) => b.totalSisa - a.totalSisa || a.name.localeCompare(b.name))
+        const groups = groupsAll.filter(g => {
+          if (kasbonFilter === 'aktif') return g.totalSisa > 0
+          if (kasbonFilter === 'lunas') return g.totalSisa <= 0
+          if (kasbonFilter === 'tempo') return g.overdue
           return true
         })
         const exportKasbon = async () => {
           if (exporting) return; setExporting(true)
           try {
             const mod = await import('xlsx'); const XLSX = mod.default || mod
-            const rows = filtered.map(x => ({
-              'Nama Karyawan': x.employee_name,
+            const rows = []
+            groups.forEach(g => g.items.forEach(x => rows.push({
+              'Nama Karyawan': g.name,
               'Tanggal Kasbon': x.advance_date,
               'Kasbon Awal': Math.round(x.amount || 0),
               'Sudah Dibayar': Math.round(x.paid || 0),
               'Sisa Kasbon': Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0)),
               'Jatuh Tempo': x.due_date || '',
               'Status': Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0)) <= 0 ? 'Lunas' : 'Aktif',
-            }))
+            })))
             const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Kasbon Karyawan')
             XLSX.writeFile(wb, `kasbon-karyawan-${acc.todayISO()}.xlsx`)
           } catch (e) { toast.error('Gagal export: ' + (e?.message || e)) } finally { setExporting(false) }
@@ -1119,45 +1170,51 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           if (!kasbonForm.date) e.date = 'Tanggal kasbon wajib diisi'
           setKasbonErr(e); if (Object.keys(e).length) return
           setSaving(true)
-          const r = await acc.addEmployeeAdvance({ ...kasbonForm, amount: parseCurrency(kasbonForm.amount) }, currentUser?.id)
+          const r = await acc.addEmployeeAdvance({ ...kasbonForm, employeeId: empIdByName(kasbonForm.employeeName), amount: parseCurrency(kasbonForm.amount) }, currentUser?.id)
           setSaving(false)
           if (r.ok) { toast.success('Kasbon dicatat'); setKasbonForm(blankKasbon); setKasbonErr({}); loadAdvances(); loadDashboard() } else toast.error(r.error)
         }
-        const totAwal = filtered.reduce((s, x) => s + Math.round(x.amount || 0), 0)
-        const totBayar = filtered.reduce((s, x) => s + Math.round(x.paid || 0), 0)
+        const totAwal = groups.reduce((s, g) => s + g.totalAmount, 0)
+        const totBayar = groups.reduce((s, g) => s + g.totalPaid, 0)
         const totSisa = Math.max(0, totAwal - totBayar)
         return (
         <div className="space-y-4">
           {kasbonNeedsMigration && (
             <div className="rounded-2xl p-4" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
               <div className="flex items-center gap-2 mb-1" style={{ color: '#f59e0b' }}><AlertTriangle size={14} /> <span className="font-bold text-xs" style={{ fontFamily: 'Syne' }}>Tabel Kasbon belum dimigrasi</span></div>
-              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan <code>supabase/migrations/2026_06_employee_cash_advances.sql</code> di Supabase → SQL Editor, lalu klik Coba lagi. Tab Accounting lain tetap berfungsi normal.</p>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan <code>supabase/migrations/2026_06_employee_cash_advances.sql</code> lalu <code>2026_06_employees_master.sql</code> di Supabase → SQL Editor, lalu klik Coba lagi. Tab Accounting lain tetap berfungsi normal.</p>
               <button onClick={loadAdvances} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><RefreshCw size={11} /> Coba lagi</button>
             </div>
           )}
           <FormCard icon={HandCoins} title="Tambah Kasbon Karyawan" subtitle="Uang perusahaan yang dipinjamkan ke karyawan. Tercatat sebagai Piutang Karyawan (aset) — bukan beban/gaji.">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field icon={UsersIcon} label="Nama Karyawan" required error={kasbonErr.employeeName}>
-                <input list="emp-suggestions" value={kasbonForm.employeeName} onChange={e => setKasbonForm(p => ({ ...p, employeeName: e.target.value }))} placeholder="Pilih atau ketik nama baru" className={FIELD_CLS} style={inpErr(kasbonErr.employeeName)} />
-                <datalist id="emp-suggestions">{empSuggestions.map(n => <option key={n} value={n} />)}</datalist>
-              </Field>
-              <Field icon={TrendingDown} label="Nominal Kasbon" required error={kasbonErr.amount}>
-                <MoneyInput value={kasbonForm.amount} onChange={v => setKasbonForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(kasbonErr.amount)} />
-              </Field>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Field icon={Receipt} label="Tanggal Kasbon" required error={kasbonErr.date}>
-                <input type="date" value={kasbonForm.date} onChange={e => setKasbonForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(kasbonErr.date), colorScheme: 'dark' }} />
-              </Field>
-              <Field icon={Receipt} label="Jatuh Tempo">
-                <input type="date" value={kasbonForm.dueDate} onChange={e => setKasbonForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
-              </Field>
-              <Field icon={Wallet} label="Metode Pencairan">
-                <select value={kasbonForm.method} onChange={e => setKasbonForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>
-                  <option value="cash">Cash</option><option value="transfer">Transfer</option>
-                </select>
-              </Field>
-            </div>
+            {/* Form 1 kolom vertikal (rapi di desktop & iPhone portrait/landscape) */}
+            <Field icon={UsersIcon} label="Nama Karyawan" required error={kasbonErr.employeeName}>
+              <Combo
+                value={kasbonForm.employeeName}
+                onChange={v => setKasbonForm(p => ({ ...p, employeeName: v }))}
+                options={employeeOptions}
+                error={kasbonErr.employeeName}
+                baseStyle={inp} errStyle={inpErr(true)}
+                placeholder="Pilih nama lama / ketik nama baru"
+                allowCreate
+                onCreate={async (name) => { const r = await acc.addEmployee({ name }); if (r.ok) { toast.success('Karyawan ditambah'); loadEmployees() } else if (!/relation|does not exist|schema cache/i.test(r.error || '')) toast.error(r.error) }}
+                rightButton={<button type="button" onClick={() => setEmpModal({ ...blankEmp })} className="flex-shrink-0 px-3 rounded-xl text-xs font-semibold inline-flex items-center gap-1" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.3)', fontFamily: 'Syne' }} title="Tambah karyawan baru"><Plus size={13} /> <span className="hidden sm:inline">Karyawan</span></button>}
+              />
+            </Field>
+            <Field icon={TrendingDown} label="Nominal Kasbon" required error={kasbonErr.amount}>
+              <MoneyInput value={kasbonForm.amount} onChange={v => setKasbonForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(kasbonErr.amount)} />
+            </Field>
+            <Field icon={Receipt} label="Tanggal Kasbon" required error={kasbonErr.date}>
+              <input type="date" value={kasbonForm.date} onChange={e => setKasbonForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(kasbonErr.date), colorScheme: 'dark' }} />
+            </Field>
+            <Field icon={Receipt} label="Jatuh Tempo">
+              <input type="date" value={kasbonForm.dueDate} onChange={e => setKasbonForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+            </Field>
+            <Field icon={Wallet} label="Metode Pencairan">
+              <select value={kasbonForm.method} onChange={e => setKasbonForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>
+                <option value="cash">Cash</option><option value="transfer">Transfer</option>
+              </select>
+            </Field>
             <Field icon={BookOpen} label="Catatan">
               <input value={kasbonForm.note} onChange={e => setKasbonForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
             </Field>
@@ -1171,42 +1228,45 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             </select>
             <button onClick={exportKasbon} disabled={exporting} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold btn-press ml-auto" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a', border: '1px solid rgba(16,217,138,0.3)', fontFamily: 'Syne' }}>{exporting ? <Loader2 size={12} className="animate-spin" /> : <FileSpreadsheet size={12} />} Excel</button>
           </div>
-          {filtered.length > 0 && (
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Kasbon</div><div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{fmt(totAwal)}</div></div>
-              <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-sm font-bold" style={{ color: '#10d98a' }}>{fmt(totBayar)}</div></div>
-              <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Piutang</div><div className="text-sm font-bold" style={{ color: '#ef4444' }}>{fmt(totSisa)}</div></div>
+          {groups.length > 0 && (
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Kasbon</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(totAwal)}</div></div>
+              <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a' }}>{fmt(totBayar)}</div></div>
+              <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Piutang</div><div className="text-sm font-bold truncate" style={{ color: '#ef4444' }}>{fmt(totSisa)}</div></div>
             </div>
           )}
 
-          <div className="space-y-2">
-            {filtered.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada kasbon</p>}
-            {filtered.map(x => {
-              const rem = Math.max(0, Math.round(x.amount || 0) - Math.round(x.paid || 0))
-              const overdue = x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0
-              const status = rem <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
-              const stColor = rem <= 0 ? '#10d98a' : overdue ? '#fb923c' : '#f59e0b'
+          {/* Daftar dikelompokkan per karyawan — 1 card / karyawan, full width */}
+          <div className="space-y-2.5">
+            {groups.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada kasbon</p>}
+            {groups.map(g => {
+              const stColor = g.totalSisa <= 0 ? '#10d98a' : g.overdue ? '#fb923c' : '#f59e0b'
+              const openDetail = async () => {
+                setDetailEmp(g)
+                // muat riwayat pembayaran tiap kasbon karyawan ini
+                const map = {}
+                for (const it of g.items) { const r = await acc.listAdvancePayments(it.id); map[it.id] = r.ok ? r.data : [] }
+                setDetailPayRows(map)
+              }
               return (
-                <div key={x.id} className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue ? 'rgba(251,146,60,0.4)' : 'var(--border)'}` }}>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.employee_name || '—'}
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${stColor}22`, color: stColor }}>{status}</span></div>
-                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Awal <span style={{ color: 'var(--text-primary)' }}>{fmt(x.amount)}</span> · Bayar <span style={{ color: '#10d98a' }}>{fmt(x.paid)}</span> · {dt(x.advance_date)}{x.due_date ? ` · Tempo ${dt(x.due_date)}` : ''}</div>
+                <div key={g.key} className="rounded-2xl p-4 w-full min-w-0 overflow-hidden acc-card cursor-pointer" style={{ background: 'var(--bg-card)', border: `1px solid ${g.overdue ? 'rgba(251,146,60,0.4)' : 'var(--border)'}`, '--card-glow': `${stColor}3a` }} onClick={openDetail}>
+                  <div className="flex items-center gap-2 mb-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: `${stColor}1f`, border: `1px solid ${stColor}44` }}><UsersIcon size={16} style={{ color: stColor }} /></div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{g.name}</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{g.items.length} kasbon</div>
                     </div>
-                    <div className="text-right"><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold" style={{ color: rem > 0 ? '#ef4444' : '#10d98a' }}>{fmt(rem)}</div></div>
-                    {rem > 0 && <button onClick={() => { setAdvPayId(advPayId === x.id ? null : x.id); setAdvPay({ amount: String(rem), method: 'cash', date: acc.todayISO(), note: '' }) }} className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
-                    <button onClick={async () => { setDetailAdv(x); const r = await acc.listAdvancePayments(x.id); setDetailAdvRows(r.ok ? r.data : []) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Detail"><BookOpen size={11} /></button>
-                    <button onClick={() => setEditAdv({ id: x.id, employeeName: x.employee_name || '', amount: String(Math.round(x.amount || 0)), date: x.advance_date || acc.todayISO(), dueDate: x.due_date || '', method: x.payment_method || 'cash', note: x.notes || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
-                    {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data kasbon ini?', message: 'Perubahan akan mempengaruhi dashboard accounting dan neraca.' }))) return; const r = await acc.deleteEmployeeAdvance(x.id); if (r.ok) { toast.success('Dihapus'); loadAdvances(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>}
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0" style={{ background: `${stColor}22`, color: stColor }}>{g.status}</span>
                   </div>
-                  {advPayId === x.id && <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
-                    <MoneyInput value={advPay.amount} onChange={v => setAdvPay(p => ({ ...p, amount: v }))} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-                    <input type="date" value={advPay.date} onChange={e => setAdvPay(p => ({ ...p, date: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
-                    <select value={advPay.method} onChange={e => setAdvPay(p => ({ ...p, method: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select>
-                    <Button variant="success" size="sm" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(advPay.amount); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.payEmployeeAdvance(x.id, { amount: Math.min(amt, rem), method: advPay.method, date: advPay.date, note: advPay.note }, currentUser?.id); setSaving(false); if (r.ok) { toast.success('Pembayaran dicatat'); setAdvPayId(null); loadAdvances(); loadDashboard() } else toast.error(r.error) }}>Konfirmasi</Button>
-                    <input value={advPay.note} onChange={e => setAdvPay(p => ({ ...p, note: e.target.value }))} placeholder="Catatan (opsional)" className="px-2 py-1.5 rounded-lg text-xs col-span-2 sm:col-span-4" style={inp} />
-                  </div>}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Kasbon</div><div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.totalAmount)}</div></div>
+                    <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-xs font-bold truncate" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.totalPaid)}</div></div>
+                    <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-xs font-bold truncate" style={{ color: g.totalSisa > 0 ? '#ef4444' : '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.totalSisa)}</div></div>
+                  </div>
+                  <div className="flex gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
+                    {g.totalSisa > 0 && <button onClick={() => setGroupPay({ key: g.key, name: g.name, sisa: g.totalSisa, items: g.items, amount: String(g.totalSisa), method: 'cash', date: acc.todayISO(), note: '' })} className="flex-1 py-2.5 rounded-xl text-xs font-bold btn-press inline-flex items-center justify-center gap-1.5" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={13} /> Bayar (FIFO)</button>}
+                    <button onClick={openDetail} className="flex-1 py-2.5 rounded-xl text-xs font-bold btn-press inline-flex items-center justify-center gap-1.5" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8', fontFamily: 'Syne' }}><BookOpen size={13} /> Detail</button>
+                  </div>
                 </div>
               )
             })}
@@ -1452,48 +1512,160 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               setSaving(true)
               const r = await acc.editEmployeeAdvance(editAdv.id, { ...editAdv, amount: parseCurrency(editAdv.amount) })
               setSaving(false)
-              if (r.ok) { toast.success('Kasbon diperbarui'); setEditAdv(null); loadAdvances(); loadDashboard() } else toast.error(r.error)
+              if (r.ok) { toast.success('Kasbon diperbarui'); setEditAdv(null); if (detailEmp) refreshDetailEmp(detailEmp.key); else { loadAdvances(); loadDashboard() } } else toast.error(r.error)
             }}><Check size={14} /> Simpan</Button>
           </div>
         )}
       </Modal>
 
-      {/* ── DETAIL KASBON + RIWAYAT PEMBAYARAN ── */}
-      <Modal open={!!detailAdv} onClose={() => { setDetailAdv(null); setDetailAdvRows([]) }} title={detailAdv ? `Kasbon — ${detailAdv.employee_name}` : ''} size="lg">
-        {detailAdv && (() => {
-          const awal = Math.round(detailAdv.amount || 0)
-          const bayar = Math.round(detailAdv.paid || 0)
-          const sisa = Math.max(0, awal - bayar)
-          const rows = [['Nama Karyawan', detailAdv.employee_name || '—'], ['Kasbon Awal', fmt(awal)], ['Total Dibayar', fmt(bayar)], ['Sisa Kasbon', fmt(sisa)], ['Tanggal Kasbon', dt(detailAdv.advance_date)], ['Jatuh Tempo', detailAdv.due_date ? dt(detailAdv.due_date) : '—'], ['Status', sisa <= 0 ? 'Lunas' : 'Aktif']]
+      {/* ── DETAIL KASBON PER KARYAWAN (rincian semua kasbon + riwayat bayar) ── */}
+      <Modal open={!!detailEmp} mobileFull onClose={() => { setDetailEmp(null); setDetailPayRows({}); setAdvPayInModal(null) }} title={detailEmp ? `Kasbon — ${detailEmp.name}` : ''} subtitle={detailEmp ? `${detailEmp.items.length} kasbon` : ''} size="lg">
+        {detailEmp && (() => {
+          const todayLocal = new Date().toLocaleDateString('en-CA')
+          const sum = [['Total Kasbon', fmt(detailEmp.totalAmount), 'var(--text-primary)'], ['Sudah Bayar', fmt(detailEmp.totalPaid), '#10d98a'], ['Sisa', fmt(detailEmp.totalSisa), detailEmp.totalSisa > 0 ? '#ef4444' : '#10d98a'], ['Status', detailEmp.status, detailEmp.totalSisa <= 0 ? '#10d98a' : detailEmp.overdue ? '#fb923c' : '#f59e0b']]
           return (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                {rows.map(([k, v]) => <div key={k} className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>{v}</div></div>)}
+            <div className="space-y-4">
+              {/* Ringkasan grup */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {sum.map(([k, v, c]) => <div key={k} className="rounded-xl p-2.5 min-w-0 overflow-hidden" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-sm font-bold truncate" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{v}</div></div>)}
               </div>
-              {detailAdv.notes && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Catatan: {detailAdv.notes}</p>}
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pembayaran</div>
-                {detailAdvRows.length === 0 ? <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran</p> : (
-                  <div className="overflow-x-auto -mx-1">
-                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 360 }}>
-                      <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Nominal', 'Metode', 'Catatan'].map(h => <th key={h} className={`px-2 py-1.5 ${h === 'Nominal' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontSize: 10 }}>{h}</th>)}</tr></thead>
-                      <tbody>
-                        {detailAdvRows.map(p => (
-                          <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                            <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>{dt(p.payment_date)}</td>
-                            <td className="px-2 py-1.5 text-right font-bold" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</td>
-                            <td className="px-2 py-1.5 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{p.payment_method}</td>
-                            <td className="px-2 py-1.5 truncate" style={{ color: 'var(--text-muted)', maxWidth: 140 }}>{p.notes}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+              {detailEmp.totalSisa > 0 && (
+                <button onClick={() => setGroupPay({ key: detailEmp.key, name: detailEmp.name, sisa: detailEmp.totalSisa, items: detailEmp.items, amount: String(detailEmp.totalSisa), method: 'cash', date: acc.todayISO(), note: '' })} className="w-full py-3 rounded-xl text-sm font-bold btn-press inline-flex items-center justify-center gap-2" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={15} /> Bayar Semua (FIFO)</button>
+              )}
+
+              {/* Daftar kasbon karyawan ini (paling lama dulu) */}
+              <div className="space-y-2.5">
+                {detailEmp.items.map((x, idx) => {
+                  const awal = Math.round(x.amount || 0)
+                  const bayar = Math.round(x.paid || 0)
+                  const rem = Math.max(0, awal - bayar)
+                  const overdue = x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0
+                  const status = rem <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
+                  const stColor = rem <= 0 ? '#10d98a' : overdue ? '#fb923c' : '#f59e0b'
+                  const pays = detailPayRows[x.id] || []
+                  return (
+                    <div key={x.id} className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue ? 'rgba(251,146,60,0.4)' : 'var(--border)'}` }}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>#{idx + 1}</span>
+                        <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{dt(x.advance_date)}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${stColor}22`, color: stColor }}>{status}</span>
+                        <span className="ml-auto text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>{x.payment_method}</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Nominal Awal</div><div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(awal)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Dibayar</div><div className="text-xs font-bold truncate" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(bayar)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-xs font-bold truncate" style={{ color: rem > 0 ? '#ef4444' : '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(rem)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Jatuh Tempo</div><div className="text-xs font-bold truncate" style={{ color: overdue ? '#fb923c' : 'var(--text-primary)' }}>{x.due_date ? dt(x.due_date) : '—'}</div></div>
+                      </div>
+                      {x.notes && <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Catatan: {x.notes}</p>}
+
+                      {/* Riwayat pembayaran kasbon ini */}
+                      {pays.length > 0 && (
+                        <div className="rounded-lg p-2 mb-2" style={{ background: 'var(--bg-elevated)' }}>
+                          <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Riwayat Pembayaran</div>
+                          <div className="space-y-1">
+                            {pays.map(p => (
+                              <div key={p.id} className="flex items-center gap-2 text-[11px]">
+                                <span style={{ color: 'var(--text-secondary)' }}>{dt(p.payment_date)}</span>
+                                <span className="font-bold" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</span>
+                                <span className="uppercase text-[9px]" style={{ color: 'var(--text-muted)' }}>{p.payment_method}</span>
+                                {p.notes && <span className="truncate" style={{ color: 'var(--text-muted)' }}>· {p.notes}</span>}
+                                {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?', message: 'Pembayaran ini akan dibatalkan. Sisa kasbon & dashboard akan menyesuaikan.' }))) return; const r = await acc.deleteAdvancePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="ml-auto w-6 h-6 rounded inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus pembayaran"><Trash2 size={10} /></button>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Aksi per kasbon: Bayar / Edit / Hapus */}
+                      <div className="flex gap-1.5">
+                        {rem > 0 && <button onClick={() => { setAdvPayInModal(advPayInModal === x.id ? null : x.id); setAdvPay({ amount: String(rem), method: 'cash', date: acc.todayISO(), note: '' }) }} className="flex-1 py-2 rounded-lg text-[11px] font-bold btn-press" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a', fontFamily: 'Syne' }}>Bayar</button>}
+                        <button onClick={() => setEditAdv({ id: x.id, employeeName: x.employee_name || '', amount: String(awal), date: x.advance_date || acc.todayISO(), dueDate: x.due_date || '', method: x.payment_method || 'cash', note: x.notes || '' })} className="flex-1 py-2 rounded-lg text-[11px] font-bold btn-press" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>
+                        {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?', message: 'Kasbon ini & pembayarannya akan disembunyikan. Dashboard & neraca akan menyesuaikan.' }))) return; const r = await acc.deleteEmployeeAdvance(x.id); if (r.ok) { toast.success('Kasbon dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="px-3 py-2 rounded-lg btn-press" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus kasbon"><Trash2 size={12} /></button>}
+                      </div>
+
+                      {/* Form bayar 1 kasbon (inline) */}
+                      {advPayInModal === x.id && (
+                        <div className="grid grid-cols-2 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
+                          <MoneyInput value={advPay.amount} onChange={v => setAdvPay(p => ({ ...p, amount: v }))} placeholder="Nominal" className="px-2.5 py-2 rounded-lg text-xs" style={inp} />
+                          <input type="date" value={advPay.date} onChange={e => setAdvPay(p => ({ ...p, date: e.target.value }))} className="px-2.5 py-2 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
+                          <select value={advPay.method} onChange={e => setAdvPay(p => ({ ...p, method: e.target.value }))} className="px-2.5 py-2 rounded-lg text-xs" style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select>
+                          <Button variant="success" size="sm" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(advPay.amount); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.payEmployeeAdvance(x.id, { amount: Math.min(amt, rem), method: advPay.method, date: advPay.date, note: advPay.note }, currentUser?.id); setSaving(false); if (r.ok) { toast.success('Pembayaran dicatat'); setAdvPayInModal(null); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }}>Konfirmasi</Button>
+                          <input value={advPay.note} onChange={e => setAdvPay(p => ({ ...p, note: e.target.value }))} placeholder="Catatan (opsional)" className="px-2.5 py-2 rounded-lg text-xs col-span-2" style={inp} />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )
         })()}
+      </Modal>
+
+      {/* ── BAYAR KASBON FIFO (per kelompok karyawan) ── */}
+      <Modal open={!!groupPay} onClose={() => setGroupPay(null)} title={groupPay ? `Bayar Kasbon — ${groupPay.name}` : ''} subtitle="Pembayaran otomatis masuk ke kasbon paling lama dulu (FIFO)." size="sm">
+        {groupPay && (() => {
+          const amt = parseCurrency(groupPay.amount)
+          // Pratinjau alokasi FIFO
+          const queue = [...groupPay.items]
+            .map(a => ({ id: a.id, date: a.advance_date, rem: Math.max(0, Math.round(a.amount || 0) - Math.round(a.paid || 0)) }))
+            .filter(a => a.rem > 0)
+            .sort((x, y) => String(x.date).localeCompare(String(y.date)))
+          let left = amt; const alloc = []
+          for (const q of queue) { if (left <= 0) break; const pay = Math.min(left, q.rem); alloc.push({ ...q, pay }); left -= pay }
+          return (
+            <div className="space-y-3">
+              <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>Sisa kasbon <b style={{ color: 'var(--text-primary)' }}>{groupPay.name}</b>: <b style={{ color: '#ef4444' }}>{fmt(groupPay.sisa)}</b></div>
+              <Field icon={Wallet} label="Nominal Pembayaran" required>
+                <MoneyInput value={groupPay.amount} onChange={v => setGroupPay(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} />
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field icon={Receipt} label="Tanggal Bayar"><input type="date" value={groupPay.date} onChange={e => setGroupPay(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+                <Field icon={Wallet} label="Metode"><select value={groupPay.method} onChange={e => setGroupPay(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select></Field>
+              </div>
+              <Field icon={Pencil} label="Catatan"><input value={groupPay.note} onChange={e => setGroupPay(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+              {amt > 0 && (
+                <div className="rounded-xl p-2.5" style={{ background: 'rgba(16,217,138,0.06)', border: '1px solid rgba(16,217,138,0.25)' }}>
+                  <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: '#10d98a' }}>Pratinjau Alokasi FIFO</div>
+                  {alloc.length === 0 ? <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Tidak ada sisa kasbon.</p> : alloc.map((a, i) => (
+                    <div key={a.id} className="flex items-center gap-2 text-[11px]"><span style={{ color: 'var(--text-secondary)' }}>Kasbon {dt(a.date)}</span><span className="ml-auto font-bold" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(a.pay)}</span>{a.pay >= a.rem ? <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(16,217,138,0.2)', color: '#10d98a' }}>LUNAS</span> : <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(245,158,11,0.2)', color: '#f59e0b' }}>SISA {fmt(a.rem - a.pay)}</span>}</div>
+                  ))}
+                  {left > 0 && <p className="text-[10px] mt-1" style={{ color: '#fb923c' }}>Kelebihan {fmt(left)} tidak dialokasikan (melebihi sisa kasbon).</p>}
+                </div>
+              )}
+              <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+                if (saving) return
+                const a = parseCurrency(groupPay.amount); if (!(a > 0)) return toast.error('Nominal harus > 0')
+                setSaving(true)
+                const r = await acc.payEmployeeFIFO(groupPay.items, { amount: Math.min(a, groupPay.sisa), method: groupPay.method, date: groupPay.date, note: groupPay.note }, currentUser?.id)
+                setSaving(false)
+                if (r.ok) { toast.success(`Pembayaran ${fmt(r.applied)} dialokasikan ke ${r.count} kasbon`); setGroupPay(null); if (detailEmp) refreshDetailEmp(groupPay.key); else { loadAdvances(); loadDashboard() } } else toast.error(r.error)
+              }}><Check size={14} /> Bayar (FIFO)</Button>
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* ── TAMBAH / EDIT MASTER KARYAWAN ── */}
+      <Modal open={!!empModal} onClose={() => setEmpModal(null)} title={empModal?.id ? 'Edit Karyawan' : 'Tambah Karyawan'} subtitle="Data karyawan tersimpan agar tidak perlu diketik ulang saat input kasbon." size="sm">
+        {empModal && (
+          <div className="space-y-3">
+            <Field icon={UsersIcon} label="Nama Karyawan" required><input value={empModal.name} onChange={e => setEmpModal(p => ({ ...p, name: e.target.value }))} placeholder="Nama lengkap" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Wallet} label="No HP"><input value={empModal.phone} onChange={e => setEmpModal(p => ({ ...p, phone: e.target.value }))} placeholder="08xx" inputMode="tel" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Building2} label="Jabatan"><input value={empModal.position} onChange={e => setEmpModal(p => ({ ...p, position: e.target.value }))} placeholder="Contoh: Operator Produksi" className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Pencil} label="Catatan"><input value={empModal.notes} onChange={e => setEmpModal(p => ({ ...p, notes: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              if (!empModal.name.trim()) return toast.error('Nama karyawan wajib diisi')
+              setSaving(true)
+              const r = empModal.id ? await acc.updateEmployee(empModal.id, empModal) : await acc.addEmployee(empModal)
+              setSaving(false)
+              if (r.ok) { toast.success(empModal.id ? 'Karyawan diperbarui' : 'Karyawan ditambah'); if (!empModal.id && r.data?.name) setKasbonForm(p => ({ ...p, employeeName: r.data.name })); setEmpModal(null); loadEmployees() }
+              else if (/relation|does not exist|schema cache/i.test(r.error || '')) toast.error('Tabel karyawan belum dimigrasi. Jalankan 2026_06_employees_master.sql.')
+              else toast.error(r.error)
+            }}><Check size={14} /> {empModal.id ? 'Simpan' : 'Tambah Karyawan'}</Button>
+          </div>
+        )}
       </Modal>
 
       {/* ── DETAIL ASET (+ simulasi penyusutan) ── */}
