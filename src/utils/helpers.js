@@ -99,37 +99,63 @@ export function rentMonthsElapsed(rent, now = new Date()) {
   return Math.max(0, Math.min(m, dur))
 }
 
-// Ringkasan amortisasi sewa pada tanggal `now`.
+// Akumulasi beban sewa s/d bulan ke-k (0..dur). SATU pembulatan dari total —
+// BUKAN menjumlahkan beban bulanan yang sudah dibulatkan. Ini kunci anti-bug
+// "Rp 50.000.002 / Rp 41.250.001": rumus kumulatif round(total*k/dur) tidak
+// pernah menumpuk error pembulatan 1-2 rupiah.
+export function rentAccruedAt(total, dur, k) {
+  const T = Math.round(Number(total) || 0)
+  const D = Number(dur) || 1
+  const K = Math.max(0, Math.min(Number(k) || 0, D))
+  if (K >= D) return T                       // selesai → seluruh sewa jadi beban
+  return Math.round((T * K) / D)             // pembulatan final hanya sekali
+}
+
+// Ringkasan amortisasi sewa pada tanggal `now`. Semua nilai integer rupiah.
+//   Sisa Dibayar Dimuka = Total − (Akumulasi Beban s/d bulan berjalan)
+//   dihitung sekali dari total → tidak ada selisih 1-2 rupiah, tidak negatif,
+//   tidak melebihi total.
 export function rentAmortization(rent, now = new Date()) {
   const total = Math.round(Number(rent.total_amount) || 0)
   const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date) || 1
-  const monthly = Math.round(Number(rent.monthly_expense) || (total / dur))
-  const elapsed = rentMonthsElapsed(rent, now)
-  const accrued = Math.min(total, monthly * elapsed)       // beban yang sudah berjalan
-  const prepaid = Math.max(0, total - accrued)             // sisa dibayar dimuka (aset)
+  const monthly = Math.round(total / dur)                       // beban/bulan (tampilan)
+  const elapsed = Math.max(0, Math.min(rentMonthsElapsed(rent, now), dur))
   const done = elapsed >= dur
+  const accrued = rentAccruedAt(total, dur, elapsed)            // SATU pembulatan dari total
+  const prepaid = Math.max(0, Math.min(total, total - accrued)) // integer, 0..total
+  // Log debug sementara — aktifkan di console: window.__RENT_DEBUG__ = true
+  if (typeof window !== 'undefined' && window.__RENT_DEBUG__) {
+    console.debug('[rentAmortization]', {
+      name: rent.name, total_rent_paid: total, monthly_expense: monthly,
+      months_elapsed: elapsed, accumulated_expense: accrued, prepaid_remaining: prepaid,
+    })
+  }
   return { total, dur, monthly, elapsed, accrued, prepaid, done }
 }
 
-// Apakah bulan `now` masih dalam masa sewa (untuk "beban sewa bulan ini").
+// Beban sewa untuk bulan berjalan (bulan ke-e). Diambil sebagai selisih
+// akumulasi kumulatif: accrued(e) − accrued(e−1) → integer, konsisten dgn jadwal.
 export function rentBebanBulanIni(rent, now = new Date()) {
   const e = rentMonthsElapsed(rent, now)
   const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date)
-  return (e >= 1 && e <= dur) ? rentAmortization(rent, now).monthly : 0
+  if (!(e >= 1 && e <= dur)) return 0
+  const total = Math.round(Number(rent.total_amount) || 0)
+  return rentAccruedAt(total, dur, e) - rentAccruedAt(total, dur, e - 1)
 }
 
 // Tabel jadwal amortisasi (period_month, beban, status) untuk durasi penuh.
+// Beban tiap bulan = selisih akumulasi kumulatif round(total*k/dur) −
+// round(total*(k-1)/dur). Jumlah seluruh baris PERSIS = total (tanpa drift),
+// dan akumulasi m bulan pertama = round(total*m/dur) konsisten dgn rentAmortization.
 export function rentSchedule(rent, now = new Date()) {
   const dur = Number(rent.duration_months) || rentDurationMonths(rent.start_date, rent.end_date)
   const total = Math.round(Number(rent.total_amount) || 0)
-  const monthly = Math.round(Number(rent.monthly_expense) || (dur ? total / dur : 0))
   const s = new Date(rent.start_date)
   const elapsed = rentMonthsElapsed(rent, now)
   const rows = []
   for (let i = 0; i < dur; i++) {
     const pm = new Date(s.getFullYear(), s.getMonth() + i, 1)
-    // baris terakhir menyerap pembulatan
-    const amt = i === dur - 1 ? total - monthly * (dur - 1) : monthly
+    const amt = rentAccruedAt(total, dur, i + 1) - rentAccruedAt(total, dur, i)
     const status = (i + 1) < elapsed ? 'done' : (i + 1) === elapsed ? 'accrued' : 'pending'
     rows.push({ idx: i + 1, periodMonth: pm, amount: amt, status })
   }

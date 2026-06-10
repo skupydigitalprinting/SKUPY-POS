@@ -9,10 +9,17 @@ import { useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
 const PAGE_SIZE = 50
-const todayISO = () => new Date().toISOString().slice(0, 10)
-const monthStartISO = () => {
+// Tanggal LOKAL (YYYY-MM-DD) — JANGAN pakai toISOString() karena mengonversi ke
+// UTC sehingga di zona WIB (UTC+7) tanggal 1 lokal jadi mundur ke tgl 31 bulan
+// sebelumnya (sumber bug default filter "31/05" → seharusnya "01/06").
+const localISO = (d) => {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+const todayISO = () => localISO(new Date())                       // hari ini (lokal)
+const monthStartISO = () => {                                     // tanggal 1 bulan berjalan
   const d = new Date()
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10)
+  return localISO(new Date(d.getFullYear(), d.getMonth(), 1))
 }
 
 export function useAccounting() {
@@ -572,14 +579,16 @@ export function useAccounting() {
     return m > 0 ? m : 1
   }
   const genRentSchedules = async (rentId, p) => {
-    const dur = p.duration_months
+    const dur = p.duration_months || 1
     const total = Math.round(Number(p.total_amount) || 0)
-    const monthly = Math.round(total / dur)
+    // Beban/bulan = selisih akumulasi kumulatif round(total*k/dur) → jumlah
+    // seluruh baris PERSIS = total (tanpa drift pembulatan 1-2 rupiah).
+    const cum = (k) => Math.round((total * k) / dur)
     const s = new Date(p.start_date)
     const rows = []
     for (let i = 0; i < dur; i++) {
       const pm = new Date(s.getFullYear(), s.getMonth() + i, 1)
-      const amt = i === dur - 1 ? total - monthly * (dur - 1) : monthly
+      const amt = cum(i + 1) - cum(i)
       rows.push({ prepaid_rent_id: rentId, period_month: pm.toISOString().slice(0, 10), expense_amount: amt, status: 'pending' })
     }
     if (rows.length) await supabase.from('prepaid_rent_schedules').insert(rows)

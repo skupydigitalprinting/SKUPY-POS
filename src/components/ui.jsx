@@ -1,5 +1,5 @@
 import React from 'react'
-import { DEFAULT_PRODUCT_IMAGE } from '../utils/helpers'
+import { DEFAULT_PRODUCT_IMAGE, formatCurrency } from '../utils/helpers'
 
 export function Label({ children, required }) {
   return (
@@ -31,6 +31,39 @@ export function Input({ label, required, prefix, className = '', ...props }) {
             color: 'var(--text-primary)',
             fontFamily: 'DM Sans',
           }}
+          {...props}
+        />
+      </div>
+    </div>
+  )
+}
+
+// Input UANG reusable. Aturan:
+//  • value kosong / 0 / null → tampil KOSONG (placeholder redup "0"), bukan "0".
+//  • mengetik → format ribuan otomatis (1000000 → 1.000.000).
+//  • type="text" inputMode="numeric" → tanpa spinner number.
+//  • onChange(rawDigits) → mengirim string angka murni ("" bila kosong) supaya
+//    Number(value) di pemanggil tetap valid; saat simpan, "" dianggap 0.
+export function MoneyInput({ label, required, prefix = 'Rp', value, onChange, placeholder = '0', className = '', ...props }) {
+  const display = (value === '' || value === null || value === undefined) ? '' : formatCurrency(value)
+  return (
+    <div className="w-full">
+      {label && <Label required={required}>{label}</Label>}
+      <div className="relative">
+        {prefix && (
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold pointer-events-none"
+            style={{ color: 'var(--text-muted)' }}>
+            {prefix}
+          </span>
+        )}
+        <input
+          type="text"
+          inputMode="numeric"
+          value={display}
+          placeholder={placeholder}
+          onChange={(e) => { const d = (e.target.value || '').replace(/[^\d]/g, ''); onChange(d === '' ? '' : String(parseInt(d, 10))) }}
+          className={`w-full px-3 py-2.5 rounded-xl text-sm transition-all ${prefix ? 'pl-8' : ''} ${className}`}
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontFamily: 'DM Sans' }}
           {...props}
         />
       </div>

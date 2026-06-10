@@ -4,7 +4,7 @@ import {
 } from 'lucide-react'
 import { formatRupiah, compressImageToBlob } from '../utils/helpers'
 import { uploadProductImage } from '../lib/supabase'
-import { Input, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
+import { Input, MoneyInput, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import CategoryManager from '../components/CategoryManager'
 import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
@@ -484,12 +484,11 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
 
           <div className={isOwner ? 'grid grid-cols-2 gap-3' : ''}>
             <div>
-              <Input
+              <MoneyInput
                 label="Harga Jual"
                 required
-                type="number"
                 value={form.price}
-                onChange={(e) => setForm((p) => ({ ...p, price: e.target.value }))}
+                onChange={(v) => setForm((p) => ({ ...p, price: v }))}
                 placeholder="0"
                 prefix="Rp"
               />
@@ -500,11 +499,10 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
             {/* Harga Modal — OWNER ONLY */}
             {isOwner && (
               <div>
-                <Input
+                <MoneyInput
                   label="Harga Modal"
-                  type="number"
                   value={form.modal}
-                  onChange={(e) => setForm((p) => ({ ...p, modal: e.target.value }))}
+                  onChange={(v) => setForm((p) => ({ ...p, modal: v }))}
                   placeholder="0"
                   prefix="Rp"
                 />

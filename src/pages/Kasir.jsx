@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { PAYMENT_METHODS } from '../data/dummyData'
 import {
-  formatRupiah, toDateInputValue,
+  formatRupiah, formatCurrency, toDateInputValue,
   getUnit, formatQty,
 } from '../utils/helpers'
 import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
@@ -674,23 +674,22 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
             </button>
           </div>
           <input
-            type="number"
-            inputMode="decimal"
-            value={discount}
+            type="text"
+            inputMode="numeric"
+            value={discountType === 'rp' ? (discount ? formatCurrency(discount) : '') : discount}
             onChange={(e) => {
-              // Allow empty / 0 / positive; reject negatives
-              const v = e.target.value
+              // Rp → hanya digit (format ribuan saat tampil); % → digit + 1 desimal
+              let v = e.target.value
+              v = discountType === 'rp' ? v.replace(/[^\d]/g, '') : v.replace(/[^\d.]/g, '')
               if (v === '' || Number(v) >= 0) setDiscount(v)
             }}
-            onWheel={(e) => e.target.blur()}
-            placeholder={discountType === 'persen' ? 'Masukkan %' : 'Masukkan diskon'}
+            placeholder={discountType === 'persen' ? 'Masukkan %' : '0'}
             className="discount-input w-28 px-2 py-1 rounded-lg text-xs text-right"
             style={{
               background: 'var(--bg-card)',
               border: '1px solid var(--border)',
               color: 'var(--text-primary)',
             }}
-            min={0}
           />
         </div>
 
@@ -722,14 +721,10 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
             DP / Bayar
           </span>
           <input
-            type="number"
-            inputMode="decimal"
-            value={dp}
-            onChange={(e) => {
-              const v = e.target.value
-              if (v === '' || Number(v) >= 0) setDp(v)
-            }}
-            onWheel={(e) => e.target.blur()}
+            type="text"
+            inputMode="numeric"
+            value={dp ? formatCurrency(dp) : ''}
+            onChange={(e) => { const d = e.target.value.replace(/[^\d]/g, ''); setDp(d) }}
             placeholder={`Bayar lunas: ${formatRupiah(total)}`}
             className="discount-input flex-1 px-2 py-1 rounded-lg text-xs text-right min-w-0"
             style={{
