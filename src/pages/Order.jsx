@@ -91,8 +91,16 @@ export default function Order({
     if (r.ok) { setReassignTrx(null); setReassignNewId('') }
     else window.alert(r.error || 'Gagal memindahkan customer')
   }
-  // Menu "⋯ More" aksi baris order (dipakai di tabel desktop & card mobile).
-  const ActionMenu = ({ t, onClose }) => {
+  // Buka menu "⋯ Lainnya": simpan transaksi + posisi tombol (fixed popover).
+  const openMenu = (t, e) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const top = Math.min(r.bottom + 6, window.innerHeight - 260)
+    const right = Math.max(8, window.innerWidth - r.right)
+    setMenuFor(menuFor && menuFor.t?.id === t.id ? null : { t, top, right })
+  }
+  // Popover aksi — FIXED di tingkat halaman (tidak terjebak stacking context
+  // card, jadi tidak tertimpa card lain). Klik di luar menutup.
+  const ActionMenu = ({ t, pos, onClose }) => {
     const cust = customers.find(c => c.id === t.customerId)
     const phone = cust?.whatsapp || cust?.phone || ''
     const statusLabel = (getStatus(t.status).label || 'Pending').toString().toUpperCase()
@@ -103,7 +111,7 @@ export default function Order({
     return (
       <>
         <div className="fixed inset-0" style={{ zIndex: 1090 }} onClick={onClose} />
-        <div className="absolute right-1 top-9 rounded-xl py-1" style={{ zIndex: 1100, minWidth: 170, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+        <div className="fixed rounded-xl py-1" style={{ zIndex: 1100, top: pos.top, right: pos.right, minWidth: 180, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
           <Item icon={Eye} label="Lihat Detail" onClick={() => setViewTrx(t)} />
           {t.remaining > 0 && <Item icon={Wallet} label="Bayar" color="#10d98a" onClick={() => openPay(t)} />}
           {canEditOrderCustomer(t) && <Item icon={UserCog} label="Edit Customer" color="#38BDF8" onClick={() => { setReassignTrx(t); setReassignNewId('') }} />}
@@ -488,10 +496,9 @@ export default function Order({
                     )}
                   </div>
                   {/* Aksi — Detail + More */}
-                  <div className="px-2 relative" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6 }}>
+                  <div className="px-2" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6 }}>
                     <button onClick={() => setViewTrx(t)} className="w-7 h-7 rounded-lg flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }} title="Detail"><Eye size={13} /></button>
-                    <button onClick={() => setMenuFor(menuFor === t.id ? null : t.id)} className="w-7 h-7 rounded-lg flex items-center justify-center btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }} title="Lainnya"><MoreVertical size={14} /></button>
-                    {menuFor === t.id && <ActionMenu t={t} onClose={() => setMenuFor(null)} />}
+                    <button onClick={(e) => openMenu(t, e)} className="w-7 h-7 rounded-lg flex items-center justify-center btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }} title="Lainnya"><MoreVertical size={14} /></button>
                   </div>
                 </div>
               )
@@ -499,8 +506,9 @@ export default function Order({
           )}
         </div>
 
-        {/* Mobile Card View */}
-        <div className="md:hidden space-y-3">
+        {/* Mobile Card View — flow normal (flex column), tinggi auto, tanpa overlap.
+            padding-bottom besar agar card terakhir tidak tertutup bottom-nav. */}
+        <div className="md:hidden flex flex-col gap-4" style={{ paddingBottom: 120 }}>
           {filtered.length === 0 ? (
             <div className="rounded-2xl py-16 text-center text-sm"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
@@ -515,8 +523,8 @@ export default function Order({
               return (
                 <div
                   key={t.id}
-                  className="rounded-2xl p-4 animate-fadeIn min-w-0"
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                  className="rounded-2xl p-4 min-w-0 w-full"
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', height: 'auto', position: 'static' }}
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div>
@@ -567,12 +575,9 @@ export default function Order({
                         <UserCog size={11} /> Customer
                       </button>
                     )}
-                    <div className="relative">
-                      <button onClick={() => setMenuFor(menuFor === t.id ? null : t.id)} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}>
-                        <MoreVertical size={12} /> Lainnya
-                      </button>
-                      {menuFor === t.id && <ActionMenu t={t} onClose={() => setMenuFor(null)} />}
-                    </div>
+                    <button onClick={(e) => openMenu(t, e)} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold btn-press" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}>
+                      <MoreVertical size={12} /> Lainnya
+                    </button>
                   </div>
                 </div>
               )
@@ -1260,6 +1265,9 @@ export default function Order({
           </div>
         )}
       </Modal>
+
+      {/* Popover aksi "Lainnya" — satu instance, fixed, di atas semua card */}
+      {menuFor && <ActionMenu t={menuFor.t} pos={menuFor} onClose={() => setMenuFor(null)} />}
 
       {/* Print Invoice — lazy (html2canvas chunk hanya saat cetak) */}
       {printTrx && (
