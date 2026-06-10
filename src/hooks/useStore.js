@@ -929,24 +929,54 @@ export function useStore() {
     if (amount <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
     if (!invoice_no) return { ok: false, error: 'invoice_no kosong' }
 
-    // 1. Fetch transaction by invoice_no
-    const { data: trxRow, error: trxErr } = await supabase
+    // 1. Fetch transaction by invoice_no (BISA tidak ada untuk piutang saldo
+    //    awal / migrasi yang TANPA transaksi — ditangani jalur debt-only).
+    const { data: trxRow } = await supabase
       .from('transactions')
       .select('id, invoice_no, customer_id, total, paid, remaining, status, dp')
       .eq('invoice_no', invoice_no)
       .maybeSingle()
-    if (trxErr || !trxRow) {
-      return { ok: false, error: trxErr?.message || 'Transaksi tidak ditemukan' }
-    }
 
     // 2. Fetch debt by invoice_no, fallback ke transaction_id
     let { data: debtRow } = await supabase
       .from('debts').select('*')
       .eq('invoice_no', invoice_no).maybeSingle()
-    if (!debtRow) {
+    if (!debtRow && trxRow) {
       const byTrx = await supabase.from('debts').select('*')
         .eq('transaction_id', trxRow.id).maybeSingle()
       debtRow = byTrx.data
+    }
+
+    // Tidak ada transaksi MAUPUN debt → memang tidak ada apa pun untuk dibayar.
+    if (!trxRow && !debtRow) {
+      return { ok: false, error: 'Transaksi/hutang tidak ditemukan' }
+    }
+
+    // ── JALUR DEBT-ONLY (piutang lama tanpa transaksi) ──
+    if (!trxRow && debtRow) {
+      const dTotal = Math.round(Number(debtRow.total_debt) || 0)
+      const dPaidBefore = Math.round(Number(debtRow.paid) || 0)
+      const dRemainingBefore = Math.max(0, dTotal - dPaidBefore)
+      if (amount > dRemainingBefore) return { ok: false, error: 'Nominal pembayaran melebihi sisa tagihan' }
+      const dPaidAfter = dPaidBefore + amount
+      const dRemainingAfter = Math.max(0, dRemainingBefore - amount)
+      await supabase.from('debts').update({
+        paid: dPaidAfter, remaining: dRemainingAfter, status: dRemainingAfter <= 0 ? 'lunas' : 'aktif',
+      }).eq('id', debtRow.id)
+      const payRow = {
+        debt_id: debtRow.id, amount, payment_method: paymentMethod, notes,
+        cashier: currentUser?.name || currentUser?.username || '', cashier_id: currentUser?.id || null,
+        invoice_no, paid_at: new Date().toISOString(),
+      }
+      let { error: pErr } = await supabase.from('debt_payments').insert(payRow)
+      if (pErr && isSchemaCacheError(pErr, 'invoice_no')) {
+        const retry = await supabase.from('debt_payments').insert(omit(payRow, ['invoice_no']))
+        pErr = retry.error
+      }
+      if (pErr) return { ok: false, error: pErr.message }
+      if (debtRow.customer_id) await recalculateCustomerSummary(debtRow.customer_id)
+      if (!skipRefresh) await Promise.all([refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      return { ok: true }
     }
 
     // 3-6. Tentukan remainingBefore + paidBefore

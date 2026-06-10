@@ -802,6 +802,96 @@ export function useAccounting() {
     const { error } = await supabase.from('migration_details').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
+  // ── SALDO AWAL: Piutang Customer Lama & Kasbon Karyawan Lama ──
+  // Cari customer berdasarkan nama (case-insensitive); buat baru bila belum ada.
+  const findOrCreateCustomer = useCallback(async (name) => {
+    const nm = (name || '').trim()
+    if (!nm) return { ok: false, error: 'Nama customer wajib diisi' }
+    const { data: found } = await supabase.from('customers').select('id,name').ilike('name', nm).limit(1)
+    if (found && found.length) return { ok: true, id: found[0].id }
+    const { data: ins, error } = await supabase.from('customers').insert({ name: nm }).select('id').single()
+    return error ? { ok: false, error: error.message } : { ok: true, id: ins.id }
+  }, [])
+
+  // Piutang Customer Lama → baris debts (is_opening) TANPA transaksi/invoice POS.
+  const addOldReceivable = useCallback(async (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!p.customerName?.trim()) return { ok: false, error: 'Nama customer wajib diisi' }
+    if (amt <= 0) return { ok: false, error: 'Nominal piutang harus > 0' }
+    if (!p.date) return { ok: false, error: 'Tanggal wajib diisi' }
+    const c = await findOrCreateCustomer(p.customerName)
+    if (!c.ok) return { ok: false, error: c.error }
+    const inv = 'SALDO-' + Date.now().toString(36).toUpperCase()
+    const row = {
+      customer_id: c.id, invoice_no: inv, total_debt: amt, paid: 0, remaining: amt,
+      due_date: p.dueDate || null, notes: p.note || '', status: 'aktif', is_opening: true,
+      created_at: new Date(`${p.date}T12:00:00`).toISOString(),
+    }
+    let { error } = await supabase.from('debts').insert(row)
+    if (error && /is_opening|does not exist|schema cache/i.test(error.message || '')) {
+      delete row.is_opening
+      ;({ error } = await supabase.from('debts').insert(row))
+    }
+    return error ? { ok: false, error: error.message } : { ok: true, customerId: c.id }
+  }, [findOrCreateCustomer])
+
+  const listOpeningReceivables = useCallback(async () => {
+    const { data, error } = await supabase.from('debts')
+      .select('*, customers(name)').eq('is_opening', true).is('deleted_at', null)
+      .order('created_at', { ascending: false }).limit(1000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: (data || []).map(d => ({ ...d, customer_name: d.customers?.name || '' })) }
+  }, [])
+  const editOldReceivable = useCallback(async (id, p) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const { data: cur } = await supabase.from('debts').select('paid').eq('id', id).single()
+    const paid = Math.round(Number(cur?.paid) || 0)
+    const remaining = Math.max(0, amt - paid)
+    const patch = { total_debt: amt, remaining, status: remaining <= 0 ? 'lunas' : 'aktif', due_date: p.dueDate || null, notes: p.note || '', updated_at: new Date().toISOString() }
+    if (p.date) patch.created_at = new Date(`${p.date}T12:00:00`).toISOString()
+    const { error } = await supabase.from('debts').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // Hapus piutang lama → hard delete (konsisten dgn modul Piutang; cascade pembayaran).
+  const deleteOldReceivable = useCallback(async (id) => {
+    const { error } = await supabase.from('debts').delete().eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
+  // Kasbon Karyawan Lama → baris employee_cash_advances (is_opening) — bukan Uang Keluar.
+  const addOldKasbon = useCallback(async (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
+    if (amt <= 0) return { ok: false, error: 'Nominal kasbon harus > 0' }
+    if (!p.date) return { ok: false, error: 'Tanggal wajib diisi' }
+    // find/create employee
+    let empId = null
+    const { data: found } = await supabase.from('employees').select('id').ilike('name', p.employeeName.trim()).is('deleted_at', null).limit(1)
+    if (found && found.length) empId = found[0].id
+    else { const ins = await supabase.from('employees').insert({ name: p.employeeName.trim() }).select('id').single(); if (!ins.error) empId = ins.data?.id }
+    const row = {
+      employee_name: p.employeeName.trim(), amount: amt, paid: 0, remaining: amt,
+      advance_date: p.date, due_date: p.dueDate || null,
+      payment_method: p.method === 'transfer' ? 'transfer' : 'cash', notes: p.note || '',
+      is_opening: true, cashier_id: cashierId || null,
+    }
+    if (empId) row.employee_id = empId
+    let { error } = await supabase.from('employee_cash_advances').insert(row)
+    if (error && /is_opening|employee_id|does not exist|schema cache/i.test(error.message || '')) {
+      delete row.is_opening; delete row.employee_id
+      ;({ error } = await supabase.from('employee_cash_advances').insert(row))
+    }
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const listOpeningKasbon = useCallback(async () => {
+    const { data, error } = await supabase.from('employee_cash_advances')
+      .select('*').eq('is_opening', true).is('deleted_at', null)
+      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
   // "Buat Database Otomatis" — jalankan bootstrap RPC (idempotent).
   const bootstrapMigrationDetails = useCallback(async () => {
     const { error } = await supabase.rpc('acc_bootstrap_migration_details')
@@ -895,5 +985,7 @@ export function useAccounting() {
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
     listMigrationDetails, addMigrationDetail, updateMigrationDetail, deleteMigrationDetail,
     bulkAddMigrationDetails, bootstrapMigrationDetails,
+    findOrCreateCustomer, addOldReceivable, listOpeningReceivables, editOldReceivable, deleteOldReceivable,
+    addOldKasbon, listOpeningKasbon,
   }
 }

@@ -268,6 +268,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [migNeedsMigration, setMigNeedsMigration] = useState(false); const [bootstrapping, setBootstrapping] = useState(false)
   const [migImport, setMigImport] = useState(null) // { rows:[{type,date,name,customer,amount,method,note,_ok}], fileName }
   const [importing, setImporting] = useState(false)
+  // Jenis form migrasi yang aktif + form Piutang Customer Lama & Kasbon Karyawan Lama
+  const [migKind, setMigKind] = useState('income') // income | expense | receivable | kasbon
+  const blankRecv = { date: acc.todayISO(), customerName: '', amount: '', dueDate: '', note: '' }
+  const blankOldKas = { date: acc.todayISO(), employeeName: '', amount: '', dueDate: '', method: 'cash', note: '' }
+  const [recvForm, setRecvForm] = useState(blankRecv); const [recvErr, setRecvErr] = useState({})
+  const [oldKasForm, setOldKasForm] = useState(blankOldKas); const [oldKasErr, setOldKasErr] = useState({})
+  const [openingRecv, setOpeningRecv] = useState([]); const [openingKas, setOpeningKas] = useState([])
+  const [editRecv, setEditRecv] = useState(null); const [editOldKas, setEditOldKas] = useState(null)
 
   // forms (default metode TRANSFER)
   const [expForm, setExpForm] = useState({ date: acc.todayISO(), category: 'Pembelian Bahan', amount: '', method: 'transfer', note: '' })
@@ -362,6 +370,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     if (r.ok) { setMigRows(r.data); setMigNeedsMigration(false) }
     else if (/relation|does not exist|schema cache/i.test(r.error || '')) { setMigRows([]); setMigNeedsMigration(true) }
     else toast.error(r.error || 'Gagal memuat data migrasi')
+    // Saldo awal: piutang customer lama + kasbon karyawan lama (abaikan error diam2)
+    const rr = await acc.listOpeningReceivables(); setOpeningRecv(rr.ok ? rr.data : [])
+    const rk = await acc.listOpeningKasbon(); setOpeningKas(rk.ok ? rk.data : [])
   }
   const loadAdvances = async () => {
     const r = await acc.listEmployeeAdvances()
@@ -810,9 +821,47 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           setImporting(false)
           if (r.ok) { toast.success(`${r.count} data berhasil diimpor`); setMigImport(null); loadMig(); loadDashboard() } else toast.error(r.error)
         }
+        const submitRecv = async () => {
+          const e = {}
+          if (!recvForm.date) e.date = 'Tanggal wajib diisi'
+          if (!recvForm.customerName.trim()) e.customerName = 'Nama customer wajib diisi'
+          if (!(parseCurrency(recvForm.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
+          setRecvErr(e); if (Object.keys(e).length) return
+          setSaving(true)
+          const r = await acc.addOldReceivable({ ...recvForm, amount: parseCurrency(recvForm.amount) }, currentUser?.id)
+          setSaving(false)
+          if (r.ok) { toast.success('Piutang customer lama dicatat'); setRecvForm(blankRecv); setRecvErr({}); loadMig(); loadDashboard() }
+          else toast.error(r.error)
+        }
+        const submitOldKas = async () => {
+          const e = {}
+          if (!oldKasForm.date) e.date = 'Tanggal wajib diisi'
+          if (!oldKasForm.employeeName.trim()) e.employeeName = 'Nama karyawan wajib diisi'
+          if (!(parseCurrency(oldKasForm.amount) > 0)) e.amount = 'Nominal harus lebih dari 0'
+          setOldKasErr(e); if (Object.keys(e).length) return
+          setSaving(true)
+          const r = await acc.addOldKasbon({ ...oldKasForm, amount: parseCurrency(oldKasForm.amount) }, currentUser?.id)
+          setSaving(false)
+          if (r.ok) { toast.success('Kasbon karyawan lama dicatat'); setOldKasForm(blankOldKas); setOldKasErr({}); loadMig(); loadDashboard() }
+          else toast.error(r.error)
+        }
         const totIn = migRows.filter(x => x.type === 'old_income').reduce((s, x) => s + Math.round(x.amount || 0), 0)
         const totOut = migRows.filter(x => x.type === 'old_expense').reduce((s, x) => s + Math.round(x.amount || 0), 0)
+        const totRecv = openingRecv.reduce((s, x) => s + Math.max(0, Math.round(x.total_debt || 0)), 0)
+        const totKas = openingKas.reduce((s, x) => s + Math.round(x.amount || 0), 0)
         const importValidCount = (migImport?.rows || []).filter(r => r._ok).length
+        // Riwayat gabungan 4 jenis (terbaru di atas)
+        const histRows = [
+          ...migRows.map(x => ({ kind: x.type === 'old_income' ? 'income' : 'expense', id: x.id, date: x.trx_date, name: x.name || '—', customer: x.customer || '', amount: Math.round(x.amount || 0), method: x.method || '', note: x.notes || '', raw: x })),
+          ...openingRecv.map(x => ({ kind: 'receivable', id: x.id, date: String(x.created_at).slice(0, 10), name: x.customer_name || '—', customer: '', amount: Math.round(x.total_debt || 0), paid: Math.round(x.paid || 0), method: '', note: x.notes || '', due: x.due_date, raw: x })),
+          ...openingKas.map(x => ({ kind: 'kasbon', id: x.id, date: x.advance_date, name: x.employee_name || '—', customer: '', amount: Math.round(x.amount || 0), paid: Math.round(x.paid || 0), method: x.payment_method || '', note: x.notes || '', due: x.due_date, raw: x })),
+        ].sort((a, b) => String(b.date).localeCompare(String(a.date)))
+        const KIND_META = {
+          income: { label: 'Pemasukan', color: '#10d98a', sign: '+' },
+          expense: { label: 'Pengeluaran', color: '#ef4444', sign: '−' },
+          receivable: { label: 'Piutang Customer', color: '#38BDF8', sign: '+' },
+          kasbon: { label: 'Kasbon Karyawan', color: '#a78bfa', sign: '+' },
+        }
         return (
         <div className="space-y-4">
           {migNeedsMigration && (
@@ -827,14 +876,23 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           )}
 
           {/* RINGKASAN MIGRASI */}
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
             <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(16,217,138,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Pemasukan Lama</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(totIn)}</div></div>
             <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(239,68,68,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Pengeluaran Lama</div><div className="text-sm font-bold truncate" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(totOut)}</div></div>
-            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Selisih</div><div className="text-sm font-bold truncate" style={{ color: (totIn - totOut) >= 0 ? '#10d98a' : '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(totIn - totOut)}</div></div>
+            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(56,189,248,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Piutang Customer</div><div className="text-sm font-bold truncate" style={{ color: '#38BDF8', fontVariantNumeric: 'tabular-nums' }}>{fmt(totRecv)}</div></div>
+            <div className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid rgba(167,139,250,0.3)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Kasbon Karyawan</div><div className="text-sm font-bold truncate" style={{ color: '#a78bfa', fontVariantNumeric: 'tabular-nums' }}>{fmt(totKas)}</div></div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* PEMASUKAN LAMA */}
+          {/* Pemilih jenis data lama */}
+          <div className="flex gap-1.5 flex-wrap">
+            {[['income', 'Pemasukan', TrendingUp], ['expense', 'Pengeluaran', TrendingDown], ['receivable', 'Piutang Customer', UsersIcon], ['kasbon', 'Kasbon Karyawan', HandCoins]].map(([k, lbl, Ic]) => {
+              const a = migKind === k
+              return <button key={k} onClick={() => setMigKind(k)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all flex-shrink-0" style={{ background: a ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: a ? '#fff' : 'var(--text-secondary)', border: `1px solid ${a ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}><Ic size={12} /> {lbl}</button>
+            })}
+          </div>
+
+          {/* PEMASUKAN LAMA */}
+          {migKind === 'income' && (
             <FormCard icon={TrendingUp} title="Tambah Pemasukan Lama" subtitle="Transaksi masuk sebelum POS dipakai. Menambah Omset & Uang Masuk — tanpa invoice / order / potong stok.">
               <Field icon={Receipt} label="Tanggal" required error={migInErr.date}>
                 <input type="date" value={migIn.date} onChange={e => setMigIn(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migInErr.date), colorScheme: 'dark' }} />
@@ -856,8 +914,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               </Field>
               <Button variant="primary" className="w-full" disabled={saving} onClick={() => submitMig('in')}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pemasukan Lama</Button>
             </FormCard>
+          )}
 
-            {/* PENGELUARAN LAMA */}
+          {/* PENGELUARAN LAMA */}
+          {migKind === 'expense' && (
             <FormCard icon={TrendingDown} title="Tambah Pengeluaran Lama" subtitle="Pengeluaran sebelum POS dipakai. Menambah Total Pengeluaran & Uang Keluar; mengurangi Arus Kas & Laba.">
               <Field icon={Receipt} label="Tanggal" required error={migOutErr.date}>
                 <input type="date" value={migOut.date} onChange={e => setMigOut(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(migOutErr.date), colorScheme: 'dark' }} />
@@ -876,7 +936,54 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               </Field>
               <Button variant="primary" className="w-full" disabled={saving} onClick={() => submitMig('out')}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pengeluaran Lama</Button>
             </FormCard>
-          </div>
+          )}
+
+          {/* PIUTANG CUSTOMER LAMA */}
+          {migKind === 'receivable' && (
+            <FormCard icon={UsersIcon} title="Tambah Piutang Customer Lama" subtitle="Saldo awal piutang customer (sebelum POS). Menambah Piutang Usaha & Total Aset — TANPA uang masuk / invoice. Masuk modul Piutang & bisa dibayar normal.">
+              <Field icon={Receipt} label="Tanggal" required error={recvErr.date}>
+                <input type="date" value={recvForm.date} onChange={e => setRecvForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(recvErr.date), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={UsersIcon} label="Nama Customer" required error={recvErr.customerName} hint="Jika sudah ada, otomatis digabung ke customer tsb">
+                <input value={recvForm.customerName} onChange={e => setRecvForm(p => ({ ...p, customerName: e.target.value }))} placeholder="Nama customer" className={FIELD_CLS} style={inpErr(recvErr.customerName)} />
+              </Field>
+              <Field icon={Wallet} label="Nominal Piutang" required error={recvErr.amount}>
+                <MoneyInput value={recvForm.amount} onChange={v => setRecvForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(recvErr.amount)} />
+              </Field>
+              <Field icon={Receipt} label="Jatuh Tempo">
+                <input type="date" value={recvForm.dueDate} onChange={e => setRecvForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={BookOpen} label="Catatan">
+                <input value={recvForm.note} onChange={e => setRecvForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Button variant="primary" className="w-full" disabled={saving} onClick={submitRecv}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Piutang Customer Lama</Button>
+            </FormCard>
+          )}
+
+          {/* KASBON KARYAWAN LAMA */}
+          {migKind === 'kasbon' && (
+            <FormCard icon={HandCoins} title="Tambah Kasbon Karyawan Lama" subtitle="Saldo awal kasbon karyawan (sebelum POS). Menambah Piutang Karyawan & Total Aset — TANPA uang keluar baru. Masuk modul Kasbon & bisa dibayar FIFO.">
+              <Field icon={Receipt} label="Tanggal" required error={oldKasErr.date}>
+                <input type="date" value={oldKasForm.date} onChange={e => setOldKasForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(oldKasErr.date), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={UsersIcon} label="Nama Karyawan" required error={oldKasErr.employeeName} hint="Jika sudah ada, otomatis digabung ke karyawan tsb">
+                <input value={oldKasForm.employeeName} onChange={e => setOldKasForm(p => ({ ...p, employeeName: e.target.value }))} placeholder="Nama karyawan" className={FIELD_CLS} style={inpErr(oldKasErr.employeeName)} />
+              </Field>
+              <Field icon={Wallet} label="Nominal Kasbon" required error={oldKasErr.amount}>
+                <MoneyInput value={oldKasForm.amount} onChange={v => setOldKasForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(oldKasErr.amount)} />
+              </Field>
+              <Field icon={Receipt} label="Jatuh Tempo">
+                <input type="date" value={oldKasForm.dueDate} onChange={e => setOldKasForm(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Wallet} label="Metode Pencairan">
+                <select value={oldKasForm.method} onChange={e => setOldKasForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select>
+              </Field>
+              <Field icon={BookOpen} label="Catatan">
+                <input value={oldKasForm.note} onChange={e => setOldKasForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Button variant="primary" className="w-full" disabled={saving} onClick={submitOldKas}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Kasbon Karyawan Lama</Button>
+            </FormCard>
+          )}
 
           {/* IMPORT EXCEL */}
           <FormCard icon={FileSpreadsheet} title="Import Excel" subtitle="Unggah banyak data sekaligus. 2 sheet: 'Pemasukan Lama' & 'Pengeluaran Lama'.">
@@ -917,32 +1024,44 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             )}
           </FormCard>
 
-          {/* RIWAYAT MIGRASI */}
+          {/* RIWAYAT MIGRASI (4 jenis) */}
           <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <div className="flex items-center gap-2 mb-3">
               <BookOpen size={15} style={{ color: 'var(--accent-light)' }} />
               <h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Riwayat Migrasi Data</h3>
-              <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>{migRows.length} data</span>
+              <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>{histRows.length} data</span>
             </div>
-            {migRows.length === 0 ? <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada data migrasi</p> : (
+            {histRows.length === 0 ? <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada data migrasi</p> : (
               <div className="space-y-2">
-                {migRows.map(x => {
-                  const inc = x.type === 'old_income'
-                  const c = inc ? '#10d98a' : '#ef4444'
+                {histRows.map(x => {
+                  const m = KIND_META[x.kind]; const c = m.color
+                  const onEdit = () => {
+                    if (x.kind === 'income' || x.kind === 'expense') setEditMig({ id: x.id, type: x.raw.type, date: x.raw.trx_date, name: x.raw.name || '', customer: x.raw.customer || '', amount: String(Math.round(x.raw.amount || 0)), method: x.raw.method || 'cash', note: x.raw.notes || '' })
+                    else if (x.kind === 'receivable') setEditRecv({ id: x.id, customerName: x.name, date: x.date, amount: String(x.amount), dueDate: x.due || '', note: x.note })
+                    else setEditOldKas({ id: x.id, employeeName: x.name, date: x.date, amount: String(x.amount), dueDate: x.due || '', method: x.method || 'cash', note: x.note })
+                  }
+                  const onDelete = async () => {
+                    if (!(await confirm({ title: 'Yakin ingin menghapus data migrasi ini?', message: 'Data akan dihapus & dashboard (omset/pengeluaran/piutang/aset/laba) menyesuaikan realtime.' }))) return
+                    let r
+                    if (x.kind === 'income' || x.kind === 'expense') r = await acc.deleteMigrationDetail(x.id)
+                    else if (x.kind === 'receivable') r = await acc.deleteOldReceivable(x.id)
+                    else r = await acc.deleteEmployeeAdvance(x.id)
+                    if (r.ok) { toast.success('Data migrasi dihapus'); loadMig(); loadDashboard() } else toast.error(r.error)
+                  }
                   return (
-                    <div key={x.id} className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                    <div key={x.kind + x.id} className="rounded-xl p-3 min-w-0 overflow-hidden" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
                       <div className="flex items-center gap-2 flex-wrap min-w-0">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: `${c}22`, color: c }}>{inc ? 'Pemasukan' : 'Pengeluaran'}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: `${c}22`, color: c }}>{m.label}</span>
                         <span className="text-xs font-semibold truncate min-w-0" style={{ color: 'var(--text-primary)' }}>{x.name || '—'}</span>
-                        {inc && x.customer && <span className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }}>{x.customer}</span>}
-                        <span className="text-[10px] uppercase flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{x.method}</span>
-                        <span className="ml-auto text-sm font-bold flex-shrink-0" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{inc ? '+' : '−'}{fmt(x.amount)}</span>
+                        {x.kind === 'income' && x.customer && <span className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }}>{x.customer}</span>}
+                        {x.method && <span className="text-[10px] uppercase flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{x.method}</span>}
+                        <span className="ml-auto text-sm font-bold flex-shrink-0" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{m.sign}{fmt(x.amount)}</span>
                       </div>
                       <div className="flex items-center gap-2 mt-1.5">
-                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.trx_date)}{x.notes ? ` · ${x.notes}` : ''}</span>
+                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{dt(x.date)}{(x.kind === 'receivable' || x.kind === 'kasbon') && x.paid > 0 ? ` · dibayar ${fmt(x.paid)}` : ''}{x.note ? ` · ${x.note}` : ''}</span>
                         <div className="ml-auto flex gap-1.5 flex-shrink-0">
-                          <button onClick={() => setEditMig({ id: x.id, type: x.type, date: x.trx_date, name: x.name || '', customer: x.customer || '', amount: String(Math.round(x.amount || 0)), method: x.method || 'cash', note: x.notes || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
-                          <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data migrasi ini?', message: 'Data akan disembunyikan. Dashboard (omset/pengeluaran/uang masuk/keluar/laba) akan menyesuaikan.' }))) return; const r = await acc.deleteMigrationDetail(x.id); if (r.ok) { toast.success('Data migrasi dihapus'); loadMig(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+                          <button onClick={onEdit} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
+                          <button onClick={onDelete} className="w-8 h-8 rounded-lg inline-flex items-center justify-center btn-press" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
                         </div>
                       </div>
                     </div>
@@ -2303,6 +2422,48 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               const r = await acc.updateMigrationDetail(editMig.id, { ...editMig, amount: parseCurrency(editMig.amount) })
               setSaving(false)
               if (r.ok) { toast.success('Data migrasi diperbarui'); setEditMig(null); loadMig(); loadDashboard() } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── EDIT PIUTANG CUSTOMER LAMA ── */}
+      <Modal open={!!editRecv} onClose={() => setEditRecv(null)} title="Edit Piutang Customer Lama" size="sm">
+        {editRecv && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal" required><input type="date" value={editRecv.date} onChange={e => setEditRecv(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={UsersIcon} label="Nama Customer"><input value={editRecv.customerName} disabled className={FIELD_CLS} style={{ ...inp, opacity: 0.7 }} /></Field>
+            <Field icon={Wallet} label="Nominal Piutang" required><MoneyInput value={editRecv.amount} onChange={v => setEditRecv(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Receipt} label="Jatuh Tempo"><input type="date" value={editRecv.dueDate} onChange={e => setEditRecv(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={Pencil} label="Catatan"><input value={editRecv.note} onChange={e => setEditRecv(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              if (!(parseCurrency(editRecv.amount) > 0)) return toast.error('Nominal harus lebih dari 0')
+              setSaving(true)
+              const r = await acc.editOldReceivable(editRecv.id, { date: editRecv.date, amount: parseCurrency(editRecv.amount), dueDate: editRecv.dueDate, note: editRecv.note })
+              setSaving(false)
+              if (r.ok) { toast.success('Piutang lama diperbarui'); setEditRecv(null); loadMig(); loadDashboard() } else toast.error(r.error)
+            }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── EDIT KASBON KARYAWAN LAMA ── */}
+      <Modal open={!!editOldKas} onClose={() => setEditOldKas(null)} title="Edit Kasbon Karyawan Lama" size="sm">
+        {editOldKas && (
+          <div className="space-y-3">
+            <Field icon={Receipt} label="Tanggal" required><input type="date" value={editOldKas.date} onChange={e => setEditOldKas(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={UsersIcon} label="Nama Karyawan" required><input value={editOldKas.employeeName} onChange={e => setEditOldKas(p => ({ ...p, employeeName: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={TrendingDown} label="Nominal Kasbon" required><MoneyInput value={editOldKas.amount} onChange={v => setEditOldKas(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            <Field icon={Receipt} label="Jatuh Tempo"><input type="date" value={editOldKas.dueDate} onChange={e => setEditOldKas(p => ({ ...p, dueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <Field icon={Wallet} label="Metode Pencairan"><select value={editOldKas.method} onChange={e => setEditOldKas(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}><option value="cash">Cash</option><option value="transfer">Transfer</option></select></Field>
+            <Field icon={Pencil} label="Catatan"><input value={editOldKas.note} onChange={e => setEditOldKas(p => ({ ...p, note: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              if (!editOldKas.employeeName.trim()) return toast.error('Nama karyawan wajib diisi')
+              if (!(parseCurrency(editOldKas.amount) > 0)) return toast.error('Nominal harus lebih dari 0')
+              setSaving(true)
+              const r = await acc.editEmployeeAdvance(editOldKas.id, { employeeName: editOldKas.employeeName, amount: parseCurrency(editOldKas.amount), date: editOldKas.date, dueDate: editOldKas.dueDate, method: editOldKas.method, note: editOldKas.note })
+              setSaving(false)
+              if (r.ok) { toast.success('Kasbon lama diperbarui'); setEditOldKas(null); loadMig(); loadDashboard() } else toast.error(r.error)
             }}><Check size={14} /> Simpan</Button>
           </div>
         )}
