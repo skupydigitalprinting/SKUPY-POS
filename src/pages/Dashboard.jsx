@@ -325,11 +325,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       const tt = new Date(labaTo + 'T23:59:59').getTime()
       list = list.filter(t => new Date(t.date).getTime() <= tt)
     }
-    let revenueClient = 0, modal = 0
+    let revenueClient = 0, modal = 0, soldRevenue = 0
     list.forEach(t => {
       revenueClient += toMoney(t.total)
       ;(t.items || []).forEach(i => {
-        modal += (Number(i.qty) || 0) * (modalById[i.productId] || 0)
+        const qty = Number(i.qty) || 0
+        modal += qty * (modalById[i.productId] || 0)     // modal barang terjual
+        soldRevenue += qty * (Number(i.price) || 0)       // total harga barang terjual
       })
     })
     // OMSET = dari RPC (full DB, ikut rentang). Fallback ke hitungan client
@@ -338,11 +340,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     const revenue = omsetAcc != null ? omsetAcc : revenueClient
     const count = omsetCount != null ? omsetCount : list.length
     const pengeluaran = pengeluaranAcc
-    // Profit Bruto = Omset − Modal Barang (TANPA pengeluaran)
-    // Laba Bersih  = Omset − Total Pengeluaran − Beban Sewa berjalan (amortisasi)
-    const profitBruto = revenue - modal
+    // Perkiraan Laba = Total Harga Barang Terjual − Modal Barang Terjual
+    //   (berbasis item, bukan omset invoice). Margin = laba / harga terjual.
+    // Laba Bersih = Omset − Total Pengeluaran − Beban Sewa berjalan (amortisasi)
+    const estProfit = soldRevenue - modal
+    const estMargin = soldRevenue > 0 ? Math.round((estProfit / soldRevenue) * 100) : 0
     const profit = netProfit(revenue, pengeluaran, rentBeban) // rumus resmi bersama
-    return { revenue, modal, pengeluaran, bebanSewa: rentBeban, profitBruto, profit, count }
+    return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentBeban, profit, count }
   }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban, omsetAcc, omsetCount])
 
   // ─── Owner-only filter: admin dropdown + date range ───
@@ -535,9 +539,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         if (labaFrom) { const f = new Date(labaFrom + 'T00:00:00').getTime(); base = base.filter(t => new Date(t.date).getTime() >= f) }
         if (labaTo) { const tt = new Date(labaTo + 'T23:59:59').getTime(); base = base.filter(t => new Date(t.date).getTime() <= tt) }
         const rows = base.map(txRow)
-        const titles = { penjualan: 'Detail Omset Periode', laba: 'Profit Bruto', modal: 'Modal Barang' }
-        // 'laba' = kartu hijau "Profit Bruto" = Omset − Modal Barang
-        const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profitBruto
+        const titles = { penjualan: 'Detail Omset Periode', laba: 'Perkiraan Laba', modal: 'Modal Barang' }
+        // 'laba' = kartu hijau "Perkiraan Laba" = Harga Barang Terjual − Modal Barang Terjual
+        const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.estProfit
         const invCount = key === 'penjualan' ? labaRugi.count : rows.length
         const subtitle = `Periode: ${dmy(labaFrom)} – ${dmy(labaTo)} (${LABA_SCOPE_LABEL[labaPreset] || 'Custom'}) · ${invCount} invoice · Total ${formatRupiah(total)}`
         return { title: titles[key], rows, total, subtitle }
@@ -1045,33 +1049,33 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
               </div>
 
-              {/* PROFIT BRUTO = Omset − Modal Barang (kartu hijau) */}
+              {/* PERKIRAAN LABA = Harga Barang Terjual − Modal Barang Terjual (kartu hijau) */}
               <div onClick={() => openCard('laba')}
                 className="rounded-xl p-4 cursor-pointer hover:brightness-110 transition lg:col-span-2"
                 style={{
-                  background: labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
-                  border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
+                  background: labaRugi.estProfit >= 0 ? 'rgba(16,217,138,0.08)' : 'rgba(255,77,106,0.08)',
+                  border: `1px solid ${labaRugi.estProfit >= 0 ? 'rgba(16,217,138,0.3)' : 'rgba(255,77,106,0.3)'}`,
                 }}>
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                     style={{
-                      background: labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(255,77,106,0.15)',
-                      border: `1px solid ${labaRugi.profitBruto >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(255,77,106,0.4)'}`,
+                      background: labaRugi.estProfit >= 0 ? 'rgba(16,217,138,0.15)' : 'rgba(255,77,106,0.15)',
+                      border: `1px solid ${labaRugi.estProfit >= 0 ? 'rgba(16,217,138,0.4)' : 'rgba(255,77,106,0.4)'}`,
                     }}>
-                    {labaRugi.profitBruto >= 0
+                    {labaRugi.estProfit >= 0
                       ? <TrendingUp size={15} style={{ color: '#10d98a' }} />
                       : <TrendingDown size={15} style={{ color: '#ff4d6a' }} />}
                   </div>
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-                    {labaRugi.profitBruto >= 0 ? 'Profit Bruto' : 'Rugi Kotor'}
+                    Perkiraan Laba
                   </span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
-                  style={{ fontFamily: 'Syne', color: labaRugi.profitBruto >= 0 ? '#10d98a' : '#ff4d6a' }}>
-                  {formatRupiah(labaRugi.profitBruto)}
+                  style={{ fontFamily: 'Syne', color: labaRugi.estProfit >= 0 ? '#10d98a' : '#ff4d6a' }}>
+                  {formatRupiah(labaRugi.estProfit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Omset − Modal Barang{labaRugi.revenue > 0 ? ` · Margin ${Math.round((labaRugi.profitBruto / labaRugi.revenue) * 100)}%` : ''}
+                  Harga Barang Terjual − Modal Barang Terjual{labaRugi.soldRevenue > 0 ? ` · Margin ${labaRugi.estMargin}%` : ''}
                 </div>
               </div>
 
