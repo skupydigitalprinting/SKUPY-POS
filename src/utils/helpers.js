@@ -544,3 +544,35 @@ export function monthLabel(yyyyMm) {
   const [y, m] = yyyyMm.split('-').map(Number)
   return new Date(y, m - 1, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })
 }
+
+/** Tanggal lokal YYYY-MM-DD (hindari bug UTC off-by-one). */
+export function ymdLocal(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** Preset filter waktu cepat. 'all' → sejak 2000-01-01 s/d hari ini. */
+export const QUICK_PRESETS = [
+  ['today', 'Hari Ini'],
+  ['week', 'Minggu Ini'],
+  ['month', 'Bulan Ini'],
+  ['year', 'Tahun Ini'],
+  ['all', 'Semua Waktu'],
+]
+export function quickRange(preset) {
+  const now = new Date(); const today = ymdLocal(now)
+  if (preset === 'today') return { from: today, to: today }
+  if (preset === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymdLocal(d), to: today } }
+  if (preset === 'month') { const d = new Date(now.getFullYear(), now.getMonth(), 1); return { from: ymdLocal(d), to: today } }
+  if (preset === 'year') { const d = new Date(now.getFullYear(), 0, 1); return { from: ymdLocal(d), to: today } }
+  if (preset === 'all') return { from: '2000-01-01', to: today }
+  return { from: today, to: today }
+}
+/** Deteksi preset dari pasangan from/to (untuk menyorot chip yang aktif). */
+export function detectPreset(from, to) {
+  if (!from && !to) return 'all'
+  for (const [key] of QUICK_PRESETS) {
+    const r = quickRange(key)
+    if (r.from === from && r.to === to) return key
+  }
+  return 'custom'
+}

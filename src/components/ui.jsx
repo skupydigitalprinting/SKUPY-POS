@@ -1,6 +1,29 @@
 import React from 'react'
 import { Check, Search } from 'lucide-react'
-import { DEFAULT_PRODUCT_IMAGE, formatCurrency } from '../utils/helpers'
+import { DEFAULT_PRODUCT_IMAGE, formatCurrency, QUICK_PRESETS, quickRange } from '../utils/helpers'
+
+// Chips filter waktu cepat. `active` = key preset aktif ('today'|'week'|'month'
+// |'year'|'all'|'custom'). onPick(key, {from,to}) dipanggil saat chip diklik.
+// Chip aktif berwarna ungu. Wrap rapi di mobile, tanpa horizontal scroll.
+export function RangeChips({ active = 'month', onPick, className = '' }) {
+  return (
+    <div className={`flex items-center gap-1.5 flex-wrap ${className}`}>
+      {QUICK_PRESETS.map(([key, label]) => {
+        const on = active === key
+        return (
+          <button key={key} type="button" onClick={() => onPick && onPick(key, quickRange(key))}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold btn-press"
+            style={{ background: on ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: on ? '#fff' : 'var(--text-secondary)', border: `1px solid ${on ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>
+            {label}
+          </button>
+        )
+      })}
+      {active === 'custom' && (
+        <span className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.15)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.3)', fontFamily: 'Syne' }}>Custom</span>
+      )}
+    </div>
+  )
+}
 
 // Searchable customer picker (cari nama / no HP). Hanya menampilkan customer
 // yang diberikan (sudah difilter aktif + sesuai hak akses role oleh pemanggil).

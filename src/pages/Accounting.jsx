@@ -5,8 +5,8 @@ import {
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
   HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit } from '../utils/helpers'
-import { Button } from '../components/ui'
+import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset } from '../utils/helpers'
+import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
@@ -292,6 +292,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   // Hutang Supplier dikelompokkan per supplier
   const [supDetailName, setSupDetailName] = useState(null) // nama supplier (buka modal detail)
   const [supHist, setSupHist] = useState([]); const [supHistLoading, setSupHistLoading] = useState(false)
+  const [expandNote, setExpandNote] = useState(null) // id nota yang riwayatnya dibuka
   const [fifoSup, setFifoSup] = useState(null) // nama supplier (buka modal Bayar FIFO)
   const [fifoForm, setFifoForm] = useState({ date: '', amount: '', method: 'transfer', note: '' })
   const [loanForm, setLoanForm] = useState({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' })
@@ -827,6 +828,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
   return (
     <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={right}>
+      {/* Filter waktu cepat — berlaku untuk semua tab & modal detail (ikut from/to) */}
+      <div className="mb-3"><RangeChips active={detectPreset(from, to)} onPick={(_k, r) => { setFrom(r.from); setTo(r.to) }} /></div>
       {/* Desktop: tab utama + grup dropdown (Hutang / More), muat 1 baris, tanpa scroll */}
       <div className="hidden md:flex items-center gap-1 mb-4 flex-wrap">
         <TabButton id="ringkasan" tab={tab} setTab={setTab} />
@@ -2435,14 +2438,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       </Modal>
 
       {/* ── DETAIL HUTANG SUPPLIER (per supplier) ── */}
-      <Modal open={!!supDetail} onClose={() => { setSupDetailName(null); setPayId(null) }} mobileFull title={supDetail ? `Hutang Supplier — ${supDetail.supplier}` : ''} size="lg">
+      <Modal open={!!supDetail} onClose={() => { setSupDetailName(null); setPayId(null); setExpandNote(null) }} mobileFull title={supDetail ? `Detail Hutang Supplier — ${supDetail.supplier}` : ''} size="lg">
         {supDetail && (
           <div className="space-y-3">
             {/* Ringkasan */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Hutang</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(supDetail.total)}</div></div>
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a' }}>{fmt(supDetail.paid)}</div></div>
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold truncate" style={{ color: supDetail.remaining > 0 ? '#ef4444' : '#10d98a' }}>{fmt(supDetail.remaining)}</div></div>
+              <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Jumlah Nota</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{supDetail.count}</div></div>
             </div>
             {supDetail.remaining > 0 && (
               <button onClick={() => { setSupDetailName(null); openFifo(supDetail.supplier) }} className="w-full h-10 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-1.5 btn-press" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={15} /> Bayar Gabungan FIFO</button>
@@ -2466,6 +2470,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
                           {rem > 0 && <button onClick={() => { setPayId(payId === n.id ? null : n.id); setPayVal(String(rem)); setPayMethod('transfer'); setPayNote('') }} className="px-2 h-7 rounded-lg text-[11px] font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
+                          <button onClick={() => setExpandNote(expandNote === n.id ? null : n.id)} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat pembayaran nota ini"><BookOpen size={11} /></button>
                           <button onClick={() => setEditDebt({ id: n.id, supplier: n.supplier || '', item: n.item || '', total: String(Math.round(n.total || 0)), dueDate: n.due_date || '', note: n.note || '', method: n.payment_method || 'transfer' })} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
                           <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?' }))) return; const r = await acc.deleteSupplierDebt(n.id); if (r.ok) { toast.success('Dihapus'); refreshSupAll(supDetail.supplier) } else toast.error(r.error) }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
                         </div>
@@ -2483,6 +2488,21 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                           <Button variant="success" size="sm" className="col-span-2" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(payVal); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.paySupplierDebt(n.id, Math.min(amt, rem), payMethod, currentUser?.id, payNote); setSaving(false); if (r.ok) { toast.success('Dibayar'); setPayId(null); refreshSupAll(supDetail.supplier) } else toast.error(r.error) }}>Konfirmasi Bayar</Button>
                         </div>
                       )}
+                      {expandNote === n.id && (() => {
+                        const pays = supHist.filter(p => p.supplier_debt_id === n.id)
+                        return (
+                          <div className="mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
+                            <div className="text-[10px] font-bold uppercase mb-1" style={{ color: 'var(--text-muted)' }}>Riwayat Pembayaran Nota Ini</div>
+                            {pays.length === 0 ? <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran.</p>
+                            : pays.map(p => (
+                              <div key={p.id} className="flex items-center justify-between gap-2 text-[10px] py-0.5">
+                                <span style={{ color: 'var(--text-secondary)' }}>{dt(p.paid_at)} · <span className="uppercase">{p.method}</span>{p.fifo_group ? ' · FIFO' : ''}{p.note ? ` · ${p.note}` : ''}</span>
+                                <span className="font-bold flex-shrink-0" style={{ color: '#10d98a' }}>{fmt(p.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
                     </div>
                   )
                 })}
