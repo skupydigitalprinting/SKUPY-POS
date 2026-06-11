@@ -1565,7 +1565,26 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           <span style={{ color: 'var(--text-muted)' }}>Jumlah Transaksi: <b style={{ color: 'var(--text-primary)' }}>{pengRows.length}</b></span>
           <span style={{ color: 'var(--text-muted)' }}>Total: <b style={{ color: '#ff4d6a' }}>{formatRupiah(pengRows.reduce((s, r) => s + (r.amount || 0), 0))}</b></span>
         </div>
-        <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Data terhapus tidak dihitung. Edit/Hapus langsung mengubah data asli & dashboard.</p>
+        {/* Breakdown per sumber — bantu lacak selisih antar periode (mis. Migrasi Data lama) */}
+        {pengRows.length > 0 && (() => {
+          const bySource = {}
+          pengRows.forEach(r => { const k = r.source || 'Lainnya'; bySource[k] = (bySource[k] || 0) + (r.amount || 0) })
+          const entries = Object.entries(bySource).sort((a, b) => b[1] - a[1])
+          return (
+            <div className="rounded-xl p-3 mb-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div className="text-[10px] font-bold uppercase mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Rincian per Sumber</div>
+              <div className="space-y-1">
+                {entries.map(([src, amt]) => (
+                  <div key={src} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate min-w-0" style={{ color: 'var(--text-secondary)' }}>{src}{src === 'Migrasi Data' ? ' (data lama — bisa bertanggal tahun lalu)' : ''}</span>
+                    <span className="flex-shrink-0 font-semibold" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(amt)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
+        <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Data terhapus tidak dihitung. Edit/Hapus langsung mengubah data asli & dashboard. Selisih antar periode (mis. "Tahun Ini" vs "All Time") berasal dari baris bertanggal di luar periode — cek kolom Tanggal &amp; sumber <b>Migrasi Data</b>.</p>
         {pengTableJsx}
       </Modal>
 
