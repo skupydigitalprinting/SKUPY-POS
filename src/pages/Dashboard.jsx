@@ -366,18 +366,19 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     // (array transactions client dibatasi 500 baris terbaru).
     const revenue = omsetAcc != null ? omsetAcc : revenueClient
     const count = omsetCount != null ? omsetCount : list.length
-    // Total Pengeluaran = SATU sumber resmi getOutflowTransactions (sudah
-    //   termasuk: pengeluaran manual, bayar hutang bank/supplier, pembelian
-    //   cash, kasbon, migrasi, dan pembayaran sewa). Tidak ada double count.
-    const pengeluaran = pengeluaranAcc
+    // Total Pengeluaran = pengeluaran non-sewa (getOutflowTransactions: pengeluaran
+    //   manual, bayar hutang bank/supplier, pembelian cash, kasbon, migrasi)
+    //   + BEBAN SEWA periode (amortisasi). Pembayaran sewa di muka TIDAK dihitung
+    //   penuh di sini — hanya beban bulanannya. (Arus Kas tetap full saat dibayar.)
+    const pengeluaran = pengeluaranAcc + rentBeban
     // Perkiraan Laba = Total Harga Barang Terjual − Modal Barang Terjual
     //   (berbasis item, bukan omset invoice). Margin = laba / harga terjual.
     const estProfit = soldRevenue - modal
     const estMargin = soldRevenue > 0 ? Math.round((estProfit / soldRevenue) * 100) : 0
-    // Laba Bersih = Omset − Total Pengeluaran.
+    // Laba Bersih = Omset − Total Pengeluaran (sudah termasuk beban sewa amortisasi).
     const profit = revenue - pengeluaran
-    return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentCashPeriod, profit, count }
-  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentCashPeriod, omsetAcc, omsetCount])
+    return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentBeban, profit, count }
+  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban, omsetAcc, omsetCount])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -619,14 +620,24 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
               <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{formatDateTime ? new Date(row.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : row.date}</span>{row.method && <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,77,106,0.1)', color: '#ff4d6a', fontSize: 9, textTransform: 'uppercase' }}>{row.method}</span>}{row.note && <span className="truncate">· {row.note}</span>}</div>
             </div>
             <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{formatRupiah(row.amount)}</div>
-            {['expense', 'purchase', 'supplier_payment', 'bank_payment'].includes(row.kind) && <button onClick={() => setPengEdit({ id: row.id, kind: row.kind, amount: String(Math.round(row.amount || 0)), method: row.method || 'transfer', note: row.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>}
-            <button onClick={() => deletePengRow(row)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+            {row.kind === 'rent_amort'
+              ? <span className="text-[9px] px-1.5 py-1 rounded font-bold flex-shrink-0" style={{ background: 'rgba(217,119,6,0.12)', color: '#d97706', fontFamily: 'Syne' }}>AUTO</span>
+              : <>
+                  {['expense', 'purchase', 'supplier_payment', 'bank_payment'].includes(row.kind) && <button onClick={() => setPengEdit({ id: row.id, kind: row.kind, amount: String(Math.round(row.amount || 0)), method: row.method || 'transfer', note: row.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>}
+                  <button onClick={() => deletePengRow(row)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
+                </>}
           </div>
         ))}
         <div className="flex justify-between items-center px-3 py-2.5 rounded-xl mt-1" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><span className="text-xs font-bold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>TOTAL ({rows.length})</span><span className="text-sm font-extrabold" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(total)}</span></div>
       </div>
   )}
-  const pengTableJsx = renderPengTable(pengRows, pengLoading)
+  // Sisipkan baris BEBAN SEWA (amortisasi) ke rincian pengeluaran supaya total
+  // detail = angka di kartu (pembayaran sewa penuh tidak dihitung sbg uang keluar).
+  const withRentAmort = (rows, beban) => (beban > 0
+    ? [...rows, { id: 'rent-amort', kind: 'rent_amort', source: 'Sewa (amortisasi)', category: 'Beban Sewa', party: '', ref: '', method: '', amount: Math.round(beban), date: new Date().toISOString(), note: 'Beban sewa berjalan (amortisasi), bukan pembayaran penuh' }]
+    : rows)
+  const pengRowsP = withRentAmort(pengRows, rentBeban)
+  const pengTableJsx = renderPengTable(pengRowsP, pengLoading)
 
   // Rincian Omset (transaksi valid) — edit/hapus via props store.
   const renderOmsetTable = (rows) => (
@@ -658,7 +669,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const omsetTableJsx = renderOmsetTable(omsetRows)
   // Laba Bersih SEMUA WAKTU (modal Rincian Laba Bersih).
   const labaAllOmset = allTime ? allTime.omset : omsetRowsAll.reduce((s, t) => s + toMoney(t.total), 0)
-  const labaAllPeng = allTime ? allTime.pengeluaran : 0
+  // Pengeluaran All Time = outflow non-sewa + BEBAN SEWA semua waktu (amortisasi).
+  const labaAllPeng = (allTime ? allTime.pengeluaran : 0) + rentBebanAllTime
   // Sewa cash all-time sudah termasuk di labaAllPeng (allTime.pengeluaran),
   // jadi Laba Bersih all-time = Omset − Pengeluaran (tanpa kurangi sewa lagi).
   const labaAllProfit = labaAllOmset - labaAllPeng
@@ -1131,7 +1143,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Pengeluaran All Time</span>
                   <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase" style={{ background: 'rgba(220,38,38,0.15)', color: '#dc2626', fontFamily: 'Syne' }}>Semua waktu</span>
                 </div>
-                <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: '#dc2626' }}>{allTime ? formatRupiah(allTime.pengeluaran) : '…'}</div>
+                <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: '#dc2626' }}>{allTime ? formatRupiah(allTime.pengeluaran + rentBebanAllTime) : '…'}</div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Akumulasi sejak awal data</div>
               </div>
             </div>
@@ -1145,6 +1157,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 (getOutflowTransactions), beda hanya rentang tanggal. */}
             {(pengBreakdown || pengBreakdownAll) && (() => {
               const SRC = ['Pengeluaran', 'Hutang Bank', 'Hutang Supplier', 'Sewa', 'Migrasi Data', 'Pembelian', 'Kasbon Karyawan']
+              // Sewa = beban amortisasi (bukan pembayaran penuh), jadi disuntik manual.
+              const pengBreakdown2 = { ...(pengBreakdown || {}), Sewa: rentBeban }
+              const pengBreakdownAll2 = { ...(pengBreakdownAll || {}), Sewa: rentBebanAllTime }
               const sumAll = (m) => Object.values(m || {}).reduce((s, v) => s + v, 0)
               return (
                 <div className="relative mt-3 rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.18)', border: '1px dashed var(--border-strong)' }}>
@@ -1157,23 +1172,23 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                     <span className="text-right font-semibold" style={{ color: 'var(--text-secondary)' }}>Periode</span>
                     <span className="text-right font-semibold" style={{ color: 'var(--text-secondary)' }}>All Time</span>
                     {SRC.map(src => {
-                      const p = (pengBreakdown || {})[src] || 0
-                      const a = (pengBreakdownAll || {})[src] || 0
+                      const p = pengBreakdown2[src] || 0
+                      const a = pengBreakdownAll2[src] || 0
                       if (p === 0 && a === 0) return null
                       const diff = a !== p
                       return (
                         <React.Fragment key={src}>
-                          <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{src}</span>
+                          <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{src}{src === 'Sewa' ? ' (amortisasi)' : ''}</span>
                           <span className="text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(p)}</span>
                           <span className="text-right" style={{ color: diff ? '#f59e0b' : 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(a)}</span>
                         </React.Fragment>
                       )
                     })}
                     <span className="font-bold pt-1" style={{ color: 'var(--text-primary)', borderTop: '1px solid var(--border)' }}>TOTAL</span>
-                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdown))}</span>
-                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdownAll))}</span>
+                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdown2))}</span>
+                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdownAll2))}</span>
                   </div>
-                  <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>Sumber yang angka All Time-nya lebih besar (kuning) = ada data bertanggal di luar periode aktif (sering dari Migrasi Data lama).</p>
+                  <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>Sewa = beban bulanan (amortisasi), bukan pembayaran penuh. Sumber yang All Time-nya lebih besar (kuning) = ada data bertanggal di luar periode aktif (sering dari Migrasi Data lama).</p>
                 </div>
               )
             })()}
@@ -1615,13 +1630,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       <Modal open={pengModal} onClose={() => { setPengModal(false); setPengEdit(null) }} title="Detail Pengeluaran Periode" size="lg">
         <div className="rounded-xl p-3 mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
           <span style={{ color: 'var(--text-muted)' }}>Periode: <b style={{ color: 'var(--text-primary)' }}>{dmy(labaFrom)} – {dmy(labaTo)}</b></span>
-          <span style={{ color: 'var(--text-muted)' }}>Jumlah Transaksi: <b style={{ color: 'var(--text-primary)' }}>{pengRows.length}</b></span>
-          <span style={{ color: 'var(--text-muted)' }}>Total: <b style={{ color: '#ff4d6a' }}>{formatRupiah(pengRows.reduce((s, r) => s + (r.amount || 0), 0))}</b></span>
+          <span style={{ color: 'var(--text-muted)' }}>Jumlah Baris: <b style={{ color: 'var(--text-primary)' }}>{pengRowsP.length}</b></span>
+          <span style={{ color: 'var(--text-muted)' }}>Total: <b style={{ color: '#ff4d6a' }}>{formatRupiah(pengRowsP.reduce((s, r) => s + (r.amount || 0), 0))}</b></span>
         </div>
         {/* Breakdown per sumber — bantu lacak selisih antar periode (mis. Migrasi Data lama) */}
-        {pengRows.length > 0 && (() => {
+        {pengRowsP.length > 0 && (() => {
           const bySource = {}
-          pengRows.forEach(r => { const k = r.source || 'Lainnya'; bySource[k] = (bySource[k] || 0) + (r.amount || 0) })
+          pengRowsP.forEach(r => { const k = r.source || 'Lainnya'; bySource[k] = (bySource[k] || 0) + (r.amount || 0) })
           const entries = Object.entries(bySource).sort((a, b) => b[1] - a[1])
           return (
             <div className="rounded-xl p-3 mb-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -1647,16 +1662,16 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Total Omset</div><div className="text-xs font-bold" style={{ color: '#3b82f6', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllOmset)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Pengeluaran</div><div className="text-xs font-bold" style={{ color: '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllPeng)}</div></div>
-          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Sewa (termasuk)</div><div className="text-xs font-bold" style={{ color: '#d97706', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(rentCashAllTime || 0)}</div></div>
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Beban Sewa</div><div className="text-xs font-bold" style={{ color: '#d97706', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(rentBebanAllTime || 0)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Laba Bersih</div><div className="text-xs font-bold" style={{ color: labaAllProfit >= 0 ? '#10d98a' : '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllProfit)}</div></div>
         </div>
-        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih (Semua Waktu) = Total Omset − Total Pengeluaran (pembayaran sewa sudah termasuk di pengeluaran). Rincian di bawah menampilkan SEMUA data sejak awal.</p>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih (Semua Waktu) = Total Omset − Total Pengeluaran (beban sewa amortisasi sudah termasuk, pembayaran sewa penuh TIDAK dihitung di sini). Rincian di bawah menampilkan SEMUA data sejak awal.</p>
         <div className="flex gap-1.5 mb-3">
           {[['omset', 'Rincian Omset'], ['pengeluaran', 'Rincian Pengeluaran']].map(([k, label]) => (
             <button key={k} onClick={() => setLabaTab(k)} className="flex-1 py-2 rounded-lg text-xs font-semibold" style={{ background: labaTab === k ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: labaTab === k ? '#fff' : 'var(--text-secondary)', fontFamily: 'Syne' }}>{label}</button>
           ))}
         </div>
-        {labaTab === 'omset' ? renderOmsetTable(omsetRowsAll) : renderPengTable(pengRowsAll, pengLoadingAll)}
+        {labaTab === 'omset' ? renderOmsetTable(omsetRowsAll) : renderPengTable(withRentAmort(pengRowsAll, rentBebanAllTime), pengLoadingAll)}
       </Modal>
     </div>
   )

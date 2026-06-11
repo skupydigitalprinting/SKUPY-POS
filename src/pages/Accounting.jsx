@@ -346,6 +346,22 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     })
     return { dibayarDimuka, bebanBulanIni, cashOutPeriod, bebanPeriod }
   }, [rents, from, to])
+  // Beban sewa SEMUA WAKTU (amortisasi) — untuk kartu Pengeluaran All Time.
+  const rentBebanAllTimeAcc = useMemo(() => {
+    const now = new Date()
+    let sum = 0
+    ;(rents || []).filter(r => r.status !== 'cancelled').forEach(r => { rentSchedule(r, now).forEach(s => { if (s.status !== 'pending') sum += s.amount }) })
+    return sum
+  }, [rents])
+  // Sisipkan baris BEBAN SEWA (amortisasi) ke rincian Uang Keluar agar total
+  // detail = angka kartu. Pembayaran sewa penuh TIDAK dihitung sbg uang keluar.
+  const injectRentAmort = (kind, isAll, rows, total) => {
+    if (kind !== 'uang_keluar') return { rows, total }
+    const beban = Math.round(isAll ? rentBebanAllTimeAcc : rentAgg.bebanPeriod)
+    if (beban <= 0) return { rows, total }
+    const rr = [...(rows || []), { id: 'rent-amort', kind: 'rent_amort', date: new Date().toISOString(), source: 'Sewa', category: 'Beban Sewa (amortisasi)', party: '', ref: '', method: '', amount: beban, status: 'amortisasi', note: 'Beban sewa berjalan (bukan pembayaran penuh)' }]
+    return { rows: rr, total: (total || 0) + beban }
+  }
   // edit hutang supplier + riwayat
   const [editDebt, setEditDebt] = useState(null) // supplier_debt being edited
   const [editExp, setEditExp] = useState(null) // expense being edited
@@ -365,15 +381,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       loadAllTime() // segarkan card All Time (realtime ikut tiap loadDashboard)
     }
   }
-  // Card "All Time" — TIDAK ikut filter tanggal. Omset = penjualan semua waktu
-  // (RPC rentang penuh). Pengeluaran = pengeluaran_total semua waktu + cash-out
-  // sewa semua waktu → sumber yang sama dgn card periode, jadi tidak double.
+  // Card "All Time" — TIDAK ikut filter tanggal. Omset = penjualan semua waktu.
+  // Pengeluaran = pengeluaran_total semua waktu (TANPA sewa penuh). Beban sewa
+  // amortisasi all-time ditambahkan saat render (rentBebanAllTimeAcc).
   const loadAllTime = async () => {
     const today = todayYMD()
-    const [dRes, sRes] = await Promise.all([acc.getDashboard(ALL_TIME_FROM, today), acc.sumRentsCashOut()])
+    const dRes = await acc.getDashboard(ALL_TIME_FROM, today)
     if (dRes.ok) setAllTime({
       omset: Math.round(dRes.data.penjualan || 0),
-      pengeluaran: Math.round((dRes.data.pengeluaran_total || 0) + (sRes.ok ? sRes.total : 0)),
+      pengeluaran: Math.round(dRes.data.pengeluaran_total || 0),
     })
   }
   const loadEntries = async (page = 0) => { const r = await acc.listEntries({ page, from, to }); if (r.ok) { setEntries(r.data); setEntCount(r.count); setEntPage(page) } else if (/relation|does not exist/i.test(r.error || '')) setSetupNeeded(true) }
@@ -661,12 +677,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     setDetailSrc('all')
     setDetail({ kind, title, color, from: f, to: t, allTime: !!range, rows: [], total: 0, loading: true })
     const r = await acc.getCardDetail(kind, f, t)
-    setDetail(d => d && d.kind === kind ? { ...d, rows: r.ok ? r.rows : [], total: r.ok ? r.total : 0, loading: false } : d)
+    const inj = injectRentAmort(kind, !!range, r.ok ? r.rows : [], r.ok ? r.total : 0)
+    setDetail(d => d && d.kind === kind ? { ...d, rows: inj.rows, total: inj.total, loading: false } : d)
   }
   const reloadDetail = async () => {
     if (!detail) return
     const r = await acc.getCardDetail(detail.kind, detail.from || from, detail.to || to)
-    setDetail(d => d ? { ...d, rows: r.ok ? r.rows : [], total: r.ok ? r.total : 0 } : d)
+    const inj = injectRentAmort(detail.kind, !!detail.allTime, r.ok ? r.rows : [], r.ok ? r.total : 0)
+    setDetail(d => d ? { ...d, rows: inj.rows, total: inj.total } : d)
     loadDashboard()
   }
   // Hapus baris detail sesuai sumber (soft delete) + konfirmasi
@@ -1258,15 +1276,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
             <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0) - rentAgg.cashOutPeriod)} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0) - rentAgg.cashOutPeriod)} color="#14b8a6" sub="Uang Masuk − Kas Keluar (sewa penuh)" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
           </div>
 
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingDown} label="Uang Keluar" value={fmt((d.pengeluaran_total || 0) + rentAgg.cashOutPeriod)} color="#ef4444" sub="Termasuk pembayaran sewa" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
-            <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={allTime ? fmt(allTime.pengeluaran) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
+            <Card icon={TrendingDown} label="Uang Keluar" value={fmt((d.pengeluaran_total || 0) + rentAgg.bebanPeriod)} color="#ef4444" sub="Termasuk beban sewa (amortisasi)" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
+            <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={allTime ? fmt(allTime.pengeluaran + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />

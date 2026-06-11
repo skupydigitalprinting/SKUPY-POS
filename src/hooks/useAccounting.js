@@ -519,11 +519,12 @@ export function useAccounting() {
         const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', 'old_expense').gte('trx_date', from).lte('trx_date', to)
         ;(data || []).forEach(x => add({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', category: 'Migrasi Pengeluaran', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
-      // 7) Pembayaran Sewa dibayar dimuka (cash-out saat dibayar = total_amount)
-      {
-        const { data } = await supabase.from('prepaid_rents').select('id,payment_date,name,landlord_name,total_amount,payment_method,notes,status').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
-        ;(data || []).filter(x => !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'rent', date: x.payment_date, source: 'Sewa', category: 'Pembayaran Sewa', ref: x.name || '', party: x.landlord_name || '', method: x.payment_method, amount: Math.round(x.total_amount || 0), note: x.notes }))
-      }
+      // CATATAN SEWA DIBAYAR DIMUKA:
+      //   Pembayaran sewa di muka TIDAK dihitung di sini sebagai uang keluar penuh.
+      //   Saat dibayar → menambah ASET (Sewa Dibayar Dimuka) & mengurangi Arus Kas
+      //   penuh. Untuk Uang Keluar / Pengeluaran (laba-rugi) sewa masuk sebagai
+      //   BEBAN bulanan (amortisasi) yang dihitung di sisi komponen (rentSchedule),
+      //   bukan sebagai baris pembayaran penuh di fungsi ini.
     } catch (e) { return { ok: false, error: e?.message || String(e), rows: [], total: 0, from, to, dupCount: 0 } }
 
     // DETEKSI POTENSI DUPLIKAT (tidak menghapus, hanya menandai):
