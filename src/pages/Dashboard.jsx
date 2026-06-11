@@ -259,6 +259,18 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     })
     return sum
   }, [rents])
+  // Sewa CASH yang dibayar dalam periode (payment_date di rentang). Inilah yang
+  // dipakai modul Accounting pada "Uang Keluar" (pengeluaran_total + sewa cash).
+  const rentCashPeriod = useMemo(() => {
+    const fromT = labaFrom ? new Date(labaFrom + 'T00:00:00').getTime() : -Infinity
+    const toT = labaTo ? new Date(labaTo + 'T23:59:59').getTime() : Infinity
+    let sum = 0
+    ;(rents || []).filter(r => r.status !== 'cancelled').forEach(r => {
+      if (r.payment_date) { const t = new Date(r.payment_date + 'T12:00:00').getTime(); if (t >= fromT && t <= toT) sum += Math.round(r.total_amount || 0) }
+    })
+    return sum
+  }, [rents, labaFrom, labaTo])
+  const rentCashAllTime = useMemo(() => (rents || []).filter(r => r.status !== 'cancelled').reduce((s, r) => s + Math.round(r.total_amount || 0), 0), [rents])
 
   // ── Detail Pengeluaran & Laba Bersih (klik card) ──
   const [pengModal, setPengModal] = useState(false)
@@ -339,15 +351,18 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     // (array transactions client dibatasi 500 baris terbaru).
     const revenue = omsetAcc != null ? omsetAcc : revenueClient
     const count = omsetCount != null ? omsetCount : list.length
-    const pengeluaran = pengeluaranAcc
+    // Total Pengeluaran = SAMA dengan "Uang Keluar" di modul Accounting:
+    //   pengeluaran_total (RPC) + sewa cash periode. Sudah mencakup belanja,
+    //   bayar hutang bank/supplier, kasbon, migrasi, dan pembayaran sewa.
+    const pengeluaran = pengeluaranAcc + rentCashPeriod
     // Perkiraan Laba = Total Harga Barang Terjual − Modal Barang Terjual
     //   (berbasis item, bukan omset invoice). Margin = laba / harga terjual.
-    // Laba Bersih = Omset − Total Pengeluaran − Beban Sewa berjalan (amortisasi)
     const estProfit = soldRevenue - modal
     const estMargin = soldRevenue > 0 ? Math.round((estProfit / soldRevenue) * 100) : 0
-    const profit = netProfit(revenue, pengeluaran, rentBeban) // rumus resmi bersama
-    return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentBeban, profit, count }
-  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban, omsetAcc, omsetCount])
+    // Laba Bersih = Omset − Total Pengeluaran (sewa sudah termasuk di pengeluaran).
+    const profit = revenue - pengeluaran
+    return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentCashPeriod, profit, count }
+  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentCashPeriod, omsetAcc, omsetCount])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -629,7 +644,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // Laba Bersih SEMUA WAKTU (modal Rincian Laba Bersih).
   const labaAllOmset = allTime ? allTime.omset : omsetRowsAll.reduce((s, t) => s + toMoney(t.total), 0)
   const labaAllPeng = allTime ? allTime.pengeluaran : 0
-  const labaAllProfit = netProfit(labaAllOmset, labaAllPeng, rentBebanAllTime)
+  // Sewa cash all-time sudah termasuk di labaAllPeng (allTime.pengeluaran),
+  // jadi Laba Bersih all-time = Omset − Pengeluaran (tanpa kurangi sewa lagi).
+  const labaAllProfit = labaAllOmset - labaAllPeng
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg" style={{ minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
@@ -1026,7 +1043,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   {formatRupiah(labaRugi.profit)}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Omset − Pengeluaran − Beban Sewa
+                  Omset − Total Pengeluaran
                 </div>
               </div>
 
@@ -1558,10 +1575,10 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Total Omset</div><div className="text-xs font-bold" style={{ color: '#3b82f6', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllOmset)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Pengeluaran</div><div className="text-xs font-bold" style={{ color: '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllPeng)}</div></div>
-          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Beban Sewa</div><div className="text-xs font-bold" style={{ color: '#d97706', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(rentBebanAllTime || 0)}</div></div>
+          <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Sewa (termasuk)</div><div className="text-xs font-bold" style={{ color: '#d97706', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(rentCashAllTime || 0)}</div></div>
           <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase truncate" style={{ color: 'var(--text-muted)' }}>Laba Bersih</div><div className="text-xs font-bold" style={{ color: labaAllProfit >= 0 ? '#10d98a' : '#ff4d6a', fontSize: 'clamp(12px,3.4vw,15px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatRupiah(labaAllProfit)}</div></div>
         </div>
-        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih (Semua Waktu) = Total Omset − Total Pengeluaran − Beban Sewa berjalan. Rincian di bawah menampilkan SEMUA data sejak awal.</p>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>Laba Bersih (Semua Waktu) = Total Omset − Total Pengeluaran (pembayaran sewa sudah termasuk di pengeluaran). Rincian di bawah menampilkan SEMUA data sejak awal.</p>
         <div className="flex gap-1.5 mb-3">
           {[['omset', 'Rincian Omset'], ['pengeluaran', 'Rincian Pengeluaran']].map(([k, label]) => (
             <button key={k} onClick={() => setLabaTab(k)} className="flex-1 py-2 rounded-lg text-xs font-semibold" style={{ background: labaTab === k ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: labaTab === k ? '#fff' : 'var(--text-secondary)', fontFamily: 'Syne' }}>{label}</button>
