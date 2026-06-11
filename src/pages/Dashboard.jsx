@@ -182,24 +182,34 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // Ini yang membuat Total Omset benar untuk "All Time" & semua preset.
   const [omsetAcc, setOmsetAcc] = useState(null)
   const [omsetCount, setOmsetCount] = useState(null)
+  const [pengBreakdown, setPengBreakdown] = useState(null) // {source: amount} periode aktif
   const [accBump, setAccBump] = useState(0) // dipicu setelah edit/hapus → refresh card
   const accFrom = labaFrom || '2000-01-01'
   const accTo = labaTo || new Date().toISOString().slice(0, 10)
+  // Subtotal pengeluaran per sumber dari baris getOutflowTransactions.
+  const sumBySource = (rows) => {
+    const m = {}
+    ;(rows || []).forEach(r => { const k = r.source || 'Lainnya'; m[k] = (m[k] || 0) + (r.amount || 0) })
+    return m
+  }
   useEffect(() => {
     if (!isOwner) return
     let alive = true, id = null
     const load = async () => {
+      // OMSET + jumlah invoice dari RPC (full DB).
       const { data, error } = await supabase.rpc('acc_dashboard', { p_from: accFrom, p_to: accTo })
       if (!alive || error || !data) return
       const row = Array.isArray(data) ? data[0] : data
-      setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
       setOmsetAcc(toMoney(row?.penjualan) || 0)
-      // Hitung jumlah invoice valid pada rentang (akurat, tidak terbatas 500).
       const { count } = await supabase.from('transactions')
         .select('id', { count: 'exact', head: true })
         .is('deleted_at', null).neq('order_status', 'dibatalkan')
         .gte('created_at', accFrom).lte('created_at', accTo + 'T23:59:59')
       if (alive && typeof count === 'number') setOmsetCount(count)
+      // PENGELUARAN dari SATU sumber resmi: getOutflowTransactions (sama dgn
+      // detail & dgn kartu All Time). Hanya beda rentang tanggal.
+      const out = await acc.getOutflowTransactions(accFrom, accTo)
+      if (alive && out.ok) { setPengeluaranAcc(out.total); setPengBreakdown(sumBySource(out.rows)) }
     }
     const start = () => { if (!id) id = setInterval(load, 60000) }
     const stop = () => { if (id) { clearInterval(id); id = null } }
@@ -214,19 +224,24 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   useEffect(() => { if (isOwner) setAccBump(b => b + 1) }, [transactions])
 
   // ── Card ALL TIME (tidak ikut filter tanggal) ──
+  // Pengeluaran All Time pakai FUNGSI YANG SAMA dgn Total Pengeluaran periode
+  // (getOutflowTransactions), hanya rentang = sejak awal s/d hari ini. Jadi
+  // keduanya dijamin sinkron — beda hanya filter tanggal.
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran }
+  const [pengBreakdownAll, setPengBreakdownAll] = useState(null)
   useEffect(() => {
     if (!isOwner) return
     let alive = true
     const load = async () => {
       const today = new Date().toLocaleDateString('en-CA')
-      const [dRes, sRes] = await Promise.all([
+      const [dRes, out] = await Promise.all([
         supabase.rpc('acc_dashboard', { p_from: '2000-01-01', p_to: today }),
-        acc.sumRentsCashOut(),
+        acc.getOutflowTransactions('2000-01-01', today),
       ])
       if (!alive) return
       const row = dRes?.data ? (Array.isArray(dRes.data) ? dRes.data[0] : dRes.data) : null
-      if (row) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: (toMoney(row.pengeluaran_total) || 0) + (sRes.ok ? sRes.total : 0) })
+      if (row && out.ok) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: out.total })
+      if (out.ok) setPengBreakdownAll(sumBySource(out.rows))
     }
     load()
     return () => { alive = false }
@@ -351,15 +366,15 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     // (array transactions client dibatasi 500 baris terbaru).
     const revenue = omsetAcc != null ? omsetAcc : revenueClient
     const count = omsetCount != null ? omsetCount : list.length
-    // Total Pengeluaran = SAMA dengan "Uang Keluar" di modul Accounting:
-    //   pengeluaran_total (RPC) + sewa cash periode. Sudah mencakup belanja,
-    //   bayar hutang bank/supplier, kasbon, migrasi, dan pembayaran sewa.
-    const pengeluaran = pengeluaranAcc + rentCashPeriod
+    // Total Pengeluaran = SATU sumber resmi getOutflowTransactions (sudah
+    //   termasuk: pengeluaran manual, bayar hutang bank/supplier, pembelian
+    //   cash, kasbon, migrasi, dan pembayaran sewa). Tidak ada double count.
+    const pengeluaran = pengeluaranAcc
     // Perkiraan Laba = Total Harga Barang Terjual − Modal Barang Terjual
     //   (berbasis item, bukan omset invoice). Margin = laba / harga terjual.
     const estProfit = soldRevenue - modal
     const estMargin = soldRevenue > 0 ? Math.round((estProfit / soldRevenue) * 100) : 0
-    // Laba Bersih = Omset − Total Pengeluaran (sewa sudah termasuk di pengeluaran).
+    // Laba Bersih = Omset − Total Pengeluaran.
     const profit = revenue - pengeluaran
     return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentCashPeriod, profit, count }
   }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentCashPeriod, omsetAcc, omsetCount])
@@ -1124,6 +1139,44 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             <p className="relative text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>
               Periode: <b style={{ color: 'var(--text-secondary)' }}>{dmy(labaFrom)} – {dmy(labaTo)}</b>{labaPreset === 'all' ? ' (semua waktu)' : ''} · {labaRugi.count} transaksi valid
             </p>
+
+            {/* DEBUG OWNER: breakdown pengeluaran per sumber — Periode vs All Time.
+                Total Pengeluaran & Pengeluaran All Time pakai fungsi sama
+                (getOutflowTransactions), beda hanya rentang tanggal. */}
+            {(pengBreakdown || pengBreakdownAll) && (() => {
+              const SRC = ['Pengeluaran', 'Hutang Bank', 'Hutang Supplier', 'Sewa', 'Migrasi Data', 'Pembelian', 'Kasbon Karyawan']
+              const sumAll = (m) => Object.values(m || {}).reduce((s, v) => s + v, 0)
+              return (
+                <div className="relative mt-3 rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.18)', border: '1px dashed var(--border-strong)' }}>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <span className="text-[10px] font-bold uppercase" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Breakdown Pengeluaran</span>
+                    <span className="text-[8px] font-bold px-1.5 py-0.5 rounded uppercase" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontFamily: 'Syne' }}>Owner</span>
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-[11px]">
+                    <span style={{ color: 'var(--text-muted)' }} />
+                    <span className="text-right font-semibold" style={{ color: 'var(--text-secondary)' }}>Periode</span>
+                    <span className="text-right font-semibold" style={{ color: 'var(--text-secondary)' }}>All Time</span>
+                    {SRC.map(src => {
+                      const p = (pengBreakdown || {})[src] || 0
+                      const a = (pengBreakdownAll || {})[src] || 0
+                      if (p === 0 && a === 0) return null
+                      const diff = a !== p
+                      return (
+                        <React.Fragment key={src}>
+                          <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{src}</span>
+                          <span className="text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(p)}</span>
+                          <span className="text-right" style={{ color: diff ? '#f59e0b' : 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(a)}</span>
+                        </React.Fragment>
+                      )
+                    })}
+                    <span className="font-bold pt-1" style={{ color: 'var(--text-primary)', borderTop: '1px solid var(--border)' }}>TOTAL</span>
+                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdown))}</span>
+                    <span className="text-right font-bold pt-1" style={{ color: '#ff4d6a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>{formatRupiah(sumAll(pengBreakdownAll))}</span>
+                  </div>
+                  <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>Sumber yang angka All Time-nya lebih besar (kuning) = ada data bertanggal di luar periode aktif (sering dari Migrasi Data lama).</p>
+                </div>
+              )
+            })()}
           </div>
         )}
 
