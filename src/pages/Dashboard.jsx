@@ -177,6 +177,11 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const acc = useAccounting()
   const confirm = useConfirm()
   const [pengeluaranAcc, setPengeluaranAcc] = useState(0)
+  // Omset & jumlah invoice dari RPC acc_dashboard (FULL DB, ikut rentang) —
+  // BUKAN dari array transactions client yang dibatasi 500 baris terbaru.
+  // Ini yang membuat Total Omset benar untuk "All Time" & semua preset.
+  const [omsetAcc, setOmsetAcc] = useState(null)
+  const [omsetCount, setOmsetCount] = useState(null)
   const [accBump, setAccBump] = useState(0) // dipicu setelah edit/hapus → refresh card
   const accFrom = labaFrom || '2000-01-01'
   const accTo = labaTo || new Date().toISOString().slice(0, 10)
@@ -188,6 +193,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       if (!alive || error || !data) return
       const row = Array.isArray(data) ? data[0] : data
       setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
+      setOmsetAcc(toMoney(row?.penjualan) || 0)
+      // Hitung jumlah invoice valid pada rentang (akurat, tidak terbatas 500).
+      const { count } = await supabase.from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .is('deleted_at', null).neq('order_status', 'dibatalkan')
+        .gte('created_at', accFrom).lte('created_at', accTo + 'T23:59:59')
+      if (alive && typeof count === 'number') setOmsetCount(count)
     }
     const start = () => { if (!id) id = setInterval(load, 60000) }
     const stop = () => { if (id) { clearInterval(id); id = null } }
@@ -197,6 +209,9 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     document.addEventListener('visibilitychange', onVis)
     return () => { alive = false; stop(); document.removeEventListener('visibilitychange', onVis) }
   }, [isOwner, accFrom, accTo, accBump])
+  // Realtime: saat daftar transaksi berubah (tambah/edit/hapus), muat ulang
+  // omset & pengeluaran dari RPC agar angka langsung sinkron tanpa refresh.
+  useEffect(() => { if (isOwner) setAccBump(b => b + 1) }, [transactions])
 
   // ── Card ALL TIME (tidak ikut filter tanggal) ──
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran }
@@ -310,20 +325,25 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       const tt = new Date(labaTo + 'T23:59:59').getTime()
       list = list.filter(t => new Date(t.date).getTime() <= tt)
     }
-    let revenue = 0, modal = 0
+    let revenueClient = 0, modal = 0
     list.forEach(t => {
-      revenue += toMoney(t.total)
+      revenueClient += toMoney(t.total)
       ;(t.items || []).forEach(i => {
         modal += (Number(i.qty) || 0) * (modalById[i.productId] || 0)
       })
     })
+    // OMSET = dari RPC (full DB, ikut rentang). Fallback ke hitungan client
+    // hanya jika RPC belum termuat. Inilah yang membuat "All Time" benar
+    // (array transactions client dibatasi 500 baris terbaru).
+    const revenue = omsetAcc != null ? omsetAcc : revenueClient
+    const count = omsetCount != null ? omsetCount : list.length
     const pengeluaran = pengeluaranAcc
     // Profit Bruto = Omset − Modal Barang (TANPA pengeluaran)
     // Laba Bersih  = Omset − Total Pengeluaran − Beban Sewa berjalan (amortisasi)
     const profitBruto = revenue - modal
     const profit = netProfit(revenue, pengeluaran, rentBeban) // rumus resmi bersama
-    return { revenue, modal, pengeluaran, bebanSewa: rentBeban, profitBruto, profit, count: list.length }
-  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban])
+    return { revenue, modal, pengeluaran, bebanSewa: rentBeban, profitBruto, profit, count }
+  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban, omsetAcc, omsetCount])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -518,7 +538,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         const titles = { penjualan: 'Detail Omset Periode', laba: 'Profit Bruto', modal: 'Modal Barang' }
         // 'laba' = kartu hijau "Profit Bruto" = Omset − Modal Barang
         const total = key === 'penjualan' ? labaRugi.revenue : key === 'modal' ? labaRugi.modal : labaRugi.profitBruto
-        const subtitle = `Periode: ${dmy(labaFrom)} – ${dmy(labaTo)} (${LABA_SCOPE_LABEL[labaPreset] || 'Custom'}) · ${rows.length} invoice · Total ${formatRupiah(total)}`
+        const invCount = key === 'penjualan' ? labaRugi.count : rows.length
+        const subtitle = `Periode: ${dmy(labaFrom)} – ${dmy(labaTo)} (${LABA_SCOPE_LABEL[labaPreset] || 'Custom'}) · ${invCount} invoice · Total ${formatRupiah(total)}`
         return { title: titles[key], rows, total, subtitle }
       }
       case 'pelanggan': {
