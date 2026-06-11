@@ -523,8 +523,8 @@ export default function Order({
               return (
                 <div
                   key={t.id}
-                  className="rounded-2xl p-4 animate-fadeIn min-w-0"
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                  className="rounded-2xl p-4 min-w-0 w-full"
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', height: 'auto', position: 'static' }}
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div>

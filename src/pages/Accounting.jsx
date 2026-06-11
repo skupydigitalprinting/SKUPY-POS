@@ -232,6 +232,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [to, setTo] = useState(acc.todayISO())
   const [loading, setLoading] = useState(false)
   const [setupNeeded, setSetupNeeded] = useState(false)
+  const [setupError, setSetupError] = useState('')
   const [d, setD] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -344,9 +345,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
   const loadDashboard = async () => {
     const res = await acc.getDashboard(from, to)
-    if (!res.ok) { if (/function|relation|does not exist|schema cache|acc_dashboard/i.test(res.error || '')) setSetupNeeded(true); else toast.error(res.error || 'Gagal') }
+    if (!res.ok) { if (/function|relation|does not exist|schema cache|acc_dashboard/i.test(res.error || '')) { setSetupNeeded(true); setSetupError(res.error || '') } else toast.error(res.error || 'Gagal') }
     else {
-      setD(res.data); setSetupNeeded(false)
+      setD(res.data); setSetupNeeded(false); setSetupError('')
       const chk = await acc.getPiutangAktif()
       if (chk.ok && Math.abs((chk.value || 0) - Math.round(res.data.piutang_aktif || 0)) > 1)
         console.warn('[Accounting] Piutang tidak sinkron — RPC:', res.data.piutang_aktif, 'debts:', chk.value)
@@ -688,8 +689,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       <Page from={from} to={to} setFrom={setFrom} setTo={setTo} right={null}>
         <div className="rounded-2xl p-5" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)' }}>
           <div className="flex items-center gap-2 mb-2" style={{ color: '#f59e0b' }}><AlertTriangle size={16} /> <span className="font-bold text-sm" style={{ fontFamily: 'Syne' }}>Modul Accounting belum aktif</span></div>
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Jalankan SEMUA file di folder <code>supabase/migrations</code> lewat Supabase → SQL Editor, urut sesuai nama file: module → suppliers → rls_fix → dashboard_rpc → sync_fix → supplier_bank → history_softdelete → audit_softdelete → bank_recalc → assets → prepaid_rents → supplier_debt_fixes → employee_cash_advances → employees_master → migration_details.</p>
-          <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); loadDashboard() }}><RefreshCw size={13} /> Coba lagi</Button>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Buka <b>Supabase → SQL Editor</b>, lalu jalankan <b>satu file</b> <code>supabase/SUPABASE_SETUP_ALL.sql</code> (semua migrasi sudah digabung &amp; aman dijalankan berulang). Setelah selesai, kembali ke sini dan klik <b>Coba lagi</b>.</p>
+          <p className="text-[11px] leading-relaxed mt-2" style={{ color: 'var(--text-tertiary, var(--text-secondary))' }}>Alternatif manual: jalankan semua file di <code>supabase/migrations</code> urut nama — …→ employee_cash_advances → employees_master → <b>migration_details → migration_opening_balances</b> → product_categories → product_categories_extend → customers_created_by → product_categories_realtime → customer_reassign → customer_owner_pic → products_is_favorite. <b>Jangan lewati migration_opening_balances</b> — di situ fungsi <code>acc_dashboard</code> versi final dibuat.</p>
+          {setupError ? (
+            <p className="text-[11px] leading-relaxed mt-2 p-2 rounded-lg" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', fontFamily: 'monospace', wordBreak: 'break-word' }}>Pesan error dari database: {setupError}</p>
+          ) : null}
+          <Button variant="secondary" className="mt-3" onClick={() => { setSetupNeeded(false); setSetupError(''); loadDashboard() }}><RefreshCw size={13} /> Coba lagi</Button>
         </div>
       </Page>
     )
