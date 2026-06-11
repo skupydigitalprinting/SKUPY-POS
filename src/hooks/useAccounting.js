@@ -399,6 +399,97 @@ export function useAccounting() {
   //   { id, kind, date, source, ref, party, method, amount, status, note }
   // kind: expense | purchase | supplier_payment | bank_payment | transaction
   //       | debt_payment | supplier_debt | bank_loan | debt  (untuk edit/hapus)
+  // ============================================================
+  // SINGLE SOURCE OF TRUTH — semua "Uang Keluar" pada periode.
+  // Menggabungkan SEMUA sumber uang keluar TANPA double counting:
+  //   1) Pengeluaran manual            (expenses)
+  //   2) Pembelian cash/transfer       (purchases, non-kredit)
+  //   3) Pembayaran Hutang Supplier    (supplier_debt_payments)  ← sumber resmi
+  //   4) Pembayaran Hutang Bank        (bank_loan_payments)      ← sumber resmi
+  //   5) Kasbon Karyawan keluar        (employee_cash_advances, non-opening)
+  //   6) Pengeluaran Migrasi Data Lama (migration_details old_expense)
+  //   7) Pembayaran Sewa dibayar dimuka(prepaid_rents)
+  // Hutang bank/supplier HANYA dihitung dari tabel pembayarannya, TIDAK dari
+  // expenses → tidak ada double. Setiap baris diberi refKey unik (kind:id),
+  // dijamin lewat Set sehingga satu baris tak pernah masuk 2x.
+  // Hanya data valid: deleted_at IS NULL, bukan status cancelled/batal/deleted.
+  // Total fungsi ini = pengeluaran_total (RPC) + cash-out sewa → cocok card.
+  // ============================================================
+  const getOutflowTransactions = useCallback(async (from, to) => {
+    const toEnd = (to || from) + 'T23:59:59'
+    const rows = []
+    const seen = new Set() // guard refKey: tak pernah push baris yang sama dua kali
+    const isCancelled = (s) => ['cancelled', 'canceled', 'dibatalkan', 'batal', 'deleted', 'void'].includes(String(s || '').toLowerCase())
+    const add = (r) => {
+      const refKey = `${r.kind}:${r.id}`
+      if (seen.has(refKey)) return
+      seen.add(refKey)
+      rows.push({ ref: '', party: '', category: '', method: '', status: 'valid', note: '', ...r, refKey })
+    }
+    try {
+      // 1) Pengeluaran manual
+      {
+        const { data } = await supabase.from('expenses').select('id,expense_date,category,amount,method,note').is('deleted_at', null).gte('expense_date', from).lte('expense_date', to)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'expense', date: x.expense_date, source: 'Pengeluaran', category: x.category || 'Pengeluaran', party: x.category || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+      }
+      // 2) Pembelian cash/transfer (non-kredit) — yg kredit masuk Hutang Supplier
+      {
+        const { data } = await supabase.from('purchases').select('id,purchase_date,item,supplier,amount,method,is_credit,note').is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to)
+        ;(data || []).filter(x => !x.is_credit).forEach(x => add({ id: x.id, kind: 'purchase', date: x.purchase_date, source: 'Pembelian', category: 'Pembelian', ref: x.item, party: x.supplier, method: x.method, amount: Math.round(x.amount || 0), status: 'lunas', note: x.note }))
+      }
+      // 3) Pembayaran Hutang Supplier (sumber resmi = supplier_debt_payments)
+      {
+        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const ids = [...new Set((data || []).map(x => x.supplier_debt_id).filter(Boolean))]
+        const dmap = {}
+        if (ids.length) { const { data: dd } = await supabase.from('supplier_debts').select('id,supplier,item').in('id', ids); (dd || []).forEach(d => { dmap[d.id] = d }) }
+        ;(data || []).forEach(x => { const d = dmap[x.supplier_debt_id] || {}; add({ id: x.id, kind: 'supplier_payment', date: x.paid_at, source: 'Hutang Supplier', category: 'Bayar Hutang Supplier', ref: d.item || '', party: d.supplier || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }) })
+      }
+      // 4) Pembayaran Hutang Bank (sumber resmi = bank_loan_payments, BUKAN expenses)
+      {
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+      }
+      // 5) Kasbon Karyawan keluar (advance, bukan saldo awal/opening)
+      {
+        const { data } = await supabase.from('employee_cash_advances').select('id,advance_date,amount,payment_method,note,employee_name,is_opening,status').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to)
+        ;(data || []).filter(x => !x.is_opening && !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'kasbon', date: x.advance_date, source: 'Kasbon Karyawan', category: 'Kasbon Keluar', party: x.employee_name || '', method: x.payment_method, amount: Math.round(x.amount || 0), note: x.note }))
+      }
+      // 6) Pengeluaran Migrasi Data Lama
+      {
+        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', 'old_expense').gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', category: 'Migrasi Pengeluaran', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
+      }
+      // 7) Pembayaran Sewa dibayar dimuka (cash-out saat dibayar = total_amount)
+      {
+        const { data } = await supabase.from('prepaid_rents').select('id,payment_date,name,landlord_name,total_amount,payment_method,notes,status').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
+        ;(data || []).filter(x => !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'rent', date: x.payment_date, source: 'Sewa', category: 'Pembayaran Sewa', ref: x.name || '', party: x.landlord_name || '', method: x.payment_method, amount: Math.round(x.total_amount || 0), note: x.notes }))
+      }
+    } catch (e) { return { ok: false, error: e?.message || String(e), rows: [], total: 0, from, to, dupCount: 0 } }
+
+    // DETEKSI POTENSI DUPLIKAT (tidak menghapus, hanya menandai):
+    // baris dengan tanggal(YYYY-MM-DD)+nominal sama muncul >1x — mis. cicilan
+    // bank yang juga keliru dicatat manual sebagai pengeluaran.
+    const sig = (r) => `${String(r.date || '').slice(0, 10)}|${r.amount}`
+    const counts = {}
+    rows.forEach(r => { const k = sig(r); counts[k] = (counts[k] || 0) + 1 })
+    rows.forEach(r => { r.dupSuspect = counts[sig(r)] > 1 })
+
+    rows.sort((a, b) => new Date(b.date) - new Date(a.date))
+    const total = rows.reduce((s, r) => s + (r.amount || 0), 0)
+    const dupCount = rows.filter(r => r.dupSuspect).length
+    return { ok: true, rows, total, from, to, dupCount }
+  }, [])
+
+  // Total cash-out sewa SEMUA WAKTU (non-deleted, non-cancelled). Query ringan
+  // (hanya kolom total_amount) untuk card "Total Pengeluaran All Time".
+  const sumRentsCashOut = useCallback(async () => {
+    const { data, error } = await supabase.from('prepaid_rents').select('total_amount,status').is('deleted_at', null)
+    if (error) return { ok: false, total: 0 }
+    const total = (data || []).filter(r => String(r.status || '').toLowerCase() !== 'cancelled').reduce((s, r) => s + Math.round(r.total_amount || 0), 0)
+    return { ok: true, total }
+  }, [])
+
   const getCardDetail = useCallback(async (kind, from, to) => {
     const toEnd = (to || from) + 'T23:59:59'
     const rows = []
@@ -442,7 +533,8 @@ export function useAccounting() {
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
 
-      if (kind === 'uang_keluar') { await pushExpenses(); await pushPurchases(true); await pushSupPay(); await pushBankPay(); await pushMigration('old_expense') }
+      // UANG KELUAR → pakai single source of truth (anti double-count + sewa + kasbon)
+      if (kind === 'uang_keluar') { return await getOutflowTransactions(from, to) }
       else if (kind === 'penjualan') { await pushTransactions(); await pushMigration('old_income') }
       else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushMigration('old_income') }
       // BEBAN = operasional + gaji + bunga bank. TANPA pokok cicilan bank,
@@ -469,7 +561,7 @@ export function useAccounting() {
     rows.sort((a, b) => new Date(b.date) - new Date(a.date))
     const total = rows.reduce((s, r) => s + (r.amount || 0), 0)
     return { ok: true, rows, total }
-  }, [])
+  }, [getOutflowTransactions])
 
   // ── Master Kategori Pengeluaran ──
   const listExpenseCategories = useCallback(async () => {
@@ -991,7 +1083,7 @@ export function useAccounting() {
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,
-    getRecapAdmin, fetchEntriesForExport, getCardDetail,
+    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, sumRentsCashOut,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,

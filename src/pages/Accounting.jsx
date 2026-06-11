@@ -100,6 +100,9 @@ const DEFAULT_EXP_CATEGORIES = [
 ]
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
+// Rentang "semua waktu" untuk card All Time (tidak ikut filter tanggal).
+const ALL_TIME_FROM = '2000-01-01'
+const todayYMD = () => new Date().toLocaleDateString('en-CA') // YYYY-MM-DD (lokal)
 // Input uang: hanya angka + titik ribuan.
 // Kosong → tampil KOSONG (placeholder "0" yang redup), BUKAN value 0 tersimpan.
 // Mengetik "5" → "5" (tanpa leading zero). Hapus semua → kembali kosong.
@@ -227,7 +230,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const acc = useAccounting()
   const isOwner = currentUser?.role === 'owner'
   const [tab, setTab] = useState('ringkasan')
-  const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading }
+  const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading, from, to, allTime }
+  const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail
+  const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
   const [from, setFrom] = useState(acc.monthStartISO())
   const [to, setTo] = useState(acc.todayISO())
   const [loading, setLoading] = useState(false)
@@ -351,7 +356,19 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       const chk = await acc.getPiutangAktif()
       if (chk.ok && Math.abs((chk.value || 0) - Math.round(res.data.piutang_aktif || 0)) > 1)
         console.warn('[Accounting] Piutang tidak sinkron — RPC:', res.data.piutang_aktif, 'debts:', chk.value)
+      loadAllTime() // segarkan card All Time (realtime ikut tiap loadDashboard)
     }
+  }
+  // Card "All Time" — TIDAK ikut filter tanggal. Omset = penjualan semua waktu
+  // (RPC rentang penuh). Pengeluaran = pengeluaran_total semua waktu + cash-out
+  // sewa semua waktu → sumber yang sama dgn card periode, jadi tidak double.
+  const loadAllTime = async () => {
+    const today = todayYMD()
+    const [dRes, sRes] = await Promise.all([acc.getDashboard(ALL_TIME_FROM, today), acc.sumRentsCashOut()])
+    if (dRes.ok) setAllTime({
+      omset: Math.round(dRes.data.penjualan || 0),
+      pengeluaran: Math.round((dRes.data.pengeluaran_total || 0) + (sRes.ok ? sRes.total : 0)),
+    })
   }
   const loadEntries = async (page = 0) => { const r = await acc.listEntries({ page, from, to }); if (r.ok) { setEntries(r.data); setEntCount(r.count); setEntPage(page) } else if (/relation|does not exist/i.test(r.error || '')) setSetupNeeded(true) }
   const loadExpenses = async () => { const r = await acc.listExpenses({}); if (r.ok) setExpenses(r.data) }
@@ -545,14 +562,16 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     loadDashboard()
   }
   // ── Detail sumber angka (audit, klik card) ──
-  const openDetail = async (kind, title, color) => {
-    setDetail({ kind, title, color, rows: [], total: 0, loading: true })
-    const r = await acc.getCardDetail(kind, from, to)
+  const openDetail = async (kind, title, color, range) => {
+    const f = range?.from || from, t = range?.to || to
+    setDetailSrc('all')
+    setDetail({ kind, title, color, from: f, to: t, allTime: !!range, rows: [], total: 0, loading: true })
+    const r = await acc.getCardDetail(kind, f, t)
     setDetail(d => d && d.kind === kind ? { ...d, rows: r.ok ? r.rows : [], total: r.ok ? r.total : 0, loading: false } : d)
   }
   const reloadDetail = async () => {
     if (!detail) return
-    const r = await acc.getCardDetail(detail.kind, from, to)
+    const r = await acc.getCardDetail(detail.kind, detail.from || from, detail.to || to)
     setDetail(d => d ? { ...d, rows: r.ok ? r.rows : [], total: r.ok ? r.total : 0 } : d)
     loadDashboard()
   }
@@ -566,6 +585,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     else if (row.kind === 'bank_payment') r = await acc.deleteBankPayment(row.id)
     else if (row.kind === 'supplier_debt') r = await acc.deleteSupplierDebt(row.id)
     else if (row.kind === 'bank_loan') r = await acc.deleteBankLoan(row.id)
+    else if (row.kind === 'kasbon') r = await acc.deleteEmployeeAdvance(row.id)
+    else if (row.kind === 'rent') r = await acc.deleteRent(row.id)
+    else if (row.kind === 'migration') r = await acc.deleteMigrationDetail(row.id)
     else { toast.info('Hapus item ini dari menu sumbernya'); return }
     if (r?.ok) { toast.success('Dihapus'); reloadDetail() } else toast.error(r?.error || 'Gagal')
   }
@@ -1139,6 +1161,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           {/* BARIS 1 — Aktivitas Kas: Penjualan(biru) · Arus Kas(tosca) · Sudah Bayar(hijau muda) · Uang Masuk(hijau) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
+            <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0) - rentAgg.cashOutPeriod)} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
@@ -1147,6 +1170,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={TrendingDown} label="Uang Keluar" value={fmt((d.pengeluaran_total || 0) + rentAgg.cashOutPeriod)} color="#ef4444" sub="Termasuk pembayaran sewa" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
+            <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={allTime ? fmt(allTime.pengeluaran) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />
@@ -2475,23 +2499,54 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       </Modal>
 
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? `Detail — ${detail.title}` : ''} size="lg">
-        {detail && (
-          detail.loading ? <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
-          : (detail.rows || []).length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada data (data yang dihapus tidak ditampilkan).</p>
-          : <div>
+        {detail && (() => {
+          if (detail.loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
+          const allRows = detail.rows || []
+          const isOutflow = detail.kind === 'uang_keluar'
+          // Filter sumber (khusus Uang Keluar)
+          const SRC_FILTERS = [
+            ['all', 'Semua'], ['Pengeluaran', 'Pengeluaran'], ['Hutang Bank', 'Hutang Bank'],
+            ['Hutang Supplier', 'Hutang Supplier'], ['Sewa', 'Sewa'], ['Migrasi Data', 'Migrasi Data'],
+            ['Pembelian', 'Pembelian'], ['Kasbon Karyawan', 'Kasbon'],
+          ]
+          const shown = isOutflow && detailSrc !== 'all' ? allRows.filter(r => r.source === detailSrc) : allRows
+          const shownTotal = shown.reduce((s, r) => s + (r.amount || 0), 0)
+          const dupCount = allRows.filter(r => r.dupSuspect).length
+          const periodLabel = detail.allTime ? 'Semua waktu (semua data)' : `${dt(detail.from || from)} – ${dt(detail.to || to)}`
+          return (
+            <div>
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Periode: <b style={{ color: 'var(--text-primary)' }}>{periodLabel}</b></p>
+                {isOwner && dupCount > 0 && <span className="text-[10px] px-2 py-1 rounded-lg font-bold inline-flex items-center gap-1" style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}><AlertTriangle size={11} /> {dupCount} baris potensi double</span>}
+              </div>
+              {isOutflow && (
+                <div className="flex items-center gap-1.5 flex-wrap mb-3">
+                  {SRC_FILTERS.map(([val, label]) => {
+                    const active = detailSrc === val
+                    return <button key={val} onClick={() => setDetailSrc(val)} className="text-[11px] px-2.5 py-1 rounded-lg font-semibold btn-press" style={{ background: active ? 'var(--accent)' : 'var(--bg-elevated)', color: active ? '#fff' : 'var(--text-secondary)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`, fontFamily: 'Syne' }}>{label}</button>
+                  })}
+                </div>
+              )}
+              {shown.length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada data (data yang dihapus tidak ditampilkan).</p>
+              : <div>
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 620 }}>
-                  <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Sumber', 'Ref', 'Pihak', 'Metode', 'Status', 'Nominal', ''].map((h, i) => <th key={i} className={`px-2 py-2 ${h === 'Nominal' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>)}</tr></thead>
+                  <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Sumber', 'Kategori', 'Metode', 'Status', 'Nominal', ''].map((h, i) => <th key={i} className={`px-2 py-2 ${h === 'Nominal' ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>)}</tr></thead>
                   <tbody>
-                    {detail.rows.map((row, i) => {
-                      const editable = ['expense', 'purchase', 'supplier_payment', 'bank_payment', 'supplier_debt', 'bank_loan'].includes(row.kind)
+                    {shown.map((row, i) => {
+                      const editable = ['expense', 'purchase', 'supplier_payment', 'bank_payment', 'supplier_debt', 'bank_loan', 'kasbon', 'rent', 'migration'].includes(row.kind)
                       const canEdit = ['expense', 'purchase', 'supplier_debt'].includes(row.kind)
+                      const kategori = row.category || row.ref || row.party || row.source
                       return (
                         <tr key={row.kind + row.id + i} style={{ borderBottom: '1px solid var(--border)' }}>
                           <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{dt(row.date)}</td>
-                          <td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>{row.kind === 'migration' ? <span className="inline-flex items-center gap-1"><span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: 'rgba(167,139,250,0.18)', color: '#a78bfa' }}>Migrasi Data</span></span> : row.source}</td>
-                          <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 120 }}>{row.ref || '—'}</td>
-                          <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 120 }}>{row.party || '—'}</td>
+                          <td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>
+                            <span className="inline-flex items-center gap-1 flex-wrap">
+                              {row.kind === 'migration' ? <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: 'rgba(167,139,250,0.18)', color: '#a78bfa' }}>Migrasi Data</span> : row.source}
+                              {isOwner && row.dupSuspect && <span className="text-[9px] px-1.5 py-0.5 rounded font-bold inline-flex items-center gap-0.5" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }} title="Tanggal & nominal sama dengan baris lain — periksa pencatatan ganda">⚠️ double</span>}
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 160 }}>{kategori || '—'}{row.party && row.party !== kategori ? <span style={{ opacity: 0.6 }}> · {row.party}</span> : null}</td>
                           <td className="px-2 py-2" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>{row.method || '—'}</td>
                           <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{row.status || '—'}</td>
                           <td className="px-2 py-2 text-right font-bold whitespace-nowrap" style={{ color: detail.color, fontVariantNumeric: 'tabular-nums' }}>{fmt(row.amount)}</td>
@@ -2503,12 +2558,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                       )
                     })}
                   </tbody>
-                  <tfoot><tr style={{ borderTop: '2px solid var(--border)' }}><td colSpan={6} className="px-2 py-2.5 font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>TOTAL ({detail.rows.length} baris)</td><td className="px-2 py-2.5 text-right font-extrabold whitespace-nowrap" style={{ color: detail.color, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{fmt(detail.total)}</td><td /></tr></tfoot>
+                  <tfoot><tr style={{ borderTop: '2px solid var(--border)' }}><td colSpan={5} className="px-2 py-2.5 font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>TOTAL ({shown.length} baris{isOutflow && detailSrc !== 'all' ? ` · filter: ${detailSrc}` : ''})</td><td className="px-2 py-2.5 text-right font-extrabold whitespace-nowrap" style={{ color: detail.color, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{fmt(shownTotal)}</td><td /></tr></tfoot>
                 </table>
               </div>
-              <p className="text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>Total di atas sama dengan angka di card. Data yang sudah dihapus/cancel tidak dihitung. Edit/Hapus langsung memperbarui dashboard.</p>
+              <p className="text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>{isOutflow && detailSrc !== 'all' ? <>Total semua sumber: <b style={{ color: 'var(--text-primary)' }}>{fmt(detail.total)}</b>. </> : null}Total keseluruhan sama dengan angka di card. Tiap sumber dihitung sekali (anti double-count). Data terhapus/cancel tidak dihitung. Edit/Hapus langsung memperbarui dashboard.</p>
+            </div>}
             </div>
-        )}
+          )
+        })()}
       </Modal>
     </Page>
   )
