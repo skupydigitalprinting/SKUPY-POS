@@ -301,6 +301,65 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // Semua pembayaran milik SATU supplier (gabungan semua nota) — untuk riwayat.
+  const listSupplierPaymentsBySupplier = useCallback(async (supplier) => {
+    const { data: debts } = await supabase.from('supplier_debts').select('id,item').eq('supplier', supplier).is('deleted_at', null)
+    const ids = (debts || []).map(d => d.id)
+    const itemById = {}; (debts || []).forEach(d => { itemById[d.id] = d.item })
+    if (!ids.length) return { ok: true, data: [] }
+    const { data, error } = await supabase.from('supplier_debt_payments').select('*').in('supplier_debt_id', ids).is('deleted_at', null).order('paid_at', { ascending: false })
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: (data || []).map(p => ({ ...p, item: itemById[p.supplier_debt_id] || '' })) }
+  }, [])
+
+  // PEMBAYARAN GABUNGAN FIFO — alokasikan pembayaran ke nota tertua dulu.
+  // Urutan: jatuh tempo paling awal → tanggal hutang (created_at) paling lama.
+  // Insert 1 payment per nota dengan fifo_group sama. Trigger DB meng-update
+  // paid/remaining/status tiap nota (tidak ada double count). Uang keluar naik
+  // hanya saat pembayaran ini dibuat.
+  const paySupplierFIFO = useCallback(async (supplier, amount, method, cashierId, note, paidAt) => {
+    const total = Math.round(Number(amount) || 0)
+    if (total <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    const { data: debts, error: e1 } = await supabase.from('supplier_debts')
+      .select('id,total,paid,due_date,created_at').eq('supplier', supplier).is('deleted_at', null)
+    if (e1) return { ok: false, error: e1.message }
+    const active = (debts || [])
+      .map(d => ({ ...d, rem: Math.max(0, Math.round(d.total || 0) - Math.round(d.paid || 0)) }))
+      .filter(d => d.rem > 0)
+      .sort((a, b) => {
+        const ad = a.due_date ? String(a.due_date).slice(0, 10) : '9999-12-31'
+        const bd = b.due_date ? String(b.due_date).slice(0, 10) : '9999-12-31'
+        if (ad !== bd) return ad < bd ? -1 : 1
+        return new Date(a.created_at) - new Date(b.created_at)
+      })
+    if (!active.length) return { ok: false, error: 'Tidak ada nota dengan sisa hutang' }
+    const group = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `g_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    let left = total
+    const rows = []
+    for (const d of active) {
+      if (left <= 0) break
+      const pay = Math.min(left, d.rem)
+      left -= pay
+      const row = { supplier_debt_id: d.id, amount: pay, method: method || 'transfer', note: note || '', cashier_id: cashierId || null, fifo_group: group }
+      if (paidAt) row.paid_at = new Date(`${paidAt}T12:00:00`).toISOString()
+      rows.push(row)
+    }
+    let { error: e2 } = await supabase.from('supplier_debt_payments').insert(rows)
+    if (e2 && /fifo_group|column .* does not exist|schema cache/i.test(e2.message || '')) {
+      const stripped = rows.map(({ fifo_group, ...r }) => r)
+      ;({ error: e2 } = await supabase.from('supplier_debt_payments').insert(stripped))
+    }
+    if (e2) return { ok: false, error: e2.message }
+    return { ok: true, applied: total - left, leftover: left, count: rows.length, group }
+  }, [])
+
+  // Hapus SATU batch pembayaran FIFO (soft delete semua alokasinya).
+  const deleteSupplierFIFOGroup = useCallback(async (group) => {
+    if (!group) return { ok: false, error: 'Group tidak valid' }
+    const { error } = await supabase.from('supplier_debt_payments').update({ deleted_at: new Date().toISOString() }).eq('fifo_group', group).is('deleted_at', null)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+
   // Rekap per admin (RPC agregat)
   const getRecapAdmin = useCallback(async (from, to) => {
     const { data, error } = await supabase.rpc('acc_recap_admin', { p_from: from, p_to: to })
@@ -1080,6 +1139,7 @@ export function useAccounting() {
     addExpense, deleteExpense, updateExpense, addPurchase, deletePurchase, updatePurchase,
     listSupplierDebts, addSupplierDebt, editSupplierDebt, paySupplierDebt, deleteSupplierDebt,
     listSupplierPayments, editSupplierPayment, deleteSupplierPayment,
+    listSupplierPaymentsBySupplier, paySupplierFIFO, deleteSupplierFIFOGroup,
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,

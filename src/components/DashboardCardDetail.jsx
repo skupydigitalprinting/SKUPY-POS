@@ -21,7 +21,7 @@ const isoDay = (d) => (d ? String(d).slice(0, 10) : '')
 export default function DashboardCardDetail({
   open, onClose, title, rows = [], total = 0, isCount = false,
   onEdit, onDelete, showDue = false, onManage, manageLabel = 'Kelola',
-  paymentMode = false, admins = [], onSavePaymentRow, onDeletePaymentRow,
+  paymentMode = false, admins = [], onSavePaymentRow, onDeletePaymentRow, subtitle,
 }) {
   const toast = useToast()
   const [editRow, setEditRow] = useState(null)
@@ -105,7 +105,7 @@ export default function DashboardCardDetail({
 
   return (
     <Modal open={open} onClose={onClose} title={`Detail Sumber Data: ${title}`}
-      subtitle={`${rows.length} baris`} size="xl">
+      subtitle={subtitle ?? `${rows.length} baris`} size="xl">
       {err && (
         <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold mb-3"
           style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.25)' }}>

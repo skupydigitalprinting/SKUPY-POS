@@ -289,6 +289,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [supForm, setSupForm] = useState({ id: null, name: '', phone: '', address: '', note: '' })
   const [sdForm, setSdForm] = useState({ supplier: '', item: '', total: '', dueDate: '' })
   const [payId, setPayId] = useState(null); const [payVal, setPayVal] = useState(''); const [payMethod, setPayMethod] = useState('transfer'); const [payNote, setPayNote] = useState('')
+  // Hutang Supplier dikelompokkan per supplier
+  const [supDetailName, setSupDetailName] = useState(null) // nama supplier (buka modal detail)
+  const [supHist, setSupHist] = useState([]); const [supHistLoading, setSupHistLoading] = useState(false)
+  const [fifoSup, setFifoSup] = useState(null) // nama supplier (buka modal Bayar FIFO)
+  const [fifoForm, setFifoForm] = useState({ date: '', amount: '', method: 'transfer', note: '' })
   const [loanForm, setLoanForm] = useState({ namaBank: '', jenis: 'KPR', nomor: '', mulai: '', jatuhTempo: '', plafon: '', sisaPokok: '', bunga: '', cicilan: '', keterangan: '' })
   // error inline per form (field → pesan)
   const [expErr, setExpErr] = useState({}); const [purErr, setPurErr] = useState({})
@@ -561,6 +566,94 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
     if (history.kind === 'supplier') loadSupDebts(); else loadBankLoans()
     loadDashboard()
   }
+
+  // ── HUTANG SUPPLIER: kelompokkan per supplier ──
+  const todayLocalStr = new Date().toLocaleDateString('en-CA')
+  const supGroups = useMemo(() => {
+    const g = {}
+    ;(supDebts || []).forEach(x => { const k = x.supplier || '—'; (g[k] || (g[k] = [])).push(x) })
+    return Object.entries(g).map(([supplier, notes]) => {
+      const total = notes.reduce((s, n) => s + Math.round(n.total || 0), 0)
+      const paid = notes.reduce((s, n) => s + Math.round(n.paid || 0), 0)
+      const remaining = Math.max(0, total - paid)
+      const open = notes.filter(n => Math.max(0, Math.round(n.total || 0) - Math.round(n.paid || 0)) > 0)
+      const dues = open.map(n => n.due_date).filter(Boolean).map(d => String(d).slice(0, 10)).sort()
+      const nearest = dues[0] || null
+      const overdue = open.some(n => n.due_date && String(n.due_date).slice(0, 10) < todayLocalStr)
+      const status = remaining <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
+      return { supplier, notes, total, paid, remaining, count: notes.length, nearest, overdue, status }
+    }).sort((a, b) => b.remaining - a.remaining)
+  }, [supDebts, todayLocalStr])
+  // Notes (nota) untuk supplier yang sedang dibuka, urut FIFO (tempo lalu created_at).
+  const supDetail = useMemo(() => {
+    if (!supDetailName) return null
+    const g = supGroups.find(x => x.supplier === supDetailName)
+    if (!g) return null
+    const notes = [...g.notes].sort((a, b) => {
+      const ad = a.due_date ? String(a.due_date).slice(0, 10) : '9999-12-31'
+      const bd = b.due_date ? String(b.due_date).slice(0, 10) : '9999-12-31'
+      if (ad !== bd) return ad < bd ? -1 : 1
+      return new Date(a.created_at) - new Date(b.created_at)
+    })
+    return { ...g, notes }
+  }, [supDetailName, supGroups])
+  const loadSupHist = async (name) => {
+    setSupHistLoading(true)
+    const r = await acc.listSupplierPaymentsBySupplier(name)
+    setSupHist(r.ok ? r.data : []); setSupHistLoading(false)
+  }
+  const openSupDetail = (name) => { setSupDetailName(name); setSupHist([]); loadSupHist(name) }
+  const refreshSupAll = async (name) => { await loadSupDebts(); await loadDashboard(); if (name) loadSupHist(name) }
+  // Preview distribusi FIFO untuk modal Bayar Gabungan
+  const fifoPreview = useMemo(() => {
+    if (!fifoSup) return { rows: [], applied: 0, leftover: 0 }
+    const g = supGroups.find(x => x.supplier === fifoSup)
+    if (!g) return { rows: [], applied: 0, leftover: 0 }
+    const active = g.notes
+      .map(n => ({ ...n, rem: Math.max(0, Math.round(n.total || 0) - Math.round(n.paid || 0)) }))
+      .filter(n => n.rem > 0)
+      .sort((a, b) => {
+        const ad = a.due_date ? String(a.due_date).slice(0, 10) : '9999-12-31'
+        const bd = b.due_date ? String(b.due_date).slice(0, 10) : '9999-12-31'
+        if (ad !== bd) return ad < bd ? -1 : 1
+        return new Date(a.created_at) - new Date(b.created_at)
+      })
+    let left = parseCurrency(fifoForm.amount) || 0
+    const rows = active.map(n => {
+      const pay = Math.max(0, Math.min(left, n.rem))
+      left -= pay
+      return { ...n, pay, remAfter: n.rem - pay }
+    })
+    const amt = parseCurrency(fifoForm.amount) || 0
+    return { rows, applied: amt - left, leftover: left }
+  }, [fifoSup, supGroups, fifoForm.amount])
+  const openFifo = (name) => { setFifoSup(name); setFifoForm({ date: new Date().toLocaleDateString('en-CA'), amount: '', method: 'transfer', note: '' }) }
+  const submitFifo = async () => {
+    if (saving) return
+    const amt = parseCurrency(fifoForm.amount)
+    if (!(amt > 0)) return toast.error('Nominal harus > 0')
+    setSaving(true)
+    const r = await acc.paySupplierFIFO(fifoSup, amt, fifoForm.method, currentUser?.id, fifoForm.note, fifoForm.date)
+    setSaving(false)
+    if (r.ok) {
+      toast.success(`Pembayaran ${fmt(r.applied)} dialokasikan ke ${r.count} nota (FIFO)${r.leftover > 0 ? ` · sisa ${fmt(r.leftover)} tak terpakai` : ''}`)
+      const name = fifoSup
+      setFifoSup(null)
+      refreshSupAll(name)
+    } else toast.error(r.error || 'Gagal')
+  }
+  // Hapus 1 batch pembayaran FIFO (semua alokasi dibatalkan)
+  const deleteFifoGroup = async (group, name) => {
+    if (!(await confirm({ title: 'Yakin ingin menghapus pembayaran ini? Semua alokasi ke tiap nota akan dibatalkan.' }))) return
+    const r = await acc.deleteSupplierFIFOGroup(group)
+    if (r.ok) { toast.success('Pembayaran dibatalkan'); refreshSupAll(name) } else toast.error(r.error || 'Gagal')
+  }
+  const deleteSupPayOne = async (id, name) => {
+    if (!(await confirm({ title: 'Yakin ingin menghapus data ini?' }))) return
+    const r = await acc.deleteSupplierPayment(id)
+    if (r.ok) { toast.success('Dihapus'); refreshSupAll(name) } else toast.error(r.error || 'Gagal')
+  }
+
   // ── Detail sumber angka (audit, klik card) ──
   const openDetail = async (kind, title, color, range) => {
     const f = range?.from || from, t = range?.to || to
@@ -1427,36 +1520,28 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               </div>
             )
           })()}
-          <div className="space-y-2">{supDebts.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada</p>}
-            {supDebts.map(x => {
-              const rem = Math.max(0, Math.round(x.total || 0) - Math.round(x.paid || 0))
-              // Bandingkan per-TANGGAL lokal: due_date 'YYYY-MM-DD' di-parse JS
-              // sebagai UTC 00:00 (= 07:00 WIB), jadi pakai string compare
-              // supaya hutang yang jatuh tempo HARI INI belum dicap lewat.
-              const todayLocal = new Date().toLocaleDateString('en-CA')
-              const overdue = x.due_date && String(x.due_date).slice(0, 10) < todayLocal && rem > 0
-              const status = rem <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
-              const stColor = rem <= 0 ? '#10d98a' : overdue ? '#fb923c' : '#f59e0b'
+          {/* LIST UTAMA: 1 card per supplier (dikelompokkan) */}
+          <div className="space-y-2.5">{supGroups.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada hutang supplier</p>}
+            {supGroups.map(g => {
+              const stColor = g.remaining <= 0 ? '#10d98a' : g.overdue ? '#fb923c' : '#f59e0b'
               return (
-                <div key={x.id} className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue ? 'rgba(251,146,60,0.4)' : 'var(--border)'}` }}>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.supplier || '—'} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {x.item}</span>
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${stColor}22`, color: stColor }}>{status}</span></div>
-                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Total <span style={{ color: 'var(--text-primary)' }}>{fmt(x.total)}</span> · Bayar <span style={{ color: '#10d98a' }}>{fmt(x.paid)}</span>{x.due_date ? ` · Tempo ${dt(x.due_date)}` : ''}</div>
+                <div key={g.supplier} className="rounded-2xl p-3.5 min-w-0" style={{ background: 'var(--bg-card)', border: `1px solid ${g.overdue ? 'rgba(251,146,60,0.4)' : 'var(--border)'}` }}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{g.supplier}</div>
+                      <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{g.count} nota hutang{g.nearest ? ` · Tempo terdekat ${dt(g.nearest)}` : ''}</div>
                     </div>
-                    <div className="text-right"><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold" style={{ color: rem > 0 ? '#ef4444' : '#10d98a' }}>{fmt(rem)}</div></div>
-                    {rem > 0 && <button onClick={() => { setPayId(payId === x.id ? null : x.id); setPayVal(String(rem)); setPayMethod('transfer'); setPayNote('') }} className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
-                    <button onClick={() => setEditDebt({ id: x.id, supplier: x.supplier || '', item: x.item || '', total: String(Math.round(x.total || 0)), dueDate: x.due_date || '', note: x.note || '', method: x.payment_method || 'transfer' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
-                    <button onClick={() => openHistory('supplier', { id: x.id, title: `${x.supplier} · ${x.item}`, total: x.total, paid: x.paid })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat"><BookOpen size={11} /></button>
-                    <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteSupplierDebt(x.id); if (r.ok) { toast.success('Dihapus'); loadSupDebts(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ background: `${stColor}22`, color: stColor }}>{g.status}</span>
                   </div>
-                  {payId === x.id && <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
-                    <MoneyInput value={payVal} onChange={setPayVal} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-                    <select value={payMethod} onChange={e => setPayMethod(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
-                    <input value={payNote} onChange={e => setPayNote(e.target.value)} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
-                    <Button variant="success" size="sm" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(payVal); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.paySupplierDebt(x.id, Math.min(amt, rem), payMethod, currentUser?.id, payNote); setSaving(false); if (r.ok) { toast.success('Dibayar'); setPayId(null); loadSupDebts(); loadDashboard() } else toast.error(r.error) }}>Konfirmasi</Button>
-                  </div>}
+                  <div className="grid grid-cols-3 gap-2 mt-2.5">
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Total</div><div className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.total)}</div></div>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Bayar</div><div className="text-xs font-bold truncate" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.paid)}</div></div>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-xs font-bold truncate" style={{ color: g.remaining > 0 ? '#ef4444' : '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.remaining)}</div></div>
+                  </div>
+                  <div className="flex gap-2 mt-2.5">
+                    <button onClick={() => openSupDetail(g.supplier)} className="flex-1 h-9 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 btn-press" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'Syne' }}><BookOpen size={13} /> Detail</button>
+                    {g.remaining > 0 && <button onClick={() => openFifo(g.supplier)} className="flex-1 h-9 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 btn-press" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={13} /> Bayar FIFO</button>}
+                  </div>
                 </div>
               )
             })}
@@ -2345,6 +2430,145 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               const r = await acc.editSupplierDebt(editDebt.id, { supplier: editDebt.supplier, item: editDebt.item, total: parseCurrency(editDebt.total), dueDate: editDebt.dueDate || null, note: editDebt.note, method: editDebt.method })
               if (r.ok) { toast.success('Hutang diperbarui'); setEditDebt(null); loadSupDebts(); loadDashboard(); reloadDetail() } else toast.error(r.error)
             }}><Check size={14} /> Simpan</Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── DETAIL HUTANG SUPPLIER (per supplier) ── */}
+      <Modal open={!!supDetail} onClose={() => { setSupDetailName(null); setPayId(null) }} mobileFull title={supDetail ? `Hutang Supplier — ${supDetail.supplier}` : ''} size="lg">
+        {supDetail && (
+          <div className="space-y-3">
+            {/* Ringkasan */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Hutang</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(supDetail.total)}</div></div>
+              <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a' }}>{fmt(supDetail.paid)}</div></div>
+              <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold truncate" style={{ color: supDetail.remaining > 0 ? '#ef4444' : '#10d98a' }}>{fmt(supDetail.remaining)}</div></div>
+            </div>
+            {supDetail.remaining > 0 && (
+              <button onClick={() => { setSupDetailName(null); openFifo(supDetail.supplier) }} className="w-full h-10 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-1.5 btn-press" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={15} /> Bayar Gabungan FIFO</button>
+            )}
+
+            {/* Daftar nota */}
+            <div>
+              <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Daftar Nota ({supDetail.notes.length})</div>
+              <div className="space-y-2">
+                {supDetail.notes.map(n => {
+                  const rem = Math.max(0, Math.round(n.total || 0) - Math.round(n.paid || 0))
+                  const overdue = n.due_date && String(n.due_date).slice(0, 10) < todayLocalStr && rem > 0
+                  const status = rem <= 0 ? 'Lunas' : overdue ? 'Lewat Tempo' : 'Aktif'
+                  const stColor = rem <= 0 ? '#10d98a' : overdue ? '#fb923c' : '#f59e0b'
+                  return (
+                    <div key={n.id} className="rounded-xl p-2.5 min-w-0" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue ? 'rgba(251,146,60,0.35)' : 'var(--border)'}` }}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{n.item || '—'} <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${stColor}22`, color: stColor }}>{status}</span></div>
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{dt(n.created_at)}{n.due_date ? ` · Tempo ${dt(n.due_date)}` : ''}</div>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {rem > 0 && <button onClick={() => { setPayId(payId === n.id ? null : n.id); setPayVal(String(rem)); setPayMethod('transfer'); setPayNote('') }} className="px-2 h-7 rounded-lg text-[11px] font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
+                          <button onClick={() => setEditDebt({ id: n.id, supplier: n.supplier || '', item: n.item || '', total: String(Math.round(n.total || 0)), dueDate: n.due_date || '', note: n.note || '', method: n.payment_method || 'transfer' })} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
+                          <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?' }))) return; const r = await acc.deleteSupplierDebt(n.id); if (r.ok) { toast.success('Dihapus'); refreshSupAll(supDetail.supplier) } else toast.error(r.error) }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 mt-2">
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Nominal</div><div className="text-[11px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(n.total)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Dibayar</div><div className="text-[11px] font-bold truncate" style={{ color: '#10d98a' }}>{fmt(n.paid)}</div></div>
+                        <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-[11px] font-bold truncate" style={{ color: rem > 0 ? '#ef4444' : '#10d98a' }}>{fmt(rem)}</div></div>
+                      </div>
+                      {payId === n.id && (
+                        <div className="grid grid-cols-2 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
+                          <MoneyInput value={payVal} onChange={setPayVal} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
+                          <select value={payMethod} onChange={e => setPayMethod(e.target.value)} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+                          <input value={payNote} onChange={e => setPayNote(e.target.value)} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs col-span-2" style={inp} />
+                          <Button variant="success" size="sm" className="col-span-2" disabled={saving} onClick={async () => { if (saving) return; const amt = parseCurrency(payVal); if (!(amt > 0)) return toast.error('Nominal > 0'); setSaving(true); const r = await acc.paySupplierDebt(n.id, Math.min(amt, rem), payMethod, currentUser?.id, payNote); setSaving(false); if (r.ok) { toast.success('Dibayar'); setPayId(null); refreshSupAll(supDetail.supplier) } else toast.error(r.error) }}>Konfirmasi Bayar</Button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Riwayat pembayaran (gabungan semua nota) */}
+            <div>
+              <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pembayaran</div>
+              {supHistLoading ? <div className="flex justify-center py-4"><Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
+              : supHist.length === 0 ? <p className="text-[11px] text-center py-3" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran</p>
+              : (() => {
+                  // Kelompokkan per fifo_group; baris tanpa group berdiri sendiri.
+                  const groups = {}
+                  supHist.forEach(p => { const k = p.fifo_group || `single:${p.id}`; (groups[k] || (groups[k] = [])).push(p) })
+                  const list = Object.entries(groups).map(([k, rows]) => ({
+                    key: k, isFifo: !k.startsWith('single:') && rows.length >= 1 && !!rows[0].fifo_group,
+                    rows, amount: rows.reduce((s, r) => s + Math.round(r.amount || 0), 0),
+                    date: rows[0].paid_at, method: rows[0].method, note: rows[0].note,
+                  })).sort((a, b) => new Date(b.date) - new Date(a.date))
+                  return (
+                    <div className="space-y-1.5">
+                      {list.map(grp => (
+                        <div key={grp.key} className="rounded-lg p-2.5 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold" style={{ color: '#10d98a' }}>{fmt(grp.amount)} <span className="text-[10px] font-normal uppercase" style={{ color: 'var(--text-muted)' }}>{grp.method}</span>{grp.isFifo && grp.rows.length > 1 && <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: 'rgba(56,189,248,0.15)', color: '#38BDF8' }}>FIFO · {grp.rows.length} nota</span>}</div>
+                              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{dt(grp.date)}{grp.note ? ` · ${grp.note}` : ''}</div>
+                              <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{grp.rows.map((r, i) => `${r.item || 'nota'}: ${fmt(r.amount)}`).join(' · ')}</div>
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {!grp.isFifo && grp.rows.length === 1 && (
+                                <button onClick={() => setHEdit({ id: grp.rows[0].id, amount: String(Math.round(grp.rows[0].amount || 0)), method: grp.rows[0].method || 'transfer', note: grp.rows[0].note || '', _sup: supDetail.supplier })} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={11} /></button>
+                              )}
+                              <button onClick={() => grp.isFifo ? deleteFifoGroup(grp.rows[0].fifo_group, supDetail.supplier) : deleteSupPayOne(grp.rows[0].id, supDetail.supplier)} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
+                            </div>
+                          </div>
+                          {hEdit && hEdit.id === grp.rows[0].id && (
+                            <div className="grid grid-cols-2 gap-2 mt-2 pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
+                              <MoneyInput value={hEdit.amount} onChange={v => setHEdit(p => ({ ...p, amount: v }))} placeholder="Nominal" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
+                              <select value={hEdit.method} onChange={e => setHEdit(p => ({ ...p, method: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+                              <input value={hEdit.note} onChange={e => setHEdit(p => ({ ...p, note: e.target.value }))} placeholder="Catatan" className="px-2 py-1.5 rounded-lg text-xs col-span-2" style={inp} />
+                              <Button variant="primary" size="sm" className="col-span-2" onClick={async () => { const r = await acc.editSupplierPayment(hEdit.id, { amount: parseCurrency(hEdit.amount), method: hEdit.method, note: hEdit.note }); if (r.ok) { toast.success('Pembayaran diperbarui'); setHEdit(null); refreshSupAll(supDetail.supplier) } else toast.error(r.error) }}><Check size={13} /> Simpan</Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── BAYAR GABUNGAN FIFO ── */}
+      <Modal open={!!fifoSup} onClose={() => setFifoSup(null)} mobileFull title={fifoSup ? `Bayar Gabungan FIFO — ${fifoSup}` : ''} size="lg">
+        {fifoSup && (
+          <div className="space-y-3">
+            <p className="text-[11px] leading-relaxed p-2.5 rounded-lg" style={{ color: 'var(--text-secondary)', background: 'rgba(56,189,248,0.07)', border: '1px solid rgba(56,189,248,0.2)' }}>Pembayaran dialokasikan ke nota <b>jatuh tempo paling awal</b> dulu (FIFO). Sisa pembayaran lanjut ke nota berikutnya.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Receipt} label="Tanggal Bayar"><input type="date" value={fifoForm.date} onChange={e => setFifoForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+              <Field icon={TrendingDown} label="Nominal Bayar"><MoneyInput value={fifoForm.amount} onChange={v => setFifoForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inp} /></Field>
+              <Field icon={Wallet} label="Metode"><select value={fifoForm.method} onChange={e => setFifoForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+              <Field icon={Pencil} label="Catatan"><input value={fifoForm.note} onChange={e => setFifoForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            {/* Preview distribusi */}
+            {(parseCurrency(fifoForm.amount) > 0) && (
+              <div className="rounded-xl p-2.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Preview Alokasi FIFO</div>
+                <div className="space-y-1">
+                  {fifoPreview.rows.filter(r => r.pay > 0).map(r => (
+                    <div key={r.id} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="truncate min-w-0" style={{ color: 'var(--text-secondary)' }}>{r.item || 'nota'}{r.due_date ? ` (tempo ${dt(r.due_date)})` : ''}</span>
+                      <span className="flex-shrink-0 font-semibold" style={{ color: r.remAfter <= 0 ? '#10d98a' : '#f59e0b' }}>{fmt(r.pay)}{r.remAfter > 0 ? ` · sisa ${fmt(r.remAfter)}` : ' · LUNAS'}</span>
+                    </div>
+                  ))}
+                  {fifoPreview.rows.filter(r => r.pay > 0).length === 0 && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Tidak ada nota dengan sisa hutang.</p>}
+                </div>
+                <div className="flex items-center justify-between mt-2 pt-2 text-[11px]" style={{ borderTop: '1px dashed var(--border)' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Terpakai: <b style={{ color: 'var(--text-primary)' }}>{fmt(fifoPreview.applied)}</b></span>
+                  {fifoPreview.leftover > 0 && <span style={{ color: '#fb923c' }}>Sisa tak terpakai: {fmt(fifoPreview.leftover)}</span>}
+                </div>
+              </div>
+            )}
+            <Button variant="success" className="w-full" disabled={saving} onClick={submitFifo}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Wallet size={14} />} Konfirmasi Bayar FIFO</Button>
           </div>
         )}
       </Modal>
