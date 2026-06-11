@@ -91,33 +91,94 @@ export default function Order({
     if (r.ok) { setReassignTrx(null); setReassignNewId('') }
     else window.alert(r.error || 'Gagal memindahkan customer')
   }
-  // Buka menu "⋯ Lainnya": simpan transaksi + posisi tombol (fixed popover).
+  // Buka menu "⋯ Lainnya": simpan transaksi + posisi tombol untuk dropdown
+  // (desktop/landscape). Di mobile portrait dipakai bottom sheet (lihat ActionMenu).
+  const MENU_MINW = 200
   const openMenu = (t, e) => {
     const r = e.currentTarget.getBoundingClientRect()
-    const top = Math.min(r.bottom + 6, window.innerHeight - 260)
-    const right = Math.max(8, window.innerWidth - r.right)
+    const top = Math.min(r.bottom + 6, window.innerHeight - 300)
+    // CLAMP supaya popover tidak pernah keluar layar (kiri maupun kanan):
+    //   right diukur dari tepi kanan window. Batas bawah 12px (tepi kanan),
+    //   batas atas = window.innerWidth - lebar - 12px (supaya kiri tidak < 12px).
+    let right = window.innerWidth - r.right
+    right = Math.max(12, Math.min(right, Math.max(12, window.innerWidth - MENU_MINW - 12)))
     setMenuFor(menuFor && menuFor.t?.id === t.id ? null : { t, top, right })
   }
-  // Popover aksi — FIXED di tingkat halaman (tidak terjebak stacking context
-  // card, jadi tidak tertimpa card lain). Klik di luar menutup.
+  // Popover aksi. Mobile PORTRAIT (≤480px) → bottom sheet (fixed, full width,
+  // tidak mungkin kepotong). Desktop/landscape → dropdown fixed dengan posisi
+  // ter-clamp. Klik backdrop menutup.
   const ActionMenu = ({ t, pos, onClose }) => {
+    const [sheet, setSheet] = useState(
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 480px) and (orientation: portrait)').matches
+    )
+    useEffect(() => {
+      const mq = window.matchMedia('(max-width: 480px) and (orientation: portrait)')
+      const upd = () => setSheet(mq.matches)
+      upd()
+      mq.addEventListener ? mq.addEventListener('change', upd) : mq.addListener(upd)
+      return () => { mq.removeEventListener ? mq.removeEventListener('change', upd) : mq.removeListener(upd) }
+    }, [])
     const cust = customers.find(c => c.id === t.customerId)
     const phone = cust?.whatsapp || cust?.phone || ''
     const statusLabel = (getStatus(t.status).label || 'Pending').toString().toUpperCase()
     const waText = `Halo ${t.customer || 'Customer'},\nTerima kasih telah melakukan transaksi.\n\nNomor Invoice: *${t.invoiceNo || '-'}*\nTotal: *${formatRupiah(t.total || 0)}*\nStatus: *${statusLabel}*\n\nTerima kasih.\n${storeInfo?.name || ''}`
-    const Item = ({ icon: Ic, label, color, onClick }) => (
-      <button onClick={() => { onClose(); onClick() }} className="w-full text-left px-3 py-2 text-xs font-semibold flex items-center gap-2 hover:bg-white/[0.04]" style={{ color: color || 'var(--text-primary)' }}><Ic size={13} /> {label}</button>
-    )
+    // Satu sumber daftar aksi — dipakai dropdown maupun bottom sheet.
+    const actions = [
+      { icon: Eye, label: 'Lihat Detail', onClick: () => setViewTrx(t) },
+      ...(t.remaining > 0 ? [{ icon: Wallet, label: 'Bayar', color: '#10d98a', onClick: () => openPay(t) }] : []),
+      ...(canEditOrderCustomer(t) ? [{ icon: UserCog, label: 'Edit Customer', color: '#38BDF8', onClick: () => { setReassignTrx(t); setReassignNewId('') } }] : []),
+      { icon: Printer, label: 'Cetak Invoice', onClick: () => setPrintTrx(t) },
+      { icon: MessageCircle, label: 'WhatsApp', color: '#25d366', onClick: () => window.open(buildWaLink(phone, waText), '_blank', 'noopener,noreferrer') },
+      { icon: Trash2, label: 'Hapus / Batalkan', color: 'var(--red)', onClick: () => setDelConfirm(t) },
+    ]
+    if (sheet) {
+      // ===== BOTTOM SHEET (mobile portrait) =====
+      return (
+        <>
+          <div className="fixed inset-0" style={{ zIndex: 9998, background: 'rgba(0,0,0,0.45)' }} onClick={onClose} />
+          <div
+            className="fixed"
+            style={{
+              zIndex: 9999, left: 0, right: 0, bottom: 0, width: '100%',
+              background: 'var(--bg-elevated)', borderTop: '1px solid var(--border-strong)',
+              borderTopLeftRadius: 20, borderTopRightRadius: 20,
+              boxShadow: '0 -14px 40px rgba(0,0,0,0.5)',
+              paddingTop: 6, paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)',
+            }}
+          >
+            <div style={{ width: 40, height: 4, borderRadius: 99, background: 'var(--border-strong)', margin: '6px auto 6px' }} />
+            <div className="px-3 pb-2 text-[11px] font-semibold truncate" style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontFamily: 'Syne' }}>
+              {t.invoiceNo || t.orderNo || 'Order'} · {t.customer || 'Customer'}
+            </div>
+            {actions.map((a, i) => (
+              <button
+                key={i}
+                onClick={() => { onClose(); a.onClick() }}
+                className="w-full text-left px-4 py-3 text-sm font-semibold flex items-center gap-3 active:bg-white/[0.06]"
+                style={{ color: a.color || 'var(--text-primary)', borderTop: i === 0 ? '1px solid var(--border)' : 'none' }}
+              >
+                <a.icon size={17} /> {a.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )
+    }
+    // ===== DROPDOWN (desktop / landscape) =====
     return (
       <>
         <div className="fixed inset-0" style={{ zIndex: 1090 }} onClick={onClose} />
-        <div className="fixed rounded-xl py-1" style={{ zIndex: 1100, top: pos.top, right: pos.right, minWidth: 180, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
-          <Item icon={Eye} label="Lihat Detail" onClick={() => setViewTrx(t)} />
-          {t.remaining > 0 && <Item icon={Wallet} label="Bayar" color="#10d98a" onClick={() => openPay(t)} />}
-          {canEditOrderCustomer(t) && <Item icon={UserCog} label="Edit Customer" color="#38BDF8" onClick={() => { setReassignTrx(t); setReassignNewId('') }} />}
-          <Item icon={Printer} label="Cetak Invoice" onClick={() => setPrintTrx(t)} />
-          <Item icon={MessageCircle} label="WhatsApp" color="#25d366" onClick={() => window.open(buildWaLink(phone, waText), '_blank', 'noopener,noreferrer')} />
-          <Item icon={Trash2} label="Hapus / Batalkan" color="var(--red)" onClick={() => setDelConfirm(t)} />
+        <div className="fixed rounded-xl py-1" style={{ zIndex: 1100, top: pos.top, right: pos.right, minWidth: MENU_MINW, maxWidth: 'calc(100vw - 24px)', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+          {actions.map((a, i) => (
+            <button
+              key={i}
+              onClick={() => { onClose(); a.onClick() }}
+              className="w-full text-left px-3 py-2 text-xs font-semibold flex items-center gap-2 hover:bg-white/[0.04]"
+              style={{ color: a.color || 'var(--text-primary)' }}
+            >
+              <a.icon size={13} /> {a.label}
+            </button>
+          ))}
         </div>
       </>
     )
