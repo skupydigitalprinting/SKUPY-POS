@@ -921,6 +921,28 @@ export function useAccounting() {
       amount: amt, method: m, notes: p.note || '', cashier_id: cashierId || null,
     }
   }
+  // ── MODAL & SALDO AWAL (ekuitas) ──
+  // type='modal'     → Setoran Modal pemilik: Kas/Bank + & EKUITAS +.
+  // type='loan_cash' → Pencairan pinjaman ke kas: Kas/Bank + (ekuitas netral,
+  //                    karena Hutang Bank sudah tercatat terpisah).
+  const addCapitalEntry = useCallback(async (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!['modal', 'loan_cash'].includes(p.type)) return { ok: false, error: 'Jenis tidak valid' }
+    if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
+    if (!p.date) return { ok: false, error: 'Tanggal wajib diisi' }
+    const m = ['cash', 'transfer', 'qris'].includes(p.method) ? p.method : 'cash'
+    const name = (p.name || '').trim() || (p.type === 'modal' ? 'Setoran Modal' : 'Pencairan Pinjaman ke Kas')
+    const { error } = await supabase.from('migration_details').insert({ type: p.type, trx_date: p.date, name, customer: '', amount: amt, method: m, notes: p.note || '', cashier_id: cashierId || null })
+    if (error && /violates check constraint|migration_details_type_check/i.test(error.message || '')) return { ok: false, error: 'Jalankan migrasi 2026_06_capital_equity.sql dulu di Supabase.' }
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const listCapitalEntries = useCallback(async () => {
+    const { data, error } = await supabase.from('migration_details').select('*').is('deleted_at', null)
+      .in('type', ['modal', 'loan_cash']).order('trx_date', { ascending: false }).order('created_at', { ascending: false }).limit(500)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
   const addMigrationDetail = useCallback(async (p, cashierId) => {
     const amt = Math.round(Number(p.amount) || 0)
     if (!['old_income', 'old_expense'].includes(p.type)) return { ok: false, error: 'Jenis migrasi tidak valid' }
@@ -1153,6 +1175,7 @@ export function useAccounting() {
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
     listMigrationDetails, addMigrationDetail, updateMigrationDetail, deleteMigrationDetail,
+    addCapitalEntry, listCapitalEntries,
     bulkAddMigrationDetails, bootstrapMigrationDetails,
     findOrCreateCustomer, addOldReceivable, listOpeningReceivables, editOldReceivable, deleteOldReceivable,
     addOldKasbon, listOpeningKasbon,

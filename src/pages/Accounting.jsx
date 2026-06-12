@@ -280,6 +280,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const blankOldKas = { date: acc.todayISO(), employeeName: '', amount: '', dueDate: '', method: 'cash', note: '' }
   const [recvForm, setRecvForm] = useState(blankRecv); const [recvErr, setRecvErr] = useState({})
   const [oldKasForm, setOldKasForm] = useState(blankOldKas); const [oldKasErr, setOldKasErr] = useState({})
+  // Modal & Saldo Awal (ekuitas)
+  const blankCap = { type: 'modal', date: acc.todayISO(), amount: '', method: 'transfer', name: '', note: '' }
+  const [capForm, setCapForm] = useState(blankCap); const [capErr, setCapErr] = useState({}); const [capList, setCapList] = useState([])
+  const loadCap = async () => { const r = await acc.listCapitalEntries(); if (r.ok) setCapList(r.data) }
   const [openingRecv, setOpeningRecv] = useState([]); const [openingKas, setOpeningKas] = useState([])
   const [editRecv, setEditRecv] = useState(null); const [editOldKas, setEditOldKas] = useState(null)
 
@@ -458,7 +462,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
       else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
       else if (tab === 'sewa') await loadRents()
-      else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats() }
+      else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats(); await loadCap() }
       else if (tab === 'pengaturan') await loadExpCats()
       setLoading(false)
     }
@@ -993,7 +997,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         const importValidCount = (migImport?.rows || []).filter(r => r._ok).length
         // Riwayat gabungan 4 jenis (terbaru di atas)
         const histRows = [
-          ...migRows.map(x => ({ kind: x.type === 'old_income' ? 'income' : 'expense', id: x.id, date: x.trx_date, name: x.name || '—', customer: x.customer || '', amount: Math.round(x.amount || 0), method: x.method || '', note: x.notes || '', raw: x })),
+          ...migRows.filter(x => x.type === 'old_income' || x.type === 'old_expense').map(x => ({ kind: x.type === 'old_income' ? 'income' : 'expense', id: x.id, date: x.trx_date, name: x.name || '—', customer: x.customer || '', amount: Math.round(x.amount || 0), method: x.method || '', note: x.notes || '', raw: x })),
           ...openingRecv.map(x => ({ kind: 'receivable', id: x.id, date: String(x.created_at).slice(0, 10), name: x.customer_name || '—', customer: '', amount: Math.round(x.total_debt || 0), paid: Math.round(x.paid || 0), method: '', note: x.notes || '', due: x.due_date, raw: x })),
           ...openingKas.map(x => ({ kind: 'kasbon', id: x.id, date: x.advance_date, name: x.employee_name || '—', customer: '', amount: Math.round(x.amount || 0), paid: Math.round(x.paid || 0), method: x.payment_method || '', note: x.notes || '', due: x.due_date, raw: x })),
         ].sort((a, b) => String(b.date).localeCompare(String(a.date)))
@@ -1026,7 +1030,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
 
           {/* Pemilih jenis data lama */}
           <div className="flex gap-1.5 flex-wrap">
-            {[['income', 'Pemasukan', TrendingUp], ['expense', 'Pengeluaran', TrendingDown], ['receivable', 'Piutang Customer', UsersIcon], ['kasbon', 'Kasbon Karyawan', HandCoins]].map(([k, lbl, Ic]) => {
+            {[['income', 'Pemasukan', TrendingUp], ['expense', 'Pengeluaran', TrendingDown], ['receivable', 'Piutang Customer', UsersIcon], ['kasbon', 'Kasbon Karyawan', HandCoins], ['modal', 'Modal & Saldo Awal', Wallet]].map(([k, lbl, Ic]) => {
               const a = migKind === k
               return <button key={k} onClick={() => setMigKind(k)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all flex-shrink-0" style={{ background: a ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: a ? '#fff' : 'var(--text-secondary)', border: `1px solid ${a ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}><Ic size={12} /> {lbl}</button>
             })}
@@ -1124,6 +1128,60 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               </Field>
               <Button variant="primary" className="w-full" disabled={saving} onClick={submitOldKas}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Kasbon Karyawan Lama</Button>
             </FormCard>
+          )}
+
+          {/* MODAL & SALDO AWAL (EKUITAS) */}
+          {migKind === 'modal' && (
+            <>
+            <FormCard icon={Wallet} title="Modal & Saldo Awal" subtitle="Catat setoran modal pemilik atau kas dari pencairan pinjaman. Menambah Saldo Kas/Bank & Total Aset, supaya Neraca seimbang (Aset = Hutang + Modal).">
+              <Field icon={BookOpen} label="Jenis" required hint="Setoran Modal = ekuitas pemilik. Pencairan Pinjaman = kas dari hutang bank yang sudah dicatat (ekuitas netral).">
+                <select value={capForm.type} onChange={e => setCapForm(p => ({ ...p, type: e.target.value }))} className={FIELD_CLS} style={inp}>
+                  <option value="modal">Setoran Modal (Ekuitas Pemilik)</option>
+                  <option value="loan_cash">Pencairan Pinjaman ke Kas</option>
+                </select>
+              </Field>
+              <Field icon={Receipt} label="Tanggal" required error={capErr.date}>
+                <input type="date" value={capForm.date} onChange={e => setCapForm(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(capErr.date), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Pencil} label="Keterangan" hint="mis. Setoran modal awal / Pencairan KPR BCA">
+                <input value={capForm.name} onChange={e => setCapForm(p => ({ ...p, name: e.target.value }))} placeholder={capForm.type === 'modal' ? 'Setoran Modal' : 'Pencairan Pinjaman ke Kas'} className={FIELD_CLS} style={inp} />
+              </Field>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field icon={Wallet} label="Nominal" required error={capErr.amount}>
+                  <MoneyInput value={capForm.amount} onChange={v => setCapForm(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(capErr.amount)} />
+                </Field>
+                <Field icon={Landmark} label="Masuk ke">
+                  <select value={capForm.method} onChange={e => setCapForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}><option value="cash">Kas (Cash)</option><option value="transfer">Bank (Transfer)</option><option value="qris">Bank (QRIS)</option></select>
+                </Field>
+              </div>
+              <Field icon={BookOpen} label="Catatan">
+                <input value={capForm.note} onChange={e => setCapForm(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} />
+              </Field>
+              <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+                const e = {}; if (!(parseCurrency(capForm.amount) > 0)) e.amount = 'Nominal harus > 0'; if (!capForm.date) e.date = 'Tanggal wajib'
+                setCapErr(e); if (Object.keys(e).length) return
+                setSaving(true); const r = await acc.addCapitalEntry({ ...capForm, amount: parseCurrency(capForm.amount) }, currentUser?.id); setSaving(false)
+                if (r.ok) { toast.success('Modal/saldo awal dicatat'); setCapForm(blankCap); setCapErr({}); loadCap(); loadDashboard() } else toast.error(r.error)
+              }}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Modal / Saldo Awal</Button>
+            </FormCard>
+            {capList.length > 0 && (
+              <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Riwayat Modal & Saldo Awal</div>
+                <div className="space-y-2">
+                  {capList.map(x => (
+                    <div key={x.id} className="flex items-center gap-3 p-2.5 rounded-xl min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.name || (x.type === 'modal' ? 'Setoran Modal' : 'Pencairan Pinjaman')} <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: x.type === 'modal' ? 'rgba(16,217,138,0.15)' : 'rgba(56,189,248,0.15)', color: x.type === 'modal' ? '#10d98a' : '#38BDF8' }}>{x.type === 'modal' ? 'MODAL' : 'PINJAMAN'}</span></div>
+                        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{dt(x.trx_date)} · {(x.method || 'cash').toUpperCase()}{x.notes ? ` · ${x.notes}` : ''}</div>
+                      </div>
+                      <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(x.amount)}</div>
+                      <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus data ini?' }))) return; const r = await acc.deleteMigrationDetail(x.id); if (r.ok) { toast.success('Dihapus'); loadCap(); loadDashboard() } else toast.error(r.error) }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={11} /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            </>
           )}
 
           {/* IMPORT EXCEL */}
@@ -1276,7 +1334,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
             <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (d.pengeluaran_total || 0) - rentAgg.cashOutPeriod)} color="#14b8a6" sub="Uang Masuk − Kas Keluar (sewa penuh)" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - ((d.pengeluaran_total || 0) + rentAgg.bebanPeriod))} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
           </div>
@@ -1323,7 +1381,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Supplier</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_supplier)}</span></div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Bank</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_bank)}</span></div>
                 <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Hutang</span><span style={{ color: '#ef4444' }}>{fmt(totalHutang)}</span></div>
-                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Kekayaan Bersih</span><span style={{ color: '#10d98a' }}>{fmt(kekayaanBersih)}</span></div>
+                <div className="flex justify-between py-0.5 mt-1" style={{ color: 'var(--text-muted)' }}><span>Modal Disetor</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.modal_disetor || 0)}</span></div>
+                <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Laba Ditahan</span><span style={{ color: 'var(--text-primary)' }}>{fmt(kekayaanBersih - (d.modal_disetor || 0))}</span></div>
+                <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Ekuitas</span><span style={{ color: '#10d98a' }}>{fmt(kekayaanBersih)}</span></div>
+                <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Kewajiban + Ekuitas</span><span>{fmt(totalHutang + kekayaanBersih)}</span></div>
               </div>
             </div>
           </div>
