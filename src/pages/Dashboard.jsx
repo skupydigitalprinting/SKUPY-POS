@@ -206,10 +206,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         .is('deleted_at', null).neq('order_status', 'dibatalkan')
         .gte('created_at', accFrom).lte('created_at', accTo + 'T23:59:59')
       if (alive && typeof count === 'number') setOmsetCount(count)
-      // PENGELUARAN dari SATU sumber resmi: getOutflowTransactions (sama dgn
-      // detail & dgn kartu All Time). Hanya beda rentang tanggal.
+      // PENGELUARAN = SAMA dengan modul Accounting → pakai pengeluaran_total dari
+      // RPC acc_dashboard (server-side, hitung semua tanpa batas baris). Ini yang
+      // dipakai untuk kartu/Laba supaya cocok dengan halaman Accounting.
+      // getOutflowTransactions hanya dipakai untuk rincian per-sumber (breakdown).
+      setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
       const out = await acc.getOutflowTransactions(accFrom, accTo)
-      if (alive && out.ok) { setPengeluaranAcc(out.total); setPengBreakdown(sumBySource(out.rows)) }
+      if (alive && out.ok) setPengBreakdown(sumBySource(out.rows))
     }
     const start = () => { if (!id) id = setInterval(load, 60000) }
     const stop = () => { if (id) { clearInterval(id); id = null } }
@@ -240,7 +243,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       ])
       if (!alive) return
       const row = dRes?.data ? (Array.isArray(dRes.data) ? dRes.data[0] : dRes.data) : null
-      if (row && out.ok) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: out.total })
+      // Pengeluaran All Time = pengeluaran_total RPC (sama dgn Accounting), bukan out.total.
+      if (row) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: toMoney(row.pengeluaran_total) || 0 })
       if (out.ok) setPengBreakdownAll(sumBySource(out.rows))
     }
     load()

@@ -1326,7 +1326,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
               <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Pengeluaran {fmt(d.pengeluaran_total)}{rentAgg.bebanPeriod > 0 ? ` − Beban Sewa ${fmt(rentAgg.bebanPeriod)}` : ''}</div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Uang Keluar {fmt((d.pengeluaran_total || 0) + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (sudah termasuk beban sewa {fmt(rentAgg.bebanPeriod)})</span></div>
             </div>
           )}
 
