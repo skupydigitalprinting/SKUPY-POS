@@ -390,6 +390,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
       // jumlah baris di modal Rincian. Fallback ke pengeluaran_total bila gagal.
       const out = await acc.getOutflowTransactions(from, to)
       setPengOut(out.ok ? out.total : Math.round(res.data.pengeluaran_total || 0))
+      // Segarkan SEMUA komponen Total Aset (Aset Tetap & Sewa Dibayar Dimuka)
+      // supaya Total Aset & Kekayaan Bersih ikut berubah saat ada hapus/edit.
+      loadAssets(); loadRents()
       loadAllTime() // segarkan card All Time (realtime ikut tiap loadDashboard)
     }
   }
