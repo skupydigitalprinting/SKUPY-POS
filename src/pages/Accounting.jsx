@@ -16,7 +16,6 @@ const TABS = [
   { id: 'ringkasan', label: 'Ringkasan', icon: Scale },
   { id: 'jurnal', label: 'Jurnal', icon: BookOpen },
   { id: 'pengeluaran', label: 'Pengeluaran', icon: Receipt },
-  { id: 'pembelian', label: 'Pembelian', icon: ShoppingCart },
   { id: 'supplier', label: 'Supplier', icon: UsersIcon },
   { id: 'hsupplier', label: 'Hutang Supplier', icon: Truck },
   { id: 'hbank', label: 'Hutang Bank', icon: Building2 },
@@ -924,7 +923,6 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
         <TabButton id="ringkasan" tab={tab} setTab={setTab} />
         <TabButton id="jurnal" tab={tab} setTab={setTab} />
         <TabButton id="pengeluaran" tab={tab} setTab={setTab} />
-        <TabButton id="pembelian" tab={tab} setTab={setTab} />
         <TabDropdown label="Hutang" icon={CreditCard} items={NAV_HUTANG} tab={tab} setTab={setTab} />
         <TabButton id="aset" tab={tab} setTab={setTab} />
         <TabDropdown label="More" icon={MoreHorizontal} items={NAV_MORE} tab={tab} setTab={setTab} />
@@ -938,7 +936,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             className="w-full appearance-none px-3.5 py-3 rounded-xl text-sm font-bold"
             style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1.5px solid var(--accent)', fontFamily: 'Syne', boxShadow: '0 0 0 3px rgba(139,92,246,0.12)' }}>
             <optgroup label="Utama">
-              {['ringkasan', 'jurnal', 'pengeluaran', 'pembelian', 'aset'].map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
+              {['ringkasan', 'jurnal', 'pengeluaran', 'aset'].map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
             </optgroup>
             <optgroup label="Hutang">
               {NAV_HUTANG.map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
@@ -1412,7 +1410,6 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
-            <Card icon={ShoppingCart} label="Persediaan" value={fmt(d.persediaan)} color="#a78bfa" onClick={() => openDetail('persediaan', 'Persediaan', '#a78bfa')} />
             <Card icon={HandCoins} label="Piutang Karyawan" value={fmt(d.piutang_karyawan)} color="#22c55e" sub="Total sisa kasbon aktif" onClick={() => setTab('kasbon')} />
             <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual sewa berjalan" onClick={() => setTab('sewa')} />
           </div>
@@ -1429,7 +1426,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <Card icon={Wallet} label="Saldo (Kas & Bank)" value={fmt(saldoKasBank)} color={saldoKasBank >= 0 ? '#14b8a6' : '#ef4444'} sub="Klik → rincian saldo" onClick={() => openInfo('saldo')} />
             <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
             <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub="Sisa sewa belum jadi beban" onClick={() => setTab('sewa')} />
-            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Saldo+Piutang+Karyawan+Persediaan+Aset+Sewa" onClick={() => openInfo('totalaset')} />
+            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Saldo+Piutang+Karyawan+Aset+Sewa" onClick={() => openInfo('totalaset')} />
             <Card icon={Scale} label="Kekayaan Bersih" value={fmt(kekayaanBersih)} color="#10d98a" sub="Total Aset − Total Hutang" onClick={() => openInfo('kekayaan')} />
           </div>
           )}
