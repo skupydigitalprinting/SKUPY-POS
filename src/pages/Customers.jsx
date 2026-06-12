@@ -23,7 +23,8 @@ export default function Customers({
   const adminName = (id) => { const a = admins.find(x => x.id === id); return a?.name || a?.username || '' }
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all') // all | debt | lunas
-  const [picFilter, setPicFilter] = useState('all') // all | <adminId>
+  const [openPic, setOpenPic] = useState(null) // null = tampil grup PIC; '<id>'|'__none__' = buka grup tsb
+  const matchesPic = (c) => openPic == null ? true : openPic === '__none__' ? !c.ownerUserId : c.ownerUserId === openPic
   const [modalOpen, setModalOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
@@ -40,10 +41,26 @@ export default function Customers({
         filter === 'all' ? true :
         filter === 'debt' ? c.totalDebt > 0 :
         c.totalDebt === 0
-      const matchPic = picFilter === 'all' || c.ownerUserId === picFilter
-      return matchQ && matchFilter && matchPic
+      return matchQ && matchFilter && matchesPic(c)
     })
-  }, [customers, search, filter, picFilter])
+  }, [customers, search, filter, openPic])
+
+  // Grup per PIC (hanya saat tidak mencari). Hormati filter Hutang/Lunas.
+  const picGroups = useMemo(() => {
+    const m = new Map()
+    customers.forEach(c => {
+      if (filter === 'debt' && !(c.totalDebt > 0)) return
+      if (filter === 'lunas' && !(c.totalDebt === 0)) return
+      const key = c.ownerUserId || '__none__'
+      const name = c.ownerName || adminName(c.ownerUserId) || 'Tanpa PIC'
+      if (!m.has(key)) m.set(key, { key, name, list: [], belanja: 0, hutang: 0, debtors: 0 })
+      const g = m.get(key)
+      g.list.push(c); g.belanja += c.totalSpent; g.hutang += c.totalDebt; if (c.totalDebt > 0) g.debtors++
+    })
+    return [...m.values()].sort((a, b) => b.belanja - a.belanja)
+  }, [customers, filter, admins])
+  const openGroup = openPic != null ? picGroups.find(g => g.key === openPic) : null
+  const showGroups = !search && openPic == null
 
   const totalSpent = customers.reduce((s, c) => s + c.totalSpent, 0)
   const totalDebt = customers.reduce((s, c) => s + c.totalDebt, 0)
@@ -164,11 +181,12 @@ export default function Customers({
             ))}
           </div>
           {canManagePIC && (
-            <select value={picFilter} onChange={(e) => setPicFilter(e.target.value)}
+            <select value={openPic == null ? 'all' : openPic} onChange={(e) => setOpenPic(e.target.value === 'all' ? null : e.target.value)}
               className="px-3 py-2 rounded-xl text-xs font-semibold"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontFamily: 'Syne' }}>
-              <option value="all">Semua PIC</option>
+              <option value="all">Semua PIC (grup)</option>
               {admins.map(a => <option key={a.id} value={a.id}>{a.name || a.username}</option>)}
+              <option value="__none__">Tanpa PIC</option>
             </select>
           )}
         </div>
@@ -181,12 +199,48 @@ export default function Customers({
           </div>
         )}
 
-        {/* List */}
-        {filtered.length === 0 ? (
+        {/* Header saat satu grup PIC dibuka */}
+        {openGroup && !search && (
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
+            <button onClick={() => setOpenPic(null)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold btn-press" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontFamily: 'Syne' }}>← Semua PIC</button>
+            <span className="text-sm font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>PIC: {openGroup.name}</span>
+            <span className="text-[11px] px-2 py-0.5 rounded-lg" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }}>{openGroup.list.length} customer · Belanja {formatRupiahShort(openGroup.belanja)} · Hutang {formatRupiahShort(openGroup.hutang)}</span>
+          </div>
+        )}
+
+        {/* GRUP PER PIC (default, tanpa pencarian) */}
+        {showGroups ? (
+          picGroups.length === 0 ? (
+            <EmptyState icon={Users} title="Belum ada customer" description="Tambahkan customer pertama Anda untuk mulai melacak transaksi & hutang" action={<Button variant="primary" size="sm" onClick={openAdd}><Plus size={13} /> Tambah</Button>} />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {picGroups.map((g, idx) => (
+                <div key={g.key} onClick={() => setOpenPic(g.key)}
+                  className="rounded-2xl p-4 cursor-pointer hover:brightness-110 transition animate-fadeIn"
+                  style={{ background: 'var(--bg-card)', border: `1px solid ${g.hutang > 0 ? 'rgba(245,158,11,0.3)' : 'var(--border)'}`, animationDelay: `${idx * 30}ms` }}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold" style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>{(g.name || '?')[0].toUpperCase()}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{g.name}</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{g.list.length} customer{g.debtors > 0 ? ` · ${g.debtors} punya hutang` : ''}</p>
+                    </div>
+                    <Receipt size={16} style={{ color: 'var(--text-muted)' }} />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Customer</p><p className="text-sm font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{g.list.length}</p></div>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Belanja</p><p className="font-bold truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontSize: 'clamp(11px,3.2vw,13px)' }}>{formatRupiahShort(g.belanja)}</p></div>
+                    <div className="rounded-lg p-2 min-w-0" style={{ background: 'var(--bg-elevated)' }}><p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Hutang</p><p className="font-bold truncate" style={{ color: g.hutang > 0 ? 'var(--amber)' : 'var(--text-secondary)', fontFamily: 'Syne', fontSize: 'clamp(11px,3.2vw,13px)' }}>{formatRupiahShort(g.hutang)}</p></div>
+                  </div>
+                  <div className="mt-3 text-center text-[11px] font-semibold" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Klik untuk lihat daftar →</div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : filtered.length === 0 ? (
           <EmptyState
             icon={Users}
-            title="Belum ada customer"
-            description="Tambahkan customer pertama Anda untuk mulai melacak transaksi & hutang"
+            title="Tidak ada customer"
+            description={search ? 'Tidak ada yang cocok dengan pencarian.' : 'Belum ada customer pada PIC ini.'}
             action={<Button variant="primary" size="sm" onClick={openAdd}><Plus size={13} /> Tambah</Button>}
           />
         ) : (
