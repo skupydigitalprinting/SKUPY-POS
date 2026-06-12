@@ -232,6 +232,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   const [tab, setTab] = useState('ringkasan')
   const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading, from, to, allTime }
   const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail
+  const [balanceModal, setBalanceModal] = useState(null) // 'aset' | 'wealth' — rincian Neraca
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
   // Total pengeluaran (non-sewa) dari getOutflowTransactions — SAMA dengan total
   // di modal Rincian, supaya kartu Uang Keluar = jumlah baris rincian.
@@ -1380,8 +1381,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
             <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub="Sisa sewa belum jadi beban" onClick={() => setTab('sewa')} />
-            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Kas+Bank+Piutang+Karyawan+Persediaan+Aset+Sewa" />
-            <Card icon={Scale} label="Kekayaan Bersih" value={fmt(kekayaanBersih)} color="#10d98a" sub="Total Aset − Total Hutang" />
+            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Klik → rincian per komponen" onClick={() => setBalanceModal('aset')} />
+            <Card icon={Scale} label="Kekayaan Bersih" value={fmt(kekayaanBersih)} color="#10d98a" sub="Klik → rincian aset/hutang/modal" onClick={() => setBalanceModal('wealth')} />
           </div>
           )}
 
@@ -2905,6 +2906,59 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
               </div>
               <p className="text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>{isOutflow && detailSrc !== 'all' ? <>Total semua sumber: <b style={{ color: 'var(--text-primary)' }}>{fmt(detail.total)}</b>. </> : null}Total keseluruhan sama dengan angka di card. Tiap sumber dihitung sekali (anti double-count). Data terhapus/cancel tidak dihitung. Edit/Hapus langsung memperbarui dashboard.</p>
             </div>}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* ── RINCIAN NERACA: Total Aset / Kekayaan Bersih (klik → kelola sumbernya) ── */}
+      <Modal open={!!balanceModal} onClose={() => setBalanceModal(null)} mobileFull title={balanceModal === 'wealth' ? 'Rincian Kekayaan Bersih' : 'Rincian Total Aset'} size="lg">
+        {balanceModal && d && (() => {
+          const go = (target, isPage) => { setBalanceModal(null); if (isPage) setActivePage?.(target); else setTab(target) }
+          const Line = ({ label, value, color, onManage, manageLabel, note, negative }) => (
+            <div className="flex items-center justify-between gap-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{label}</div>
+                {note && <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{note}</div>}
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className="text-sm font-bold whitespace-nowrap" style={{ color: color || 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{negative ? '−' : ''}{fmt(value)}</span>
+                {onManage && <button onClick={onManage} className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold btn-press whitespace-nowrap" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.25)', fontFamily: 'Syne' }}>{manageLabel || 'Kelola'} →</button>}
+              </div>
+            </div>
+          )
+          if (balanceModal === 'aset') {
+            return (
+              <div>
+                <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Total Aset = Kas + Bank + Piutang Usaha + Piutang Karyawan + Persediaan + Aset Tetap + Sewa Dibayar Dimuka. Klik <b>Kelola</b> untuk mengedit/menghapus data sumbernya.</p>
+                <Line label="Kas (Tunai)" value={d.saldo_kas} onManage={() => { go('migrasi'); setMigKind?.('modal') }} manageLabel="Atur Saldo/Modal" note="Dari penjualan tunai, modal & saldo awal" />
+                <Line label="Bank (Transfer/QRIS)" value={d.saldo_rekening} onManage={() => { go('migrasi'); setMigKind?.('modal') }} manageLabel="Atur Saldo/Modal" note="Dari transfer & modal" />
+                <Line label="Piutang Usaha" value={d.piutang_aktif} color="#f59e0b" onManage={() => go('piutang', true)} manageLabel="Kelola Piutang" note="Sisa tagihan customer" />
+                <Line label="Piutang Karyawan" value={d.piutang_karyawan} color="#22c55e" onManage={() => go('kasbon')} manageLabel="Kelola Kasbon" note="Sisa kasbon karyawan" />
+                <Line label="Persediaan" value={d.persediaan} color="#a78bfa" onManage={() => go('pembelian')} manageLabel="Kelola Pembelian" note="Nilai pembelian bahan" />
+                <Line label="Aset Tetap (Nilai Buku)" value={asetTetap} color="#a78bfa" onManage={() => go('aset')} manageLabel="Kelola Aset" note="Setelah penyusutan — edit/hapus aset" />
+                <Line label="Sewa Dibayar Dimuka" value={rentAgg.dibayarDimuka} color="#a78bfa" onManage={() => go('sewa')} manageLabel="Kelola Sewa" note="Sisa sewa belum jadi beban — edit/hapus" />
+                <div className="flex items-center justify-between gap-3 py-3 mt-1" style={{ borderTop: '2px solid var(--border)' }}>
+                  <span className="text-sm font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>TOTAL ASET</span>
+                  <span className="text-base font-extrabold" style={{ color: '#3b82f6', fontVariantNumeric: 'tabular-nums' }}>{fmt(asetTotal)}</span>
+                </div>
+              </div>
+            )
+          }
+          // wealth
+          const labaDitahan = kekayaanBersih - Math.round(d.modal_disetor || 0)
+          return (
+            <div>
+              <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Kekayaan Bersih (Ekuitas) = Total Aset − Total Hutang = Modal Disetor + Laba Ditahan.</p>
+              <Line label="Total Aset" value={asetTotal} color="#3b82f6" onManage={() => setBalanceModal('aset')} manageLabel="Rincian Aset" />
+              <Line label="Hutang Supplier" value={d.hutang_supplier} color="#ef4444" negative onManage={() => go('hsupplier')} manageLabel="Kelola Hutang" />
+              <Line label="Hutang Bank" value={d.hutang_bank} color="#ef4444" negative onManage={() => go('hbank')} manageLabel="Kelola Hutang" />
+              <Line label="Modal Disetor" value={d.modal_disetor || 0} color="#10d98a" onManage={() => { go('migrasi'); setMigKind?.('modal') }} manageLabel="Kelola Modal" note="Setoran modal & pinjaman — edit/hapus" />
+              <Line label="Laba Ditahan" value={labaDitahan} color={labaDitahan >= 0 ? '#10d98a' : '#ef4444'} note="Otomatis dari akumulasi laba usaha (tidak diedit manual)" />
+              <div className="flex items-center justify-between gap-3 py-3 mt-1" style={{ borderTop: '2px solid var(--border)' }}>
+                <span className="text-sm font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>KEKAYAAN BERSIH</span>
+                <span className="text-base font-extrabold" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums' }}>{fmt(kekayaanBersih)}</span>
+              </div>
             </div>
           )
         })()}
