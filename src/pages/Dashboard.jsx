@@ -206,13 +206,11 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         .is('deleted_at', null).neq('order_status', 'dibatalkan')
         .gte('created_at', accFrom).lte('created_at', accTo + 'T23:59:59')
       if (alive && typeof count === 'number') setOmsetCount(count)
-      // PENGELUARAN = SAMA dengan modul Accounting → pakai pengeluaran_total dari
-      // RPC acc_dashboard (server-side, hitung semua tanpa batas baris). Ini yang
-      // dipakai untuk kartu/Laba supaya cocok dengan halaman Accounting.
-      // getOutflowTransactions hanya dipakai untuk rincian per-sumber (breakdown).
-      setPengeluaranAcc(toMoney(row?.pengeluaran_total) || 0)
+      // PENGELUARAN = total dari getOutflowTransactions (daftar rincian yang bisa
+      // diaudit baris per baris). Kartu = jumlah baris di modal detail, jadi
+      // SELALU cocok. Sumber yang sama dipakai di Accounting & Dashboard.
       const out = await acc.getOutflowTransactions(accFrom, accTo)
-      if (alive && out.ok) setPengBreakdown(sumBySource(out.rows))
+      if (alive && out.ok) { setPengeluaranAcc(out.total); setPengBreakdown(sumBySource(out.rows)) }
     }
     const start = () => { if (!id) id = setInterval(load, 60000) }
     const stop = () => { if (id) { clearInterval(id); id = null } }
@@ -243,8 +241,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       ])
       if (!alive) return
       const row = dRes?.data ? (Array.isArray(dRes.data) ? dRes.data[0] : dRes.data) : null
-      // Pengeluaran All Time = pengeluaran_total RPC (sama dgn Accounting), bukan out.total.
-      if (row) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: toMoney(row.pengeluaran_total) || 0 })
+      // Pengeluaran All Time = total getOutflowTransactions (sama dgn rincian).
+      if (row && out.ok) setAllTime({ omset: toMoney(row.penjualan) || 0, pengeluaran: out.total })
       if (out.ok) setPengBreakdownAll(sumBySource(out.rows))
     }
     load()
@@ -302,6 +300,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     setPengLoading(true)
     const r = await acc.getCardDetail('uang_keluar', accFrom, accTo)
     setPengRows(r.ok ? r.rows : []); setPengLoading(false)
+    if (r.ok) setPengeluaranAcc(r.total) // sinkronkan kartu Total Pengeluaran ke total rincian
   }
   // Rincian pengeluaran SEMUA WAKTU (untuk modal Rincian Laba Bersih).
   const loadPengRowsAll = async () => {
@@ -309,6 +308,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     const today = new Date().toLocaleDateString('en-CA')
     const r = await acc.getCardDetail('uang_keluar', '2000-01-01', today)
     setPengRowsAll(r.ok ? r.rows : []); setPengLoadingAll(false)
+    if (r.ok) setAllTime(a => a ? { ...a, pengeluaran: r.total } : a) // sinkronkan kartu All Time
   }
   // Setelah edit/hapus → refresh kedua daftar (periode + all-time) + card.
   const reloadAfterMutation = () => { loadPengRows(); if (labaModal) loadPengRowsAll(); setAccBump(b => b + 1) }
