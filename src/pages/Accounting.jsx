@@ -808,12 +808,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
   }
   // Total nilai buku aset aktif (untuk dashboard/neraca) — realtime dari data mentah.
   const asetTetap = useMemo(() => (assets || []).filter(a => a.status === 'active' || a.status === 'depleted' || a.status === 'broken').reduce((s, a) => s + calculateAssetBookValue(a).bookValue, 0), [assets])
-  // Total Aset = Kas + Bank + Piutang Usaha + Piutang Karyawan + Persediaan
+  // Total Aset = Saldo (Kas & Bank) + Piutang Usaha + Piutang Karyawan
   //              + Aset Tetap + Sewa Dibayar Dimuka. Satu sumber kebenaran
   //              dipakai di Card, Neraca, dan Export agar tidak divergen.
-  // PENTING: harus dideklarasikan SETELAH asetTetap & rentAgg (TDZ).
+  // Persediaan SENGAJA tidak ikut dijumlahkan (disembunyikan dari UI/Neraca);
+  // data persediaan tetap ada di DB. PENTING: dideklarasikan SETELAH asetTetap & rentAgg (TDZ).
   const asetTotal = useMemo(() => d
-    ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.piutang_karyawan || 0) + (d.persediaan || 0) + asetTetap + rentAgg.dibayarDimuka)
+    ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.piutang_karyawan || 0) + asetTetap + rentAgg.dibayarDimuka)
     : 0, [d, asetTetap, rentAgg])
   const kekayaanBersih = useMemo(() => asetTotal - totalHutang, [asetTotal, totalHutang])
   const saldoKasBank = useMemo(() => Math.round((d?.saldo_kas || 0) + (d?.saldo_rekening || 0)), [d])
@@ -843,7 +844,6 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
           ['Saldo (Kas & Bank)', saldoKasBank],
           ['Piutang Usaha', d.piutang_aktif || 0],
           ['Piutang Karyawan', d.piutang_karyawan || 0],
-          ['Persediaan', d.persediaan || 0],
           ['Aset Tetap (Nilai Buku)', asetTetap],
           ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka],
         ],
@@ -1438,7 +1438,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage } =
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Aset</div>
-                {[['Saldo (Kas & Bank)', saldoKasBank], ['Piutang Usaha', d.piutang_aktif], ['Piutang Karyawan', d.piutang_karyawan], ['Persediaan', d.persediaan], ['Aset Tetap', asetTetap], ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
+                {[['Saldo (Kas & Bank)', saldoKasBank], ['Piutang Usaha', d.piutang_aktif], ['Piutang Karyawan', d.piutang_karyawan], ['Aset Tetap', asetTetap], ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
                 <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(asetTotal)}</span></div>
               </div>
               <div>
