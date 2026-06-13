@@ -1,62 +1,88 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Menu, Clock, RotateCw, Settings as SettingsIcon, LogOut, BookOpen, ChevronDown, Plus, Check } from 'lucide-react'
 import { useToast } from './Toast'
 import Modal from './Modal'
 
 // ── Selector Book (multi-brand) di header ──
+// PENTING: dropdown & modal di-PORTAL ke document.body. <header> punya
+// backdrop-filter yang membuat elemen position:fixed/absolute "terkurung" di
+// dalam header (containing block) → popup terpotong & modal kepencet. Portal
+// ke body melepaskannya supaya selalu tampil paling depan & bisa diklik.
 function BookSelector({ books = [], activeBookId, onSelectBook, onAddBook, canManage }) {
   const [open, setOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [form, setForm] = useState({ name: '', brandName: '', prefix: '' })
   const [busy, setBusy] = useState(false)
+  const [pos, setPos] = useState({ top: 56, right: 12 })
+  const btnRef = useRef(null)
   const toast = useToast()
   const active = books.find(b => b.id === activeBookId)
   const label = active ? (active.name || active.brand_name) : 'Semua Book'
   if (!books || books.length === 0) return null // fitur Book belum aktif (migrasi belum jalan)
+
+  const toggle = () => {
+    if (open) { setOpen(false); return }
+    const r = btnRef.current?.getBoundingClientRect()
+    if (r) setPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) })
+    setOpen(true)
+  }
   const submit = async () => {
-    if (!form.name.trim()) { toast.error('Nama book wajib'); return }
+    const name = (form.name || '').trim()
+    if (!name) { toast.error('Nama book wajib'); return }
     setBusy(true)
-    const r = await onAddBook?.({ name: form.name, brandName: form.brandName || form.name, prefix: form.prefix })
+    const r = await onAddBook?.({ name, brandName: (form.brandName || '').trim() || name, prefix: (form.prefix || '').trim() })
     setBusy(false)
     if (r?.ok) { toast.success('Book ditambahkan'); setForm({ name: '', brandName: '', prefix: '' }); setAddOpen(false); onSelectBook?.(r.data?.id || null) }
-    else toast.error(r?.error || 'Gagal')
+    else toast.error(r?.error || 'Gagal menambah book')
   }
+
   return (
-    <div className="relative">
-      <button onClick={() => setOpen(o => !o)} onBlur={() => setTimeout(() => setOpen(false), 160)}
+    <>
+      <button ref={btnRef} onClick={toggle}
         className="flex items-center gap-1.5 rounded-xl px-2.5 h-9 btn-press"
         style={{ background: 'var(--bg-card)', border: '1px solid rgba(139,92,246,0.3)', color: 'var(--text-secondary)' }}>
         <BookOpen size={14} style={{ color: 'var(--accent-light)' }} />
         <span className="text-xs font-bold max-w-[90px] truncate" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>{label}</span>
         <ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-1 rounded-xl py-1 z-50" style={{ minWidth: 180, maxHeight: 280, overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
-          <button onMouseDown={e => { e.preventDefault(); onSelectBook?.(null); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
-            Semua Book {!activeBookId && <Check size={13} style={{ color: '#10d98a' }} />}
-          </button>
-          {books.filter(b => b.is_active !== false).map(b => (
-            <button key={b.id} onMouseDown={e => { e.preventDefault(); onSelectBook?.(b.id); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
-              <span className="truncate">{b.name || b.brand_name}{b.prefix ? ` · ${b.prefix}` : ''}</span>
-              {activeBookId === b.id && <Check size={13} style={{ color: '#10d98a' }} />}
+
+      {open && createPortal(
+        <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99998 }}>
+          <div onClick={e => e.stopPropagation()}
+            className="rounded-xl py-1"
+            style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 99999, minWidth: 190, maxHeight: '60vh', overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 40px rgba(0,0,0,0.6)' }}>
+            <button onClick={() => { onSelectBook?.(null); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
+              Semua Book {!activeBookId && <Check size={13} style={{ color: '#10d98a' }} />}
             </button>
-          ))}
-          {canManage && (
-            <button onMouseDown={e => { e.preventDefault(); setOpen(false); setAddOpen(true) }} className="w-full text-left px-3 py-2 text-sm font-semibold flex items-center gap-1.5" style={{ color: 'var(--accent-light)', borderTop: '1px solid var(--border)' }}>
-              <Plus size={13} /> Tambah Book
-            </button>
-          )}
-        </div>
+            {books.filter(b => b.is_active !== false).map(b => (
+              <button key={b.id} onClick={() => { onSelectBook?.(b.id); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
+                <span className="truncate">{b.name || b.brand_name}{b.prefix ? ` · ${b.prefix}` : ''}</span>
+                {activeBookId === b.id && <Check size={13} style={{ color: '#10d98a' }} />}
+              </button>
+            ))}
+            {canManage && (
+              <button onClick={() => { setOpen(false); setAddOpen(true) }} className="w-full text-left px-3 py-2 text-sm font-semibold flex items-center gap-1.5" style={{ color: 'var(--accent-light)', borderTop: '1px solid var(--border)' }}>
+                <Plus size={13} /> Tambah Book
+              </button>
+            )}
+          </div>
+        </div>,
+        document.body
       )}
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Tambah Book Baru" size="sm">
-        <div className="space-y-3">
-          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Book *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Contoh: THEWA" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
-          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Brand</label><input value={form.brandName} onChange={e => setForm(f => ({ ...f, brandName: e.target.value }))} placeholder="Default = nama book" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
-          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Prefix Invoice (opsional)</label><input value={form.prefix} onChange={e => setForm(f => ({ ...f, prefix: e.target.value.toUpperCase() }))} placeholder="Contoh: THW" maxLength={5} className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
-          <button onClick={submit} disabled={busy} className="w-full py-2.5 rounded-xl text-sm font-bold btn-press" style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>{busy ? 'Menyimpan…' : 'Simpan Book'}</button>
-        </div>
-      </Modal>
-    </div>
+
+      {addOpen && createPortal(
+        <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Tambah Book Baru" size="sm" zIndex={100000}>
+          <div className="space-y-3">
+            <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Book *</label><input autoFocus value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Contoh: THEWA" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+            <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Brand</label><input value={form.brandName} onChange={e => setForm(f => ({ ...f, brandName: e.target.value }))} placeholder="Default = nama book" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+            <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Prefix Invoice (opsional)</label><input value={form.prefix} onChange={e => setForm(f => ({ ...f, prefix: e.target.value.toUpperCase() }))} placeholder="Contoh: THW" maxLength={5} className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+            <button onClick={submit} disabled={busy} className="w-full py-2.5 rounded-xl text-sm font-bold btn-press" style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>{busy ? 'Menyimpan…' : 'Simpan Book'}</button>
+          </div>
+        </Modal>,
+        document.body
+      )}
+    </>
   )
 }
 
