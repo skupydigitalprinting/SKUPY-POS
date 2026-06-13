@@ -1,6 +1,64 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Menu, Clock, RotateCw, Settings as SettingsIcon, LogOut } from 'lucide-react'
+import { Menu, Clock, RotateCw, Settings as SettingsIcon, LogOut, BookOpen, ChevronDown, Plus, Check } from 'lucide-react'
 import { useToast } from './Toast'
+import Modal from './Modal'
+
+// ── Selector Book (multi-brand) di header ──
+function BookSelector({ books = [], activeBookId, onSelectBook, onAddBook, canManage }) {
+  const [open, setOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [form, setForm] = useState({ name: '', brandName: '', prefix: '' })
+  const [busy, setBusy] = useState(false)
+  const toast = useToast()
+  const active = books.find(b => b.id === activeBookId)
+  const label = active ? (active.name || active.brand_name) : 'Semua Book'
+  if (!books || books.length === 0) return null // fitur Book belum aktif (migrasi belum jalan)
+  const submit = async () => {
+    if (!form.name.trim()) { toast.error('Nama book wajib'); return }
+    setBusy(true)
+    const r = await onAddBook?.({ name: form.name, brandName: form.brandName || form.name, prefix: form.prefix })
+    setBusy(false)
+    if (r?.ok) { toast.success('Book ditambahkan'); setForm({ name: '', brandName: '', prefix: '' }); setAddOpen(false); onSelectBook?.(r.data?.id || null) }
+    else toast.error(r?.error || 'Gagal')
+  }
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)} onBlur={() => setTimeout(() => setOpen(false), 160)}
+        className="flex items-center gap-1.5 rounded-xl px-2.5 h-9 btn-press"
+        style={{ background: 'var(--bg-card)', border: '1px solid rgba(139,92,246,0.3)', color: 'var(--text-secondary)' }}>
+        <BookOpen size={14} style={{ color: 'var(--accent-light)' }} />
+        <span className="text-xs font-bold max-w-[90px] truncate" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>{label}</span>
+        <ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 rounded-xl py-1 z-50" style={{ minWidth: 180, maxHeight: 280, overflowY: 'auto', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: '0 14px 36px rgba(0,0,0,0.55)' }}>
+          <button onMouseDown={e => { e.preventDefault(); onSelectBook?.(null); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
+            Semua Book {!activeBookId && <Check size={13} style={{ color: '#10d98a' }} />}
+          </button>
+          {books.filter(b => b.is_active !== false).map(b => (
+            <button key={b.id} onMouseDown={e => { e.preventDefault(); onSelectBook?.(b.id); setOpen(false) }} className="w-full text-left px-3 py-2 text-sm flex items-center justify-between" style={{ color: 'var(--text-primary)' }}>
+              <span className="truncate">{b.name || b.brand_name}{b.prefix ? ` · ${b.prefix}` : ''}</span>
+              {activeBookId === b.id && <Check size={13} style={{ color: '#10d98a' }} />}
+            </button>
+          ))}
+          {canManage && (
+            <button onMouseDown={e => { e.preventDefault(); setOpen(false); setAddOpen(true) }} className="w-full text-left px-3 py-2 text-sm font-semibold flex items-center gap-1.5" style={{ color: 'var(--accent-light)', borderTop: '1px solid var(--border)' }}>
+              <Plus size={13} /> Tambah Book
+            </button>
+          )}
+        </div>
+      )}
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Tambah Book Baru" size="sm">
+        <div className="space-y-3">
+          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Book *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Contoh: THEWA" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Nama Brand</label><input value={form.brandName} onChange={e => setForm(f => ({ ...f, brandName: e.target.value }))} placeholder="Default = nama book" className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+          <div><label className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Prefix Invoice (opsional)</label><input value={form.prefix} onChange={e => setForm(f => ({ ...f, prefix: e.target.value.toUpperCase() }))} placeholder="Contoh: THW" maxLength={5} className="w-full mt-1 px-3 py-2 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} /></div>
+          <button onClick={submit} disabled={busy} className="w-full py-2.5 rounded-xl text-sm font-bold btn-press" style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>{busy ? 'Menyimpan…' : 'Simpan Book'}</button>
+        </div>
+      </Modal>
+    </div>
+  )
+}
 
 const PAGE_TITLES = {
   dashboard: { title: 'Dashboard', sub: 'Statistik & ringkasan toko' },
@@ -18,6 +76,7 @@ export default function Header({
   onOpenSettings,
   onLogout,
   onRefresh, // optional override; defaults to a no-op
+  books, activeBookId, onSelectBook, onAddBook, // ── Book (multi-brand) ──
 }) {
   const meta = PAGE_TITLES[activePage] || PAGE_TITLES.dashboard
   const isOwner = currentUser?.role === 'owner'
@@ -114,8 +173,11 @@ export default function Header({
         </div>
       </div>
 
-      {/* Right — [Refresh] [Clock] [Admin] */}
+      {/* Right — [Book] [Refresh] [Clock] [Admin] */}
       <div className="flex items-center gap-2 flex-shrink-0">
+
+        {/* Book selector (multi-brand) — hanya tampil bila fitur Book aktif */}
+        <BookSelector books={books} activeBookId={activeBookId} onSelectBook={onSelectBook} onAddBook={onAddBook} canManage={isOwner} />
 
         {/* Refresh button — premium neon purple */}
         <button

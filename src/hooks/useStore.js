@@ -217,6 +217,21 @@ export function useStore() {
   const [debts, setDebts] = useState([])
   const [debtPayments, setDebtPayments] = useState([])
   const [currentUser, setCurrentUser] = useState(() => loadSession())
+  // ── BOOK (multi-brand) ──
+  // activeBookId null = "Semua Book" (perilaku lama, tanpa filter). Memilih book
+  // tertentu menyaring data PENJUALAN (transactions/customers/debts/debt_payments).
+  const [books, setBooks] = useState([])
+  const [activeBookId, setActiveBookId] = useState(() => {
+    try { return localStorage.getItem('skupy_active_book') || null } catch { return null }
+  })
+  const defaultBookId = useMemo(() => {
+    const def = (books || []).find(b => b.is_default && !b.deleted_at)
+    return def?.id || (books[0] && books[0].id) || null
+  }, [books])
+  // Filter query Supabase berdasarkan book aktif (no-op bila "Semua Book").
+  const applyBook = (q) => (activeBookId ? q.eq('book_id', activeBookId) : q)
+  // book_id untuk WRITE (transaksi/customer baru) — book aktif atau default.
+  const writeBookId = activeBookId || defaultBookId
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -269,13 +284,18 @@ export function useStore() {
         // bikin statement timeout saat boot. Kolom ringan dulu → app cepat
         // hidup, gambar di-hydrate di latar belakang (lihat bawah).
         supabase.from('products').select(PRODUCT_LIGHT_COLS).order('created_at', { ascending: false }).limit(500),
-        // Limit transactions + debts agar query selalu cepat
-        supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT),
-        supabase.from('customers').select('*').order('created_at', { ascending: false }),
-        supabase.from('debts').select('*').order('created_at', { ascending: false }).limit(DEBT_LIMIT),
+        // Limit transactions + debts agar query selalu cepat. Difilter book aktif.
+        applyBook(supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT)),
+        applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false })),
+        applyBook(supabase.from('debts').select('*').order('created_at', { ascending: false }).limit(DEBT_LIMIT)),
         // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
-        supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id').order('paid_at', { ascending: false }).limit(2000),
+        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id').order('paid_at', { ascending: false }).limit(2000)),
       ])
+      // Daftar book (defensif: jika tabel belum ada / migrasi belum jalan, abaikan).
+      try {
+        const bk = await supabase.from('books').select('*').is('deleted_at', null).order('created_at', { ascending: true })
+        if (!bk.error && mounted.current) setBooks(bk.data || [])
+      } catch { /* tabel books belum ada — fitur Book nonaktif sampai migrasi dijalankan */ }
       for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
       if (!mounted.current) return
       setStoreInfo(settingsFromDB(s.data) || {
@@ -320,39 +340,79 @@ export function useStore() {
 
   useEffect(() => { refreshAll() }, [refreshAll])
 
-  // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
-  const refreshCustomers = useCallback(async () => {
-    const { data, error: e } = await supabase
-      .from('customers').select('*')
-      .order('created_at', { ascending: false })
-      .limit(1000)
-    if (!e && mounted.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
+  // Saat pindah book → muat ulang data penjualan (skip render awal).
+  const bookInit = useRef(true)
+  useEffect(() => {
+    if (bookInit.current) { bookInit.current = false; return }
+    refreshTransactions(); refreshCustomers(); refreshDebts(); refreshDebtPayments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBookId])
+
+  // Ganti book aktif (null = Semua Book). Persist pilihan.
+  const setActiveBook = useCallback((id) => {
+    try { if (id) localStorage.setItem('skupy_active_book', id); else localStorage.removeItem('skupy_active_book') } catch { /* ignore */ }
+    setActiveBookId(id || null)
   }, [])
 
+  // Tambah book baru (brand). Owner only (enforce di UI).
+  const addBook = useCallback(async (data) => {
+    const name = (data.name || '').trim()
+    if (!name) return { ok: false, error: 'Nama book wajib diisi' }
+    const { data: row, error: e } = await supabase.from('books').insert({
+      name, brand_name: (data.brandName || name).trim(), prefix: (data.prefix || '').trim().toUpperCase() || null,
+      logo_url: data.logoUrl || null, description: data.description || '', is_active: data.isActive !== false, is_default: false,
+    }).select('*').single()
+    if (e) return { ok: false, error: e.message }
+    if (mounted.current) setBooks(prev => [...prev, row])
+    return { ok: true, data: row }
+  }, [])
+  const updateBook = useCallback(async (id, data) => {
+    const patch = { updated_at: new Date().toISOString() }
+    if (data.name !== undefined) patch.name = data.name
+    if (data.brandName !== undefined) patch.brand_name = data.brandName
+    if (data.prefix !== undefined) patch.prefix = (data.prefix || '').trim().toUpperCase() || null
+    if (data.logoUrl !== undefined) patch.logo_url = data.logoUrl || null
+    if (data.description !== undefined) patch.description = data.description
+    if (data.isActive !== undefined) patch.is_active = data.isActive
+    const { data: row, error: e } = await supabase.from('books').update(patch).eq('id', id).select('*').single()
+    if (e) return { ok: false, error: e.message }
+    if (mounted.current) setBooks(prev => prev.map(b => b.id === id ? row : b))
+    return { ok: true }
+  }, [])
+
+  // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
+  const refreshCustomers = useCallback(async () => {
+    const { data, error: e } = await applyBook(supabase
+      .from('customers').select('*')
+      .order('created_at', { ascending: false })
+      .limit(1000))
+    if (!e && mounted.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
+  }, [activeBookId])
+
   const refreshDebtPayments = useCallback(async () => {
-    const { data, error: e } = await supabase
+    const { data, error: e } = await applyBook(supabase
       .from('debt_payments')
       .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id')
       .order('paid_at', { ascending: false })
-      .limit(2000)
+      .limit(2000))
     if (!e && mounted.current) setDebtPayments(data || [])
-  }, [])
+  }, [activeBookId])
 
   const refreshDebts = useCallback(async () => {
-    const { data, error: e } = await supabase
+    const { data, error: e } = await applyBook(supabase
       .from('debts').select('*')
       .order('created_at', { ascending: false })
-      .limit(500)
+      .limit(500))
     if (!e && mounted.current) setDebts((data || []).map(debtFromDB))
-  }, [])
+  }, [activeBookId])
 
   const refreshTransactions = useCallback(async () => {
-    const { data, error: e } = await supabase
+    const { data, error: e } = await applyBook(supabase
       .from('transactions').select('*')
       .order('created_at', { ascending: false })
-      .limit(500)
+      .limit(500))
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
-  }, [])
+  }, [activeBookId])
 
   // Recompute denormalized customer summary (dipakai banyak fungsi).
   // PENTING: dideklarasikan AWAL agar tersedia di dependency array fungsi-fungsi
@@ -637,10 +697,16 @@ export function useStore() {
       payload.owner_username = a?.username || currentUser?.username || ''
       payload.owner_name = a?.name || a?.username || currentUser?.name || ''
     }
+    if (writeBookId) payload.book_id = writeBookId
     let { data: row, error: e } = await supabase.from('customers').insert(payload).select().single()
-    if (e && /(created_by|owner_user_id|does not exist|schema cache)/i.test(e.message || '')) {
+    if (e && /(created_by|owner_user_id|book_id|does not exist|schema cache)/i.test(e.message || '')) {
       const base = customerToDB(data)
+      if (writeBookId) { try { base.book_id = writeBookId } catch { /* */ } }
       ;({ data: row, error: e } = await supabase.from('customers').insert(base).select().single())
+      if (e && /book_id/i.test(e.message || '')) {
+        delete base.book_id
+        ;({ data: row, error: e } = await supabase.from('customers').insert(base).select().single())
+      }
     }
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setCustomers(prev => [customerFromDB(row), ...prev])
@@ -927,8 +993,12 @@ export function useStore() {
     const mi = String(d.getMinutes()).padStart(2, '0')
     const ss = String(d.getSeconds()).padStart(2, '0')
     const rand = String(Math.floor(Math.random() * 1000)).padStart(3, '0')
-    return `INV-${y}${mo}${da}-${hh}${mi}${ss}-${rand}`
-  }, [])
+    // Prefix per book (opsional), mis. SKP-INV-... / THW-INV-... → unik antar book.
+    const bk = (books || []).find(b => b.id === writeBookId)
+    const pre = (bk?.prefix || '').trim().toUpperCase()
+    const head = pre ? `${pre}-INV` : 'INV'
+    return `${head}-${y}${mo}${da}-${hh}${mi}${ss}-${rand}`
+  }, [books, activeBookId, defaultBookId])
 
   const generateOrderNumber = useCallback(() => {
     const d = new Date()
@@ -1003,6 +1073,8 @@ export function useStore() {
           statusHistory,
           orderStatus: trx.orderStatus || 'menunggu',
         })
+        // Tag book aktif (defensif: hanya bila ada book & kolomnya ada).
+        if (writeBookId) payload.book_id = writeBookId
         // eslint-disable-next-line no-console
         console.log(`[useStore] Inserting transaction (attempt ${attempt}/${MAX_ATTEMPTS}):`, invoiceNo)
         let res = await supabase.from('transactions').insert(payload).select().single()
@@ -1022,6 +1094,10 @@ export function useStore() {
         if (res.error && (isSchemaCacheError(res.error, 'owner_user_id') || isSchemaCacheError(res.error, 'owner_name'))) {
           res = await supabase
             .from('transactions').insert(omit(payload, ['owner_user_id', 'owner_name'])).select().single()
+        }
+        // Fallback bila kolom book_id belum ada (migrasi Book belum dijalankan).
+        if (res.error && isSchemaCacheError(res.error, 'book_id')) {
+          res = await supabase.from('transactions').insert(omit(payload, ['book_id'])).select().single()
         }
         row = res.data
         e = res.error
@@ -1081,7 +1157,11 @@ export function useStore() {
           status: remainingAmt <= 0 ? 'lunas' : 'aktif',
           notes: trx.notes || '',
         }
-        const { error: debtErr } = await supabase.from('debts').insert(debtPayload)
+        if (writeBookId) debtPayload.book_id = writeBookId
+        let { error: debtErr } = await supabase.from('debts').insert(debtPayload)
+        if (debtErr && isSchemaCacheError(debtErr, 'book_id')) {
+          ;({ error: debtErr } = await supabase.from('debts').insert(omit(debtPayload, ['book_id'])))
+        }
         if (debtErr) {
           // eslint-disable-next-line no-console
           console.error('[useStore] Gagal membuat hutang:', debtErr, debtPayload)
@@ -1825,6 +1905,7 @@ export function useStore() {
     loading, busy, error,
     products, transactions, storeInfo, stats,
     admins, currentUser, customers, debts, debtPayments,
+    books, activeBookId, defaultBookId, setActiveBook, addBook, updateBook,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct, setProductFavorite,

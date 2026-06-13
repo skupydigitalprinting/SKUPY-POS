@@ -359,6 +359,10 @@ function AppShell() {
           onOpenSettings={isOwner ? () => setSettingsOpen(true) : undefined}
           onLogout={store.logout}
           onRefresh={store.refreshAll}
+          books={store.books}
+          activeBookId={store.activeBookId}
+          onSelectBook={store.setActiveBook}
+          onAddBook={store.addBook}
         />
         <div
           className="flex-1 overflow-hidden flex flex-col"
