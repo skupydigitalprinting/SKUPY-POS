@@ -20,6 +20,7 @@ const Order = lazy(() => import('./pages/Order'))
 const Customers = lazy(() => import('./pages/Customers'))
 const Piutang = lazy(() => import('./pages/Piutang'))
 const Accounting = lazy(() => import('./pages/Accounting'))
+const Credibook = lazy(() => import('./pages/Credibook'))
 const Settings = lazy(() => import('./components/Settings'))
 
 function PageLoader() {
@@ -191,14 +192,14 @@ function AppShell() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  // Dashboard & Accounting: hanya Owner & Staff Admin. Kasir diblok.
-  const GATED = { dashboard: canSeeDashboard, accounting: canSeeDashboard }
+  // Dashboard, Accounting & Credibook: hanya Owner & Staff Admin. Kasir diblok.
+  const GATED = { dashboard: canSeeDashboard, accounting: canSeeDashboard, credibook: canSeeDashboard }
 
   // Wrap setActivePage: kalau Staff Kasir mencoba membuka halaman tergated,
   // tampilkan toast dan redirect ke 'kasir'. Tidak ada akses tersembunyi.
   const setActivePage = (next) => {
     if (next in GATED && !GATED[next]) {
-      toast.warning(`${next === 'accounting' ? 'Accounting' : 'Dashboard'} hanya untuk Owner & Staff Admin`)
+      toast.warning(`${next === 'accounting' ? 'Accounting' : next === 'credibook' ? 'Credibook' : 'Dashboard'} hanya untuk Owner & Staff Admin`)
       setActivePageRaw('kasir')
       return
     }
@@ -208,7 +209,7 @@ function AppShell() {
   // Saat role berubah (mis. login ulang sebagai Staff Kasir), jangan nyangkut
   // di halaman tergated.
   useEffect(() => {
-    if ((activePage === 'dashboard' || activePage === 'accounting') && !canSeeDashboard) {
+    if ((activePage === 'dashboard' || activePage === 'accounting' || activePage === 'credibook') && !canSeeDashboard) {
       setActivePageRaw('kasir')
     }
   }, [canSeeDashboard, activePage])
@@ -316,6 +317,16 @@ function AppShell() {
       reassignReceivableCustomer={store.reassignReceivableCustomer}
       getReceivableCustomerChanges={store.getReceivableCustomerChanges}
     />,
+    // Credibook (owner/staff admin saja) — pemasukkan manual + shortcut pengeluaran.
+    credibook: canSeeDashboard
+      ? <Credibook
+          currentUser={store.currentUser}
+          activeBookId={store.activeBookId}
+          defaultBookId={store.defaultBookId}
+          books={store.books}
+          setActivePage={setActivePage}
+        />
+      : <AccessDenied />,
     // Accounting (owner/staff admin saja) — lazy, owner-gated di setActivePage.
     accounting: canSeeDashboard
       ? <Accounting

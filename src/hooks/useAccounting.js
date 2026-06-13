@@ -793,6 +793,54 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── CREDIBOOK: Pemasukkan Manual (non-penjualan) ──
+  const listCredibookIncome = useCallback(async ({ bookId, from, to } = {}) => {
+    let q = supabase.from('credibook_income').select('*').is('deleted_at', null)
+    if (bookId) q = q.eq('book_id', bookId)
+    if (from) q = q.gte('transaction_date', from)
+    if (to) q = q.lte('transaction_date', to)
+    const { data, error } = await q.order('transaction_date', { ascending: false }).limit(1000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+  const addCredibookIncome = useCallback(async (p) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!(p.name || '').trim()) return { ok: false, error: 'Nama pemasukkan wajib diisi' }
+    if (!(amt > 0)) return { ok: false, error: 'Nominal harus lebih dari 0' }
+    const row = {
+      name: p.name.trim(), transaction_date: p.date || null, amount: amt,
+      payment_method: p.method || 'transfer', note: p.note || '',
+      created_by: p.createdBy || null, created_by_name: p.createdByName || '',
+    }
+    if (p.bookId) row.book_id = p.bookId
+    let { error } = await supabase.from('credibook_income').insert(row)
+    if (error && /book_id/i.test(error.message || '')) { delete row.book_id; ({ error } = await supabase.from('credibook_income').insert(row)) }
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const updateCredibookIncome = useCallback(async (id, p) => {
+    const patch = { updated_at: new Date().toISOString() }
+    if (p.name !== undefined) patch.name = p.name
+    if (p.date !== undefined) patch.transaction_date = p.date
+    if (p.amount !== undefined) patch.amount = Math.round(Number(p.amount) || 0)
+    if (p.method !== undefined) patch.payment_method = p.method
+    if (p.note !== undefined) patch.note = p.note
+    const { error } = await supabase.from('credibook_income').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteCredibookIncome = useCallback(async (id) => {
+    const { error } = await supabase.from('credibook_income').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // Total pengeluaran (expenses) dalam rentang — untuk mini-dashboard Credibook.
+  const sumExpensesRange = useCallback(async (from, to) => {
+    let q = supabase.from('expenses').select('amount').is('deleted_at', null)
+    if (from) q = q.gte('expense_date', from)
+    if (to) q = q.lte('expense_date', to)
+    const { data, error } = await q.limit(5000)
+    if (error) return 0
+    return (data || []).reduce((s, x) => s + Math.round(Number(x.amount) || 0), 0)
+  }, [])
+
   // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
   const fetchEntriesForExport = useCallback(async (from, to) => {
     const { data, error } = await supabase.from('accounting_entries')
@@ -1171,6 +1219,7 @@ export function useAccounting() {
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
+    listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange,
     listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
