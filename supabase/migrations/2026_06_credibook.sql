@@ -1,12 +1,11 @@
 -- =====================================================================
--- Skupy POS — CREDIBOOK: Pemasukkan Manual (non-penjualan)
+-- Skupy POS — CREDIBOOK: Pemasukkan Manual (pendapatan usaha non-kasir → IKUT OMSET)
 -- =====================================================================
--- Pemasukkan manual (modal tambahan, refund masuk, pendapatan luar kasir).
+-- Pemasukkan manual = PENDAPATAN USAHA non-kasir (penjualan offline/marketplace/WA, jasa).
 --   • Tabel credibook_income (book_id → per brand).
---   • MASUK ke: Uang Masuk, Saldo (Kas & Bank), Arus Kas, Total Aset,
---     Kekayaan Bersih.
---   • TIDAK masuk ke: Omset/Penjualan, Invoice, Order, Piutang, Profit Bruto,
---     Modal Barang.
+--   • MASUK ke: OMSET/Penjualan, Uang Masuk, Saldo (Kas & Bank), Arus Kas,
+--     Total Aset, Kekayaan Bersih.
+--   • TIDAK membuat: Invoice, Order, Piutang, Customer.
 --   • Pengeluaran Credibook memakai modul Pengeluaran (expenses) yang sudah ada.
 -- Additive + idempotent. Tidak mengubah rumus laba/omset. Jalankan paling akhir.
 -- =====================================================================
@@ -45,7 +44,7 @@ EXCEPTION WHEN undefined_table THEN NULL;
 END $do$;
 
 -- ───── acc_dashboard: ikutkan pemasukkan manual ke uang masuk & saldo ─────
--- (Berbasis versi saldo_kasbank_breakdown + credibook). cbi tidak masuk omset.
+-- (Berbasis versi saldo_kasbank_breakdown + credibook). cbi IKUT omset (penjualan).
 CREATE OR REPLACE FUNCTION public.acc_dashboard(p_from date, p_to date)
 RETURNS json LANGUAGE sql STABLE AS $$
   WITH cic_all AS (
@@ -100,7 +99,9 @@ RETURNS json LANGUAGE sql STABLE AS $$
       (SELECT COALESCE(sum(round(amount)),0) FROM exp WHERE method='qris' AND expense_date <= p_to) + (SELECT COALESCE(sum(round(amount)),0) FROM pur WHERE method='qris' AND COALESCE(is_credit,false)=false AND purchase_date <= p_to) + (SELECT COALESCE(sum(round(amount)),0) FROM sdpall WHERE method='qris') + (SELECT COALESCE(sum(round(amount)),0) FROM blpall WHERE method='qris') + (SELECT COALESCE(sum(round(amount)),0) FROM oeall WHERE method='qris') + (SELECT COALESCE(sum(round(total_amount)),0) FROM prall WHERE payment_method='qris') AS keluar_qris
   )
   SELECT json_build_object(
-    'penjualan',        (SELECT COALESCE(sum(total),0) FROM txp) + (SELECT COALESCE(sum(round(amount)),0) FROM oi),
+    -- Omset = invoice kasir + migrasi omset lama + PEMASUKKAN CREDIBOOK (pendapatan usaha non-kasir)
+    'penjualan',        (SELECT COALESCE(sum(total),0) FROM txp) + (SELECT COALESCE(sum(round(amount)),0) FROM oi)
+                        + (SELECT COALESCE(sum(round(amount)),0) FROM cbi),
     'uang_masuk_total', (SELECT COALESCE(sum(init_paid),0) FROM txp) + (SELECT COALESCE(sum(round(amount)),0) FROM dpp)
                         + (SELECT COALESCE(sum(round(amount)),0) FROM ecp) + (SELECT COALESCE(sum(round(amount)),0) FROM oi)
                         + (SELECT COALESCE(sum(round(amount)),0) FROM cbi),

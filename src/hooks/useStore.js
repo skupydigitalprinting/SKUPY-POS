@@ -216,6 +216,8 @@ export function useStore() {
   const [customers, setCustomers] = useState([])
   const [debts, setDebts] = useState([])
   const [debtPayments, setDebtPayments] = useState([])
+  // Pemasukkan Credibook (pendapatan usaha non-kasir) — book-scoped, masuk Omset.
+  const [credibookIncome, setCredibookIncome] = useState([])
   const [currentUser, setCurrentUser] = useState(() => loadSession())
   // ── BOOK (multi-brand) ──
   // activeBookId null = "Semua Book" (perilaku lama, tanpa filter). Memilih book
@@ -296,6 +298,13 @@ export function useStore() {
         const bk = await supabase.from('books').select('*').is('deleted_at', null).order('created_at', { ascending: true })
         if (!bk.error && mounted.current) setBooks(bk.data || [])
       } catch { /* tabel books belum ada — fitur Book nonaktif sampai migrasi dijalankan */ }
+      // Pemasukkan Credibook (book-scoped) — masuk Omset di dashboard. Defensif.
+      try {
+        const cb = await applyBook(supabase.from('credibook_income')
+          .select('id, name, transaction_date, amount, payment_method, note, book_id')
+          .is('deleted_at', null).order('transaction_date', { ascending: false }).limit(2000))
+        if (!cb.error && mounted.current) setCredibookIncome(cb.data || [])
+      } catch { /* tabel credibook_income belum ada — abaikan */ }
       for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
       if (!mounted.current) return
       setStoreInfo(settingsFromDB(s.data) || {
@@ -344,7 +353,7 @@ export function useStore() {
   const bookInit = useRef(true)
   useEffect(() => {
     if (bookInit.current) { bookInit.current = false; return }
-    refreshTransactions(); refreshCustomers(); refreshDebts(); refreshDebtPayments()
+    refreshTransactions(); refreshCustomers(); refreshDebts(); refreshDebtPayments(); refreshCredibook()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBookId])
 
@@ -414,6 +423,19 @@ export function useStore() {
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
   }, [activeBookId])
 
+  // Pemasukkan Credibook — book-scoped. Defensif: jika tabel belum ada, kosongkan.
+  const refreshCredibook = useCallback(async () => {
+    try {
+      const { data, error: e } = await applyBook(supabase
+        .from('credibook_income')
+        .select('id, name, transaction_date, amount, payment_method, note, book_id')
+        .is('deleted_at', null)
+        .order('transaction_date', { ascending: false })
+        .limit(2000))
+      if (!e && mounted.current) setCredibookIncome(data || [])
+    } catch { /* tabel credibook_income belum ada — abaikan */ }
+  }, [activeBookId])
+
   // Recompute denormalized customer summary (dipakai banyak fungsi).
   // PENTING: dideklarasikan AWAL agar tersedia di dependency array fungsi-fungsi
   // yang memakainya (hindari TDZ "Cannot access ... before initialization").
@@ -471,6 +493,7 @@ export function useStore() {
       if (tables.includes('debts'))         refreshDebts()
       if (tables.includes('customers'))     refreshCustomers()
       if (tables.includes('debt_payments')) refreshDebtPayments()
+      if (tables.includes('credibook_income')) refreshCredibook()
       if (tables.includes('products')) {
         // Kolom ringan dulu (anti-timeout), lalu hydrate gambar di belakang.
         supabase.from('products').select(PRODUCT_LIGHT_COLS)
@@ -502,6 +525,8 @@ export function useStore() {
         () => schedule('debts'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'debt_payments' },
         () => schedule('debts', 'transactions', 'debt_payments'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'credibook_income' },
+        () => schedule('credibook_income'))
       .subscribe()
 
     return () => {
@@ -1821,9 +1846,17 @@ export function useStore() {
     // ('dibatalkan') yang dikecualikan; nota terhapus sudah lenyap dari data.
     // (BUKAN SUM(paid) dan BUKAN hanya status 'lunas'.)
     const notCanceled = (t) => (t.orderStatus || '') !== 'dibatalkan'
-    const totalOmzet = transactions.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
-    const todayOmzet = todayTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
-    const monthOmzet = monthTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0)
+    // Pemasukkan Credibook = pendapatan usaha non-kasir → IKUT Omset (book-scoped).
+    const cbAmt = (x) => Math.round(+x.amount || 0)
+    const cbDate = (x) => new Date(x.transaction_date)
+    const cbToday = credibookIncome.filter(x => cbDate(x).toDateString() === today)
+    const cbMonth = credibookIncome.filter(x => cbDate(x) >= monthStart)
+    const cbTotalSum = credibookIncome.reduce((s, x) => s + cbAmt(x), 0)
+    const cbTodaySum = cbToday.reduce((s, x) => s + cbAmt(x), 0)
+    const cbMonthSum = cbMonth.reduce((s, x) => s + cbAmt(x), 0)
+    const totalOmzet = transactions.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0) + cbTotalSum
+    const todayOmzet = todayTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0) + cbTodaySum
+    const monthOmzet = monthTrx.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0) + cbMonthSum
     const pendingCount = transactions.filter(t => t.status === 'pending').length
     const procesCount = transactions.filter(t => t.status === 'proses').length
     const todayOrders = todayTrx.length
@@ -1841,10 +1874,12 @@ export function useStore() {
       const d = new Date(); d.setDate(d.getDate() - (6 - i))
       const ds = d.toDateString()
       const dayTrx = transactions.filter(t => new Date(t.date).toDateString() === ds)
+      const dayCb = credibookIncome.filter(x => new Date(x.transaction_date).toDateString() === ds)
       return {
         day: d.toLocaleDateString('id-ID', { weekday: 'short' }),
         date: d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
-        omzet: dayTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0),
+        omzet: dayTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
+          + dayCb.reduce((s, x) => s + Math.round(+x.amount || 0), 0),
         transaksi: dayTrx.length,
       }
     })
@@ -1899,13 +1934,14 @@ export function useStore() {
       totalActiveDebt, totalPaidDebt, activeDebtsCount: activeDebts.length,
       topDebtors, topCustomers,
     }
-  }, [transactions, products, customers, debts])
+  }, [transactions, products, customers, debts, credibookIncome])
 
   return {
     loading, busy, error,
     products, transactions, storeInfo, stats,
     admins, currentUser, customers, debts, debtPayments,
     books, activeBookId, defaultBookId, setActiveBook, addBook, updateBook,
+    credibookIncome, refreshCredibook,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct, setProductFavorite,

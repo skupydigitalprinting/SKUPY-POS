@@ -51,7 +51,7 @@ function Field({ icon: Icon, label, required, error, children }) {
   )
 }
 
-export default function Credibook({ currentUser, activeBookId, defaultBookId, books = [], setActivePage }) {
+export default function Credibook({ currentUser, activeBookId, defaultBookId, books = [], setActivePage, onChanged }) {
   const acc = useAccounting()
   const toast = useToast()
   const confirm = useConfirm()
@@ -95,17 +95,17 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
       bookId, createdBy: currentUser?.id, createdByName: currentUser?.name || currentUser?.username || '',
     })
     setSaving(false)
-    if (r.ok) { toast.success('Pemasukkan dicatat'); setForm(blank); setErr({}); load() } else toast.error(r.error)
+    if (r.ok) { toast.success('Pemasukkan dicatat'); setForm(blank); setErr({}); load(); onChanged?.() } else toast.error(r.error)
   }
   const saveEdit = async () => {
     if (!(parseCurrency(edit.amount) > 0)) return toast.error('Nominal harus > 0')
     const r = await acc.updateCredibookIncome(edit.id, { name: edit.name, date: edit.date, amount: parseCurrency(edit.amount), method: edit.method, note: edit.note })
-    if (r.ok) { toast.success('Diperbarui'); setEdit(null); load() } else toast.error(r.error)
+    if (r.ok) { toast.success('Diperbarui'); setEdit(null); load(); onChanged?.() } else toast.error(r.error)
   }
   const del = async (row) => {
-    if (!(await confirm({ title: 'Yakin ingin menghapus pemasukkan ini?', message: 'Data disembunyikan dari laporan & memengaruhi Uang Masuk / Saldo Accounting.' }))) return
+    if (!(await confirm({ title: 'Yakin ingin menghapus pemasukkan ini?', message: 'Data dihapus dari laporan & mengurangi Omset, Uang Masuk, dan Saldo (Kas & Bank).' }))) return
     const r = await acc.deleteCredibookIncome(row.id)
-    if (r.ok) { toast.success('Dihapus'); load() } else toast.error(r.error)
+    if (r.ok) { toast.success('Dihapus'); load(); onChanged?.() } else toast.error(r.error)
   }
 
   const inpErr = (has) => has ? { ...inp, border: '1px solid #ef4444' } : inp
@@ -160,10 +160,10 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
 
         {/* Form Pemasukkan Manual */}
         <div className="rounded-2xl p-5 sm:p-6 w-full mb-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', maxWidth: 760 }}>
-          <div className="mb-4"><h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Catat Pemasukkan Baru</h3><p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Uang masuk di luar penjualan kasir. Masuk ke Uang Masuk & Saldo, BUKAN omset.</p></div>
+          <div className="mb-4"><h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Catat Pemasukkan Baru</h3><p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Pendapatan usaha non-kasir (offline / marketplace / WA / jasa). Masuk ke Omset, Uang Masuk & Saldo. Tidak membuat invoice/order/piutang.</p></div>
           <div className="space-y-4">
             <Field icon={NotebookPen} label="Nama Pemasukkan" required error={err.name}>
-              <input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Modal tambahan / Refund" className={FIELD} style={inpErr(err.name)} />
+              <input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Penjualan offline / Marketplace / Jasa" className={FIELD} style={inpErr(err.name)} />
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field icon={Calendar} label="Tanggal" required error={err.date}>

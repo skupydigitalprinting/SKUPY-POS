@@ -325,6 +325,7 @@ function AppShell() {
           defaultBookId={store.defaultBookId}
           books={store.books}
           setActivePage={setActivePage}
+          onChanged={store.refreshCredibook}
         />
       : <AccessDenied />,
     // Accounting (owner/staff admin saja) — lazy, owner-gated di setActivePage.

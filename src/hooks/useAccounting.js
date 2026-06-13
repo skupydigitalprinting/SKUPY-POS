@@ -592,11 +592,17 @@ export function useAccounting() {
         const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
+      // CREDIBOOK — pemasukkan manual = pendapatan usaha non-kasir (masuk Omset).
+      const pushCredibook = async () => {
+        const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
+        if (error) return // tabel belum ada → abaikan (defensif)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'credibook', date: x.transaction_date, source: 'Credibook', ref: x.name, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      }
 
       // UANG KELUAR → pakai single source of truth (anti double-count + sewa + kasbon)
       if (kind === 'uang_keluar') { return await getOutflowTransactions(from, to) }
-      else if (kind === 'penjualan') { await pushTransactions(); await pushMigration('old_income') }
-      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushMigration('old_income') }
+      else if (kind === 'penjualan') { await pushTransactions(); await pushCredibook(); await pushMigration('old_income') }
+      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushCredibook(); await pushMigration('old_income') }
       // BEBAN = operasional + gaji + bunga bank. TANPA pokok cicilan bank,
       // bayar hutang supplier, pembelian bahan/aset/persediaan.
       else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga(); await pushMigration('old_expense') }
