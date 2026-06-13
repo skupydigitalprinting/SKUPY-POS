@@ -1,7 +1,8 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { AlertTriangle, Database, RefreshCw, Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
+import BookSplash from './components/BookSplash'
 import BottomNav from './components/BottomNav'
 import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
@@ -191,6 +192,22 @@ function AppShell() {
   const [activePage, setActivePageRaw] = useState(canSeeDashboard ? 'dashboard' : 'kasir')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Deep-link tab Accounting (mis. tombol Pengeluaran di Credibook). Signal naik
+  // tiap permintaan agar Accounting selalu pindah tab walau tab-nya sama.
+  const [accTab, setAccTab] = useState(null)
+  const [accTabSignal, setAccTabSignal] = useState(0)
+  const goAccountingTab = (tabId) => { setAccTab(tabId); setAccTabSignal(n => n + 1); setActivePage('accounting') }
+
+  // ── Splash premium saat ganti Book (SKUPY ⇄ THEWA ⇄ Semua) ──
+  const [splash, setSplash] = useState(null)
+  const prevBookRef = useRef(store.activeBookId)
+  useEffect(() => {
+    if (prevBookRef.current === store.activeBookId) return
+    prevBookRef.current = store.activeBookId
+    const bk = store.activeBookId ? (store.books || []).find(b => b.id === store.activeBookId) : null
+    setSplash({ key: Date.now(), book: bk })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.activeBookId, store.books])
 
   // Dashboard, Accounting & Credibook: hanya Owner & Staff Admin. Kasir diblok.
   const GATED = { dashboard: canSeeDashboard, accounting: canSeeDashboard, credibook: canSeeDashboard }
@@ -325,6 +342,7 @@ function AppShell() {
           defaultBookId={store.defaultBookId}
           books={store.books}
           setActivePage={setActivePage}
+          onPengeluaran={() => goAccountingTab('pengeluaran')}
           onChanged={store.refreshCredibook}
         />
       : <AccessDenied />,
@@ -336,6 +354,8 @@ function AppShell() {
           editTransaction={store.editTransaction}
           deleteTransaction={store.deleteTransaction}
           setActivePage={setActivePage}
+          initialTab={accTab}
+          initialTabSignal={accTabSignal}
         />
       : <AccessDenied />,
   }
@@ -351,6 +371,7 @@ function AppShell() {
         minHeight: '100vh',
       }}
     >
+      {splash && <BookSplash key={splash.key} book={splash.book} onDone={() => setSplash(null)} />}
       <Sidebar
         activePage={activePage}
         setActivePage={setActivePage}

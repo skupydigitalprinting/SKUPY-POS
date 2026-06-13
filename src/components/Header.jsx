@@ -19,6 +19,14 @@ function BookSelector({ books = [], activeBookId, onSelectBook, onAddBook, canMa
   const toast = useToast()
   const active = books.find(b => b.id === activeBookId)
   const label = active ? (active.name || active.brand_name) : 'Semua Book'
+  // Badge brand-aware: SKUPY ungu/hijau, THEWA emas, lainnya netral.
+  const brandTheme = (() => {
+    const k = (active?.name || active?.brand_name || '').toUpperCase()
+    if (!active) return { border: 'rgba(148,163,184,0.35)', icon: 'var(--text-muted)', text: 'var(--text-primary)', bg: 'var(--bg-card)' }
+    if (k.includes('SKUPY')) return { border: 'rgba(139,92,246,0.55)', icon: '#a78bfa', text: '#c4b5fd', bg: 'rgba(139,92,246,0.10)' }
+    if (k.includes('THEWA')) return { border: 'rgba(191,161,74,0.6)', icon: '#d4af37', text: '#e6c860', bg: 'rgba(191,161,74,0.10)' }
+    return { border: 'rgba(99,102,241,0.5)', icon: '#818cf8', text: '#a5b4fc', bg: 'rgba(99,102,241,0.10)' }
+  })()
   if (!books || books.length === 0) return null // fitur Book belum aktif (migrasi belum jalan)
 
   const toggle = () => {
@@ -41,10 +49,10 @@ function BookSelector({ books = [], activeBookId, onSelectBook, onAddBook, canMa
     <>
       <button ref={btnRef} onClick={toggle}
         className="flex items-center gap-1.5 rounded-xl px-2.5 h-9 btn-press"
-        style={{ background: 'var(--bg-card)', border: '1px solid rgba(139,92,246,0.3)', color: 'var(--text-secondary)' }}>
-        <BookOpen size={14} style={{ color: 'var(--accent-light)' }} />
-        <span className="text-xs font-bold max-w-[90px] truncate" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>{label}</span>
-        <ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+        style={{ background: brandTheme.bg, border: `1px solid ${brandTheme.border}`, color: 'var(--text-secondary)', transition: 'background .2s, border-color .2s' }}>
+        <BookOpen size={14} style={{ color: brandTheme.icon }} />
+        <span className="text-xs font-bold max-w-[90px] truncate" style={{ fontFamily: 'Syne', color: brandTheme.text }}>{label}</span>
+        <ChevronDown size={13} style={{ color: brandTheme.icon, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
       </button>
 
       {open && createPortal(

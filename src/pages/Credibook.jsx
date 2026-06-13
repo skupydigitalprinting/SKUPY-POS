@@ -9,6 +9,15 @@ import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
 
 const METHODS = [{ id: 'cash', label: 'Cash' }, { id: 'transfer', label: 'Transfer' }, { id: 'qris', label: 'QRIS' }]
+// Jenis pemasukkan → hanya 'omzet' yang menambah Omset. Lainnya = kas masuk saja.
+const INCOME_TYPES = [
+  { id: 'omzet', label: 'Omset', hint: 'Pendapatan usaha → menambah Omset' },
+  { id: 'refund', label: 'Refund', hint: 'Uang kembali → kas masuk, bukan Omset' },
+  { id: 'capital', label: 'Modal Tambahan', hint: 'Suntikan modal → kas & aset, bukan Omset/Laba' },
+  { id: 'other', label: 'Pemasukkan Lainnya', hint: 'Kas masuk lain → bukan Omset' },
+]
+const ITYPE_LABEL = Object.fromEntries(INCOME_TYPES.map(t => [t.id, t.label]))
+const ITYPE_COLOR = { omzet: '#10d98a', refund: '#3b82f6', capital: '#a78bfa', other: '#64748b' }
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 const todayISO = () => new Date().toISOString().slice(0, 10)
@@ -51,7 +60,7 @@ function Field({ icon: Icon, label, required, error, children }) {
   )
 }
 
-export default function Credibook({ currentUser, activeBookId, defaultBookId, books = [], setActivePage, onChanged }) {
+export default function Credibook({ currentUser, activeBookId, defaultBookId, books = [], setActivePage, onPengeluaran, onChanged }) {
   const acc = useAccounting()
   const toast = useToast()
   const confirm = useConfirm()
@@ -65,7 +74,7 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
   const inp = { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
   const FIELD = 'w-full px-3.5 py-3 rounded-xl text-sm'
 
-  const blank = { name: '', date: todayISO(), amount: '', method: 'transfer', note: '' }
+  const blank = { incomeType: 'omzet', name: '', date: todayISO(), amount: '', method: 'transfer', note: '' }
   const [form, setForm] = useState(blank); const [err, setErr] = useState({}); const [saving, setSaving] = useState(false)
   const [edit, setEdit] = useState(null) // baris yang diedit inline
 
@@ -92,14 +101,14 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
     setSaving(true)
     const r = await acc.addCredibookIncome({
       name: form.name, date: form.date, amount: parseCurrency(form.amount), method: form.method, note: form.note,
-      bookId, createdBy: currentUser?.id, createdByName: currentUser?.name || currentUser?.username || '',
+      incomeType: form.incomeType, bookId, createdBy: currentUser?.id, createdByName: currentUser?.name || currentUser?.username || '',
     })
     setSaving(false)
     if (r.ok) { toast.success('Pemasukkan dicatat'); setForm(blank); setErr({}); load(); onChanged?.() } else toast.error(r.error)
   }
   const saveEdit = async () => {
     if (!(parseCurrency(edit.amount) > 0)) return toast.error('Nominal harus > 0')
-    const r = await acc.updateCredibookIncome(edit.id, { name: edit.name, date: edit.date, amount: parseCurrency(edit.amount), method: edit.method, note: edit.note })
+    const r = await acc.updateCredibookIncome(edit.id, { name: edit.name, date: edit.date, amount: parseCurrency(edit.amount), method: edit.method, note: edit.note, incomeType: edit.incomeType })
     if (r.ok) { toast.success('Diperbarui'); setEdit(null); load(); onChanged?.() } else toast.error(r.error)
   }
   const del = async (row) => {
@@ -152,7 +161,7 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
           <div className="rounded-xl px-3 py-2.5 flex items-center gap-2" style={{ background: 'rgba(16,217,138,0.08)', border: '1px solid rgba(16,217,138,0.25)' }}>
             <Plus size={15} style={{ color: '#10d98a' }} /><span className="text-xs font-bold" style={{ color: '#10d98a', fontFamily: 'Syne' }}>Pemasukkan Manual</span>
           </div>
-          <button onClick={() => setActivePage?.('accounting')} className="rounded-xl px-3 py-2.5 flex items-center justify-between gap-2 btn-press" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
+          <button onClick={() => (onPengeluaran ? onPengeluaran() : setActivePage?.('accounting'))} className="rounded-xl px-3 py-2.5 flex items-center justify-between gap-2 btn-press" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
             <span className="flex items-center gap-2"><Receipt size={15} style={{ color: '#ef4444' }} /><span className="text-xs font-bold" style={{ color: '#ef4444', fontFamily: 'Syne' }}>Pengeluaran</span></span>
             <ArrowRight size={14} style={{ color: '#ef4444' }} />
           </button>
@@ -160,8 +169,16 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
 
         {/* Form Pemasukkan Manual */}
         <div className="rounded-2xl p-5 sm:p-6 w-full mb-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', maxWidth: 760 }}>
-          <div className="mb-4"><h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Catat Pemasukkan Baru</h3><p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Pendapatan usaha non-kasir (offline / marketplace / WA / jasa). Masuk ke Omset, Uang Masuk & Saldo. Tidak membuat invoice/order/piutang.</p></div>
+          <div className="mb-4"><h3 className="font-bold text-sm" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>Catat Pemasukkan Baru</h3><p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Semua jenis menambah Uang Masuk & Saldo. Hanya jenis <b style={{ color: '#10d98a' }}>Omset</b> yang menambah Omset. Tidak membuat invoice/order/piutang.</p></div>
           <div className="space-y-4">
+            <Field icon={Scale} label="Jenis Pemasukkan" required>
+              <select value={form.incomeType} onChange={e => setForm(p => ({ ...p, incomeType: e.target.value }))} className={FIELD} style={inp}>
+                {INCOME_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+              </select>
+              <p className="mt-1 text-[11px]" style={{ color: form.incomeType === 'omzet' ? '#10d98a' : 'var(--text-muted)' }}>
+                {INCOME_TYPES.find(t => t.id === form.incomeType)?.hint}
+              </p>
+            </Field>
             <Field icon={NotebookPen} label="Nama Pemasukkan" required error={err.name}>
               <input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Contoh: Penjualan offline / Marketplace / Jasa" className={FIELD} style={inpErr(err.name)} />
             </Field>
@@ -191,6 +208,7 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
               {rows.map(x => edit && edit.id === x.id ? (
                 <div key={x.id} className="rounded-xl p-3" style={{ background: 'rgba(139,92,246,0.06)', border: '1px solid var(--border)' }}>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <select value={edit.incomeType} onChange={e => setEdit(s => ({ ...s, incomeType: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp}>{INCOME_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}</select>
                     <input value={edit.name} onChange={e => setEdit(s => ({ ...s, name: e.target.value }))} placeholder="Nama" className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
                     <input type="date" value={edit.date} onChange={e => setEdit(s => ({ ...s, date: e.target.value }))} className="px-2 py-1.5 rounded-lg text-xs" style={{ ...inp, colorScheme: 'dark' }} />
                     <MoneyInput value={edit.amount} onChange={v => setEdit(s => ({ ...s, amount: v }))} className="px-2 py-1.5 rounded-lg text-xs" style={inp} />
@@ -206,10 +224,10 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
                 <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.name}{x.note ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {x.note}</span> : null}</div>
-                    <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.transaction_date)}</span><span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', fontSize: 9, textTransform: 'uppercase' }}>{x.payment_method}</span>{x.created_by_name && <span>· oleh {x.created_by_name}</span>}</div>
+                    <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.transaction_date)}</span>{(() => { const it = x.income_type || 'omzet'; const c = ITYPE_COLOR[it] || '#64748b'; return <span className="px-1.5 py-0.5 rounded font-bold" style={{ background: `${c}22`, color: c, fontSize: 9, textTransform: 'uppercase' }}>{ITYPE_LABEL[it] || it}</span> })()}<span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(148,163,184,0.12)', color: 'var(--text-secondary)', fontSize: 9, textTransform: 'uppercase' }}>{x.payment_method}</span>{x.created_by_name && <span>· oleh {x.created_by_name}</span>}</div>
                   </div>
                   <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{fmt(x.amount)}</div>
-                  <button onClick={() => setEdit({ id: x.id, name: x.name, date: (x.transaction_date || '').slice(0, 10), amount: String(Math.round(x.amount || 0)), method: x.payment_method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>
+                  <button onClick={() => setEdit({ id: x.id, incomeType: x.income_type || 'omzet', name: x.name, date: (x.transaction_date || '').slice(0, 10), amount: String(Math.round(x.amount || 0)), method: x.payment_method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>
                   <button onClick={() => del(x)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
                 </div>
               ))}

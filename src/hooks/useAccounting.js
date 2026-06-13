@@ -592,17 +592,21 @@ export function useAccounting() {
         const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
-      // CREDIBOOK — pemasukkan manual = pendapatan usaha non-kasir (masuk Omset).
-      const pushCredibook = async () => {
-        const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
-        if (error) return // tabel belum ada → abaikan (defensif)
-        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'credibook', date: x.transaction_date, source: 'Credibook', ref: x.name, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
+      // CREDIBOOK — pemasukkan manual. omzetOnly=true → hanya jenis 'omzet'
+      // (dipakai detail Omset). Tanpa filter → semua jenis (detail Uang Masuk/Arus Kas).
+      const CB_LABEL = { omzet: 'Credibook · Omset', refund: 'Credibook · Refund', capital: 'Credibook · Modal Tambahan', other: 'Credibook · Lainnya' }
+      const pushCredibook = async (omzetOnly = false) => {
+        let q = supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
+        if (omzetOnly) q = q.eq('income_type', 'omzet')
+        const { data, error } = await q
+        if (error) return // tabel/kolom belum ada → abaikan (defensif)
+        ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'credibook', date: x.transaction_date, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
 
       // UANG KELUAR → pakai single source of truth (anti double-count + sewa + kasbon)
       if (kind === 'uang_keluar') { return await getOutflowTransactions(from, to) }
-      else if (kind === 'penjualan') { await pushTransactions(); await pushCredibook(); await pushMigration('old_income') }
-      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushCredibook(); await pushMigration('old_income') }
+      else if (kind === 'penjualan') { await pushTransactions(); await pushCredibook(true); await pushMigration('old_income') }
+      else if (kind === 'uang_masuk' || kind === 'arus_kas') { await pushTransactions(); await pushDebtPay(); await pushCredibook(false); await pushMigration('old_income') }
       // BEBAN = operasional + gaji + bunga bank. TANPA pokok cicilan bank,
       // bayar hutang supplier, pembelian bahan/aset/persediaan.
       else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga(); await pushMigration('old_expense') }
@@ -813,24 +817,32 @@ export function useAccounting() {
     const amt = Math.round(Number(p.amount) || 0)
     if (!(p.name || '').trim()) return { ok: false, error: 'Nama pemasukkan wajib diisi' }
     if (!(amt > 0)) return { ok: false, error: 'Nominal harus lebih dari 0' }
+    const INCOME_TYPES = ['omzet', 'refund', 'capital', 'other']
+    const it = INCOME_TYPES.includes(p.incomeType) ? p.incomeType : 'omzet'
     const row = {
       name: p.name.trim(), transaction_date: p.date || null, amount: amt,
-      payment_method: p.method || 'transfer', note: p.note || '',
+      payment_method: p.method || 'transfer', note: p.note || '', income_type: it,
       created_by: p.createdBy || null, created_by_name: p.createdByName || '',
     }
     if (p.bookId) row.book_id = p.bookId
-    let { error } = await supabase.from('credibook_income').insert(row)
-    if (error && /book_id/i.test(error.message || '')) { delete row.book_id; ({ error } = await supabase.from('credibook_income').insert(row)) }
+    // Omit-fallback: kolom book_id / income_type mungkin belum ada (migrasi belum jalan).
+    const tryInsert = async (r) => (await supabase.from('credibook_income').insert(r)).error
+    let error = await tryInsert(row)
+    if (error && /income_type/i.test(error.message || '')) { const r = { ...row }; delete r.income_type; error = await tryInsert(r); if (error && /book_id/i.test(error.message || '')) { delete r.book_id; error = await tryInsert(r) } }
+    else if (error && /book_id/i.test(error.message || '')) { const r = { ...row }; delete r.book_id; error = await tryInsert(r) }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const updateCredibookIncome = useCallback(async (id, p) => {
+    const INCOME_TYPES = ['omzet', 'refund', 'capital', 'other']
     const patch = { updated_at: new Date().toISOString() }
     if (p.name !== undefined) patch.name = p.name
     if (p.date !== undefined) patch.transaction_date = p.date
     if (p.amount !== undefined) patch.amount = Math.round(Number(p.amount) || 0)
     if (p.method !== undefined) patch.payment_method = p.method
     if (p.note !== undefined) patch.note = p.note
-    const { error } = await supabase.from('credibook_income').update(patch).eq('id', id)
+    if (p.incomeType !== undefined && INCOME_TYPES.includes(p.incomeType)) patch.income_type = p.incomeType
+    let { error } = await supabase.from('credibook_income').update(patch).eq('id', id)
+    if (error && /income_type/i.test(error.message || '')) { const pt = { ...patch }; delete pt.income_type; ({ error } = await supabase.from('credibook_income').update(pt).eq('id', id)) }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const deleteCredibookIncome = useCallback(async (id) => {

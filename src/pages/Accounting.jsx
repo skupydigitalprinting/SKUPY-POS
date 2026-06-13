@@ -223,12 +223,17 @@ function Card({ icon: Icon, label, value, color = '#38BDF8', sub, onClick }) {
   )
 }
 
-export default function Accounting({ admins = [], currentUser, setActivePage } = {}) {
+export default function Accounting({ admins = [], currentUser, setActivePage, initialTab, initialTabSignal } = {}) {
   const toast = useToast()
   const confirm = useConfirm()
   const acc = useAccounting()
   const isOwner = currentUser?.role === 'owner'
   const [tab, setTab] = useState('ringkasan')
+  // Deep-link: pindah tab saat diminta dari luar (mis. Credibook → Pengeluaran).
+  useEffect(() => {
+    if (initialTab && TABS.some(t => t.id === initialTab)) setTab(initialTab)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTabSignal])
   const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading, from, to, allTime }
   const [infoModal, setInfoModal] = useState(null) // { title, rows:[[label,val,neg?]], total:[label,val], note }
   const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail

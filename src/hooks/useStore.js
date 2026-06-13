@@ -301,7 +301,7 @@ export function useStore() {
       // Pemasukkan Credibook (book-scoped) — masuk Omset di dashboard. Defensif.
       try {
         const cb = await applyBook(supabase.from('credibook_income')
-          .select('id, name, transaction_date, amount, payment_method, note, book_id')
+          .select('id, name, transaction_date, amount, payment_method, note, income_type, book_id')
           .is('deleted_at', null).order('transaction_date', { ascending: false }).limit(2000))
         if (!cb.error && mounted.current) setCredibookIncome(cb.data || [])
       } catch { /* tabel credibook_income belum ada — abaikan */ }
@@ -428,7 +428,7 @@ export function useStore() {
     try {
       const { data, error: e } = await applyBook(supabase
         .from('credibook_income')
-        .select('id, name, transaction_date, amount, payment_method, note, book_id')
+        .select('id, name, transaction_date, amount, payment_method, note, income_type, book_id')
         .is('deleted_at', null)
         .order('transaction_date', { ascending: false })
         .limit(2000))
@@ -1846,12 +1846,14 @@ export function useStore() {
     // ('dibatalkan') yang dikecualikan; nota terhapus sudah lenyap dari data.
     // (BUKAN SUM(paid) dan BUKAN hanya status 'lunas'.)
     const notCanceled = (t) => (t.orderStatus || '') !== 'dibatalkan'
-    // Pemasukkan Credibook = pendapatan usaha non-kasir → IKUT Omset (book-scoped).
+    // Pemasukkan Credibook → HANYA jenis 'omzet' yang menambah Omset (book-scoped).
+    // (refund/capital/other = kas masuk saja, dihitung di Accounting, bukan Omset.)
     const cbAmt = (x) => Math.round(+x.amount || 0)
     const cbDate = (x) => new Date(x.transaction_date)
-    const cbToday = credibookIncome.filter(x => cbDate(x).toDateString() === today)
-    const cbMonth = credibookIncome.filter(x => cbDate(x) >= monthStart)
-    const cbTotalSum = credibookIncome.reduce((s, x) => s + cbAmt(x), 0)
+    const cbOmzet = credibookIncome.filter(x => (x.income_type || 'omzet') === 'omzet')
+    const cbToday = cbOmzet.filter(x => cbDate(x).toDateString() === today)
+    const cbMonth = cbOmzet.filter(x => cbDate(x) >= monthStart)
+    const cbTotalSum = cbOmzet.reduce((s, x) => s + cbAmt(x), 0)
     const cbTodaySum = cbToday.reduce((s, x) => s + cbAmt(x), 0)
     const cbMonthSum = cbMonth.reduce((s, x) => s + cbAmt(x), 0)
     const totalOmzet = transactions.filter(notCanceled).reduce((s, t) => s + (+t.total || 0), 0) + cbTotalSum
@@ -1874,7 +1876,7 @@ export function useStore() {
       const d = new Date(); d.setDate(d.getDate() - (6 - i))
       const ds = d.toDateString()
       const dayTrx = transactions.filter(t => new Date(t.date).toDateString() === ds)
-      const dayCb = credibookIncome.filter(x => new Date(x.transaction_date).toDateString() === ds)
+      const dayCb = credibookIncome.filter(x => (x.income_type || 'omzet') === 'omzet' && new Date(x.transaction_date).toDateString() === ds)
       return {
         day: d.toLocaleDateString('id-ID', { weekday: 'short' }),
         date: d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
