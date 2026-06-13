@@ -196,7 +196,12 @@ function AppShell() {
   // tiap permintaan agar Accounting selalu pindah tab walau tab-nya sama.
   const [accTab, setAccTab] = useState(null)
   const [accTabSignal, setAccTabSignal] = useState(0)
-  const goAccountingTab = (tabId) => { setAccTab(tabId); setAccTabSignal(n => n + 1); setActivePage('accounting') }
+  // Shortcut eksplisit ke tab Accounting tertentu (mis. Credibook → Pengeluaran).
+  // Pakai setActivePageRaw agar TIDAK kena reset 'ringkasan' di setActivePage.
+  const goAccountingTab = (tabId) => {
+    if (!GATED.accounting) { setActivePage('accounting'); return }
+    setAccTab(tabId); setAccTabSignal(n => n + 1); setActivePageRaw('accounting')
+  }
 
   // ── Splash premium saat ganti Book (SKUPY ⇄ THEWA ⇄ Semua) ──
   const [splash, setSplash] = useState(null)
@@ -220,6 +225,10 @@ function AppShell() {
       setActivePageRaw('kasir')
       return
     }
+    // Membuka Accounting dari sidebar SELALU default ke tab Ringkasan (jangan
+    // ingat tab terakhir / deep-link Pengeluaran). Shortcut Credibook pakai
+    // goAccountingTab yang men-set tab eksplisit tanpa reset ini.
+    if (next === 'accounting') { setAccTab('ringkasan'); setAccTabSignal(n => n + 1) }
     setActivePageRaw(next)
   }
 
