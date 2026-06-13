@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
-  Receipt, Layers, UserCog, Check,
+  Receipt, Layers, UserCog, Check, ArrowLeft, Users, UserCircle2,
 } from 'lucide-react'
 import { Button, Badge, EmptyState, CustomerPicker } from '../components/ui'
 import Modal from '../components/Modal'
@@ -64,9 +64,11 @@ export default function Piutang({
   }
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('aktif')
-  // Owner bisa filter per admin/kasir. Staff: debts sudah di-scope di App
-  // (hanya transaksi miliknya), jadi filter ini disembunyikan.
-  const [adminFilter, setAdminFilter] = useState('all')
+  // ── PIC (penanggung jawab customer) ──
+  // Owner & Staff Admin melihat overview semua PIC lalu klik untuk masuk detail.
+  // Staff Kasir hanya melihat PIC dirinya → langsung daftar piutangnya.
+  const canSeeAllPics = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const [selectedPicKey, setSelectedPicKey] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null)  // group
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
@@ -87,25 +89,58 @@ export default function Piutang({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyTarget])
 
-  // Peta debt → cashierId (lewat transaksi terkait) untuk filter per-admin owner.
-  const cashierOf = useMemo(() => {
-    const byId = new Map((transactions || []).map(t => [t.id, t.cashierId]))
-    return (d) => byId.get(d.transactionId)
-  }, [transactions])
-
   // ── Enrich tiap hutang dengan customer + sisa yang diderivasi ──
   const enriched = useMemo(() => debts.map(d => ({
     ...d,
     remaining: remOf(d),
-    cashierId: cashierOf(d),
     customer: customers.find(c => c.id === d.customerId)
       || { name: 'Customer dihapus', phone: '', whatsapp: '' },
-  })), [debts, customers, cashierOf])
+  })), [debts, customers])
 
-  // Owner filter per admin (staff: tidak ada efek karena data sudah di-scope).
-  const scopedEnriched = useMemo(() => (
-    adminFilter === 'all' ? enriched : enriched.filter(d => d.cashierId === adminFilter)
-  ), [enriched, adminFilter])
+  // ── PIC dari customer (owner_user_id / owner_name). Piutang mengikuti PIC customer. ──
+  const picInfo = useMemo(() => (d) => {
+    const id = d.customer?.ownerUserId || null
+    let name = d.customer?.ownerName || ''
+    if (!name && id) { const a = admins.find(x => x.id === id); name = a?.name || a?.username || '' }
+    if (!name) name = 'Tanpa PIC'
+    return { id, name, key: id || `name:${name.toLowerCase()}` }
+  }, [admins])
+
+  // Ringkasan per PIC (untuk overview cards). Selalu dari seluruh data terlihat.
+  const picGroups = useMemo(() => {
+    const map = new Map()
+    enriched.forEach(d => {
+      const p = picInfo(d)
+      if (!map.has(p.key)) map.set(p.key, { key: p.key, picId: p.id, picName: p.name, debts: [], custSet: new Set(), activeCustSet: new Set() })
+      const g = map.get(p.key)
+      g.debts.push(d)
+      if (d.customerId) { g.custSet.add(d.customerId); if (remOf(d) > 0) g.activeCustSet.add(d.customerId) }
+    })
+    return [...map.values()].map(g => {
+      const totalDebt = g.debts.reduce((s, d) => s + toMoney(d.totalDebt), 0)
+      const totalPaid = g.debts.reduce((s, d) => s + toMoney(d.paid), 0)
+      const totalRemaining = g.debts.reduce((s, d) => s + remOf(d), 0)
+      return {
+        ...g, notaCount: g.debts.length,
+        customerCount: g.custSet.size, activeCustomerCount: g.activeCustSet.size,
+        totalDebt, totalPaid, totalRemaining,
+      }
+    }).sort((a, b) => b.totalRemaining - a.totalRemaining || b.totalDebt - a.totalDebt)
+  }, [enriched, picInfo])
+
+  // PIC yang sedang dibuka (objek ringkasan) — untuk judul detail.
+  const activePic = useMemo(() => picGroups.find(g => g.key === selectedPicKey) || null, [picGroups, selectedPicKey])
+
+  // Data untuk tampilan DETAIL (daftar customer): difilter PIC terpilih.
+  // Kasir: debts sudah di-scope App → tampilkan semua (PIC dirinya).
+  const scopedEnriched = useMemo(() => {
+    if (!canSeeAllPics) return enriched
+    if (!selectedPicKey) return enriched
+    return enriched.filter(d => picInfo(d).key === selectedPicKey)
+  }, [enriched, canSeeAllPics, selectedPicKey, picInfo])
+
+  // Apakah sedang menampilkan daftar detail (vs overview PIC)?
+  const showingList = !canSeeAllPics || !!selectedPicKey
 
   // ── Ringkasan piutang (dari data yang SUDAH di-scope) ──
   //   Piutang Aktif = Σ sisa (remaining > 0)
@@ -241,13 +276,81 @@ export default function Piutang({
       <div className="p-4 sm:p-6 max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-5">
-          <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Piutang Pelanggan</div>
+          {showingList && canSeeAllPics && (
+            <button onClick={() => setSelectedPicKey(null)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold btn-press mb-2"
+              style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)', fontFamily: 'Syne' }}>
+              <ArrowLeft size={13} /> Kembali ke Semua PIC
+            </button>
+          )}
+          <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {!showingList ? 'Kelola piutang per penanggung jawab' : 'Piutang Pelanggan'}
+          </div>
           <h2 className="text-xl sm:text-2xl font-bold mt-0.5"
             style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-            {groups.length} customer · {debts.length} nota hutang
+            {!showingList
+              ? `Piutang per PIC · ${picGroups.length} PIC`
+              : canSeeAllPics
+                ? `Piutang Pelanggan — ${activePic?.picName || 'PIC'}`
+                : `${groups.length} customer · ${debts.length} nota hutang`}
           </h2>
+          {showingList && canSeeAllPics && (
+            <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              {groups.length} customer · {scopedEnriched.length} nota hutang
+            </div>
+          )}
         </div>
 
+        {/* ─── PIC OVERVIEW (Owner/Admin, sebelum pilih PIC) ─── */}
+        {!showingList && (
+          picGroups.length === 0 ? (
+            <EmptyState icon={Users} title="Belum ada PIC piutang"
+              description="Belum ada customer dengan piutang yang punya penanggung jawab" />
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+              {picGroups.map((p, idx) => (
+                <button key={p.key} onClick={() => setSelectedPicKey(p.key)}
+                  className="text-left rounded-2xl p-4 btn-press animate-fadeIn hover-lift"
+                  style={{
+                    background: 'var(--bg-card)',
+                    border: `1px solid ${p.totalRemaining > 0 ? 'rgba(245,158,11,0.3)' : 'var(--border)'}`,
+                    animationDelay: `${idx * 30}ms`,
+                  }}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold"
+                      style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>
+                      {(p.picName || '?')[0]?.toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{p.picName}</p>
+                      <p className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                        <UserCircle2 size={10} /> {p.activeCustomerCount} customer aktif · <Receipt size={10} /> {p.notaCount} nota
+                      </p>
+                    </div>
+                    <ChevronRight size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.06em' }}>Total Piutang</p>
+                      <p className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(p.totalDebt)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.06em' }}>Sudah Bayar</p>
+                      <p className="text-xs font-bold truncate" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(p.totalPaid)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider font-bold" style={{ color: p.totalRemaining > 0 ? '#ef4444' : '#10d98a', letterSpacing: '0.06em' }}>Sisa Hutang</p>
+                      <p className="text-xs font-extrabold truncate" style={{ color: p.totalRemaining > 0 ? '#ef4444' : '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(p.totalRemaining)}</p>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )
+        )}
+
+        {/* ─── DETAIL PIC: daftar customer piutang (atau kasir langsung) ─── */}
+        {showingList && (<>
         {/* Stat strips */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-5">
           <div className="rounded-2xl p-4" style={{
@@ -319,20 +422,6 @@ export default function Piutang({
               className="w-full pl-9 pr-4 py-2.5 rounded-xl text-sm"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
           </div>
-          {/* Owner: filter per admin/kasir */}
-          {isOwner && admins.length > 0 && (
-            <select
-              value={adminFilter}
-              onChange={(e) => setAdminFilter(e.target.value)}
-              className="px-3 py-2 rounded-xl text-xs font-semibold"
-              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontFamily: 'Syne', minWidth: 150 }}
-            >
-              <option value="all">Semua Admin</option>
-              {admins.map(a => (
-                <option key={a.id} value={a.id}>{a.name || a.username}</option>
-              ))}
-            </select>
-          )}
           <div className="flex gap-2">
             {STATUS_OPTIONS.map(s => (
               <button key={s.id} onClick={() => setFilter(s.id)}
@@ -495,6 +584,7 @@ export default function Piutang({
             })}
           </div>
         )}
+        </>)}
       </div>
 
       {/* ─── DETAIL MODAL — daftar invoice hutang customer ─── */}
