@@ -14,6 +14,7 @@ import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleL
 import { Badge, ProductImage, RangeChips } from '../components/ui'
 import { getCatLabel, useCategories } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
+import { useInvoicePreview } from '../components/InvoicePreview'
 import Modal from '../components/Modal'
 import { useAccounting } from '../hooks/useAccounting'
 import { useConfirm } from '../components/Confirm'
@@ -126,6 +127,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 
 export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction, editDebtPayment, deleteDebtPayment }) {
   const isOwner = currentUser?.role === 'owner'
+  const { openInvoice } = useInvoicePreview()
 
   // ─── Owner-only: Total Uang Masuk (uang yang BENAR-BENAR diterima) ───
   // Total  = Σ paid transaksi valid (sudah termasuk DP + cicilan, karena
@@ -1609,6 +1611,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           showDue={detailCard.manage}
           paymentMode={!!detailCard.payment}
           admins={admins}
+          onInvoiceClick={openInvoice}
           onManage={detailCard.manage ? () => { setDetailKey(null); setActivePage('piutang') } : undefined}
           manageLabel="Bayar / Kelola di Piutang"
           onEdit={async (id, fields) => editTransaction?.(id, fields)}

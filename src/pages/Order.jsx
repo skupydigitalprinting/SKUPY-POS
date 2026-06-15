@@ -516,9 +516,9 @@ export default function Order({
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  {/* Invoice — boleh 2 baris */}
+                  {/* Invoice — boleh 2 baris · klik = preview invoice */}
                   <div className="px-2.5 min-w-0 py-1.5" style={{ borderRight: '1px solid var(--border)' }}>
-                    <p className="text-[11px] font-bold leading-tight" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', wordBreak: 'break-all', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{t.invoiceNo}</p>
+                    <button onClick={() => setPrintTrx(t)} title="Lihat preview invoice" className="text-[11px] font-bold leading-tight text-left underline decoration-dotted hover:opacity-80" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', wordBreak: 'break-all', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{t.invoiceNo}</button>
                     <p className="text-[10px]" style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{timeAgo(t.date)}</p>
                   </div>
                   {/* Customer — boleh 2 baris */}

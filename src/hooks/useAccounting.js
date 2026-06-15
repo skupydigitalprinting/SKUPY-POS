@@ -541,6 +541,66 @@ export function useAccounting() {
     return { ok: true, rows, total, from, to, dupCount }
   }, [])
 
+  // ── ARUS KAS BERSIH (detail): MASUK & KELUAR aktual dalam rentang ──
+  //   Masuk  = kas yang BENAR diterima:
+  //            • Penjualan: init_paid = paid − Σ cicilan invoice itu (anti
+  //              double-count dgn cicilan piutang; pending TIDAK dihitung)
+  //            • Cicilan piutang (debt_payments)
+  //            • Pemasukkan Credibook (semua jenis)
+  //            • Migrasi pemasukan lama
+  //   Keluar = getOutflowTransactions + pembayaran sewa dibayar dimuka (full).
+  const getCashflowDetail = useCallback(async (from, to) => {
+    const toEnd = (to || from) + 'T23:59:59'
+    const masuk = [], keluar = []
+    const CB_LABEL = { omzet: 'Credibook · Omset', refund: 'Credibook · Refund', capital: 'Credibook · Modal Tambahan', other: 'Credibook · Lainnya' }
+    try {
+      // Σ cicilan per invoice (semua waktu) → untuk hitung init_paid
+      const cicByInv = {}
+      {
+        const { data } = await supabase.from('debt_payments').select('invoice_no, amount').is('deleted_at', null)
+        ;(data || []).forEach(x => { if (x.invoice_no) cicByInv[x.invoice_no] = (cicByInv[x.invoice_no] || 0) + Math.round(x.amount || 0) })
+      }
+      // 1) Penjualan — init_paid (uang diterima di awal, bukan total tagihan)
+      {
+        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,paid,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        ;(data || []).forEach(x => {
+          const initPaid = Math.max(0, Math.round(x.paid || 0) - (cicByInv[x.invoice_no] || 0))
+          if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no })
+        })
+      }
+      // 2) Cicilan piutang
+      {
+        const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
+      }
+      // 3) Credibook (semua jenis = kas masuk)
+      {
+        const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
+        if (!error) (data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.transaction_date, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, category: 'Pemasukkan Manual', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+      }
+      // 4) Migrasi pemasukan lama
+      {
+        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.trx_date, source: 'Migrasi Data', ref: x.name, category: 'Migrasi Pemasukan', method: x.method, status: 'migrasi', amount: Math.round(x.amount || 0), note: x.notes }))
+      }
+      // KELUAR — pengeluaran aktual (single source of truth)
+      const out = await getOutflowTransactions(from, to)
+      ;(out.rows || []).forEach(r => keluar.push({ ...r, type: 'keluar' }))
+      // + Pembayaran sewa dibayar dimuka (FULL, saat dibayar)
+      {
+        const { data } = await supabase.from('prepaid_rents').select('id,payment_date,name,total_amount,payment_method,status,note').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
+        ;(data || []).filter(x => String(x.status || '').toLowerCase() !== 'cancelled').forEach(x => keluar.push({ id: x.id, type: 'keluar', date: x.payment_date, source: 'Sewa Dibayar Dimuka', ref: x.name || '', category: 'Pembayaran Sewa', method: x.payment_method, status: 'valid', amount: Math.round(x.total_amount || 0), note: x.note }))
+      }
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e), masuk: [], keluar: [], totalMasuk: 0, totalKeluar: 0, net: 0 }
+    }
+    masuk.sort((a, b) => new Date(b.date) - new Date(a.date))
+    keluar.sort((a, b) => new Date(b.date) - new Date(a.date))
+    const totalMasuk = masuk.reduce((s, r) => s + (r.amount || 0), 0)
+    const totalKeluar = keluar.reduce((s, r) => s + (r.amount || 0), 0)
+    return { ok: true, masuk, keluar, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
+  }, [getOutflowTransactions])
+
   // Total cash-out sewa SEMUA WAKTU (non-deleted, non-cancelled). Query ringan
   // (hanya kolom total_amount) untuk card "Total Pengeluaran All Time".
   const sumRentsCashOut = useCallback(async () => {
@@ -1232,7 +1292,7 @@ export function useAccounting() {
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,
-    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, sumRentsCashOut,
+    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, sumRentsCashOut,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,

@@ -22,6 +22,7 @@ export default function DashboardCardDetail({
   open, onClose, title, rows = [], total = 0, isCount = false,
   onEdit, onDelete, showDue = false, onManage, manageLabel = 'Kelola',
   paymentMode = false, admins = [], onSavePaymentRow, onDeletePaymentRow, subtitle,
+  onInvoiceClick,
 }) {
   const toast = useToast()
   const [editRow, setEditRow] = useState(null)
@@ -217,7 +218,13 @@ export default function DashboardCardDetail({
 
               return (
                 <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td className="px-2 py-2.5 font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{r.invoiceNo || '—'}</td>
+                  <td className="px-2 py-2.5 font-semibold" style={{ fontFamily: 'Syne' }}>
+                    {r.invoiceNo
+                      ? (onInvoiceClick
+                          ? <button onClick={() => onInvoiceClick(r.invoiceNo)} className="underline decoration-dotted hover:opacity-80" style={{ color: 'var(--accent-light)' }} title="Lihat preview invoice">{r.invoiceNo}</button>
+                          : <span style={{ color: 'var(--text-primary)' }}>{r.invoiceNo}</span>)
+                      : <span style={{ color: 'var(--text-primary)' }}>—</span>}
+                  </td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>{r.date ? formatDate(r.date) : '—'}</td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>{r.customer || '—'}</td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-muted)' }}>{r.cashierName || '—'}</td>

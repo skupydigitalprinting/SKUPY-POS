@@ -423,6 +423,19 @@ export function useStore() {
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
   }, [activeBookId])
 
+  // Cari 1 transaksi by invoiceNo untuk PREVIEW invoice (klik nomor invoice di
+  // mana pun). Cari di state dulu; kalau tidak ada (mis. transaksi lama di luar
+  // limit), fetch 1 baris dari Supabase. Tidak membuat data baru — hanya baca.
+  const getTransactionByInvoice = useCallback(async (invoiceNo) => {
+    if (!invoiceNo) return null
+    const local = transactions.find(t => t.invoiceNo === invoiceNo)
+    if (local) return local
+    try {
+      const { data } = await supabase.from('transactions').select('*').eq('invoice_no', invoiceNo).is('deleted_at', null).maybeSingle()
+      return data ? trxFromDB(data) : null
+    } catch { return null }
+  }, [transactions])
+
   // Pemasukkan Credibook — book-scoped. Defensif: jika tabel belum ada, kosongkan.
   const refreshCredibook = useCallback(async () => {
     try {
@@ -1943,7 +1956,7 @@ export function useStore() {
     products, transactions, storeInfo, stats,
     admins, currentUser, customers, debts, debtPayments,
     books, activeBookId, defaultBookId, setActiveBook, addBook, updateBook,
-    credibookIncome, refreshCredibook,
+    credibookIncome, refreshCredibook, getTransactionByInvoice,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct, setProductFavorite,

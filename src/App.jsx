@@ -3,6 +3,7 @@ import { AlertTriangle, Database, RefreshCw, Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 import BookSplash from './components/BookSplash'
+import { InvoicePreviewProvider } from './components/InvoicePreview'
 import BottomNav from './components/BottomNav'
 import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
@@ -370,6 +371,7 @@ function AppShell() {
   }
 
   return (
+    <InvoicePreviewProvider resolve={store.getTransactionByInvoice} storeInfo={store.storeInfo}>
     <div
       className="flex w-screen overflow-hidden"
       style={{
@@ -456,6 +458,7 @@ function AppShell() {
         </Suspense>
       )}
     </div>
+    </InvoicePreviewProvider>
   )
 }
 

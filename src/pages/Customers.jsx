@@ -9,6 +9,7 @@ import WhatsAppButton from '../components/WhatsAppButton'
 import { formatRupiah, formatRupiahShort, formatDate, timeAgo } from '../utils/helpers'
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
+import { useInvoicePreview } from '../components/InvoicePreview'
 
 const EMPTY = { name: '', phone: '', whatsapp: '', address: '', email: '', notes: '', ownerUserId: '' }
 
@@ -17,6 +18,7 @@ export default function Customers({
   addCustomer, updateCustomer, deleteCustomer,
 }) {
   const toast = useToast()
+  const { openInvoice } = useInvoicePreview()
   // Owner & Staff Admin melihat "Dibuat oleh" + bisa mengatur PIC.
   const canSeeOwner = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const canManagePIC = canSeeOwner
@@ -530,10 +532,11 @@ export default function Customers({
                     style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                     <Receipt size={14} style={{ color: 'var(--accent-light)' }} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold truncate"
+                      <button onClick={() => openInvoice(t)} title="Lihat preview invoice"
+                        className="text-xs font-bold truncate underline decoration-dotted hover:opacity-80 text-left block w-full"
                         style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
                         {t.invoiceNo}
-                      </p>
+                      </button>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                         {timeAgo(t.date)} · {t.items.length} item
                       </p>

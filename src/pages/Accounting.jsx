@@ -8,8 +8,10 @@ import {
 import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
+import ArusKasDetail from '../components/ArusKasDetail'
 import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
+import { useInvoicePreview } from '../components/InvoicePreview'
 import { useAccounting } from '../hooks/useAccounting'
 
 const TABS = [
@@ -236,6 +238,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   }, [initialTabSignal])
   const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading, from, to, allTime }
   const [infoModal, setInfoModal] = useState(null) // { title, rows:[[label,val,neg?]], total:[label,val], note }
+  const [arusKasOpen, setArusKasOpen] = useState(false)
+  const invoicePreview = useInvoicePreview()
   const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
   // Total pengeluaran (non-sewa) dari getOutflowTransactions — SAMA dengan total
@@ -1404,7 +1408,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
             <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (ukBasis + rentAgg.bebanPeriod))} color="#14b8a6" sub="Uang Masuk − Uang Keluar" onClick={() => openDetail('arus_kas', 'Arus Kas Bersih', '#14b8a6')} />
+            <Card icon={Scale} label="Arus Kas Bersih" value={fmt((d.uang_masuk_total || 0) - (ukBasis + rentAgg.cashOutPeriod))} color="#14b8a6" sub="Kas masuk − kas keluar (aktual)" onClick={() => setArusKasOpen(true)} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
             <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
           </div>
@@ -2867,6 +2871,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           </div>
         )}
       </Modal>
+
+      {/* ── DETAIL ARUS KAS BERSIH (masuk + keluar, filter waktu) ── */}
+      <ArusKasDetail
+        open={arusKasOpen}
+        onClose={() => setArusKasOpen(false)}
+        loadCashflow={acc.getCashflowDetail}
+        onInvoiceClick={(inv) => invoicePreview.openInvoice(inv)}
+      />
 
       {/* ── EDIT PIUTANG CUSTOMER LAMA ── */}
       <Modal open={!!editRecv} onClose={() => setEditRecv(null)} title="Edit Piutang Customer Lama" size="sm">

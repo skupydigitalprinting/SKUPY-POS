@@ -11,6 +11,7 @@ import WhatsAppReminder from '../components/WhatsAppReminder'
 import { formatRupiah, formatDate, timeAgo, parseCurrency, toMoney } from '../utils/helpers'
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
+import { useInvoicePreview } from '../components/InvoicePreview'
 
 const STATUS_OPTIONS = [
   { id: 'all', label: 'Semua' },
@@ -39,6 +40,7 @@ export default function Piutang({
   reassignReceivableCustomer, getReceivableCustomerChanges,
 }) {
   const toast = useToast()
+  const { openInvoice } = useInvoicePreview()
   const [recvChanges, setRecvChanges] = useState([])
   const isOwner = currentUser?.role === 'owner'
   const canEditCustomer = currentUser?.role === 'owner' || currentUser?.role === 'admin'
@@ -614,8 +616,10 @@ export default function Piutang({
                       const lunas = rem <= 0
                       return (
                         <tr key={d.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td className="px-2 py-2.5 font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>
-                            {d.invoiceNo || '—'}
+                          <td className="px-2 py-2.5 font-semibold" style={{ fontFamily: 'Syne' }}>
+                            {d.invoiceNo
+                              ? <button onClick={() => openInvoice(d.invoiceNo)} className="underline decoration-dotted hover:opacity-80" style={{ color: 'var(--accent-light)' }} title="Lihat preview invoice">{d.invoiceNo}</button>
+                              : <span style={{ color: 'var(--text-primary)' }}>—</span>}
                           </td>
                           <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>
                             {formatDate(d.createdAt)}
@@ -848,7 +852,10 @@ export default function Piutang({
                 <CheckCircle2 size={14} style={{ color: '#10d98a' }} />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    {formatRupiah(p.amount)} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {p._invoiceNo || '—'}</span>
+                    {formatRupiah(p.amount)} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· </span>
+                    {p._invoiceNo
+                      ? <button onClick={() => openInvoice(p._invoiceNo)} className="underline decoration-dotted" style={{ color: 'var(--accent-light)', fontWeight: 600 }}>{p._invoiceNo}</button>
+                      : <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>—</span>}
                   </p>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                     {timeAgo(p.paid_at)} · {p.payment_method} · oleh {p.cashier || '-'}
