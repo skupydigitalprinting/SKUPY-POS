@@ -571,7 +571,7 @@ export function useAccounting() {
       // 2) Cicilan piutang
       {
         const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
       }
       // 3) Credibook (semua jenis = kas masuk)
       {
@@ -582,6 +582,11 @@ export function useAccounting() {
       {
         const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to)
         ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.trx_date, source: 'Migrasi Data', ref: x.name, category: 'Migrasi Pemasukan', method: x.method, status: 'migrasi', amount: Math.round(x.amount || 0), note: x.notes }))
+      }
+      // 5) Pengembalian kasbon karyawan (employee_cash_advance_payments) = kas masuk
+      {
+        const { data } = await supabase.from('employee_cash_advance_payments').select('id,payment_date,amount,payment_method,note,advance_id').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, source: 'Kasbon Karyawan', ref: '', category: 'Pengembalian Kasbon', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // KELUAR — pengeluaran aktual (single source of truth)
       const out = await getOutflowTransactions(from, to)
