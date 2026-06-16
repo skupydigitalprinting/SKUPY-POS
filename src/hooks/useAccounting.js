@@ -488,36 +488,36 @@ export function useAccounting() {
     try {
       // 1) Pengeluaran manual
       {
-        const { data } = await supabase.from('expenses').select('id,expense_date,category,amount,method,note').is('deleted_at', null).gte('expense_date', from).lte('expense_date', to)
-        ;(data || []).forEach(x => add({ id: x.id, kind: 'expense', date: x.expense_date, source: 'Pengeluaran', category: x.category || 'Pengeluaran', party: x.category || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+        const { data } = await supabase.from('expenses').select('id,expense_date,created_at,category,amount,method,note').is('deleted_at', null).gte('expense_date', from).lte('expense_date', to)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'expense', date: x.expense_date, createdAt: x.created_at, source: 'Pengeluaran', category: x.category || 'Pengeluaran', party: x.category || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 2) Pembelian cash/transfer (non-kredit) — yg kredit masuk Hutang Supplier
       {
-        const { data } = await supabase.from('purchases').select('id,purchase_date,item,supplier,amount,method,is_credit,note').is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to)
-        ;(data || []).filter(x => !x.is_credit).forEach(x => add({ id: x.id, kind: 'purchase', date: x.purchase_date, source: 'Pembelian', category: 'Pembelian', ref: x.item, party: x.supplier, method: x.method, amount: Math.round(x.amount || 0), status: 'lunas', note: x.note }))
+        const { data } = await supabase.from('purchases').select('id,purchase_date,created_at,item,supplier,amount,method,is_credit,note').is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to)
+        ;(data || []).filter(x => !x.is_credit).forEach(x => add({ id: x.id, kind: 'purchase', date: x.purchase_date, createdAt: x.created_at, source: 'Pembelian', category: 'Pembelian', ref: x.item, party: x.supplier, method: x.method, amount: Math.round(x.amount || 0), status: 'lunas', note: x.note }))
       }
       // 3) Pembayaran Hutang Supplier (sumber resmi = supplier_debt_payments)
       {
-        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,created_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
         const ids = [...new Set((data || []).map(x => x.supplier_debt_id).filter(Boolean))]
         const dmap = {}
         if (ids.length) { const { data: dd } = await supabase.from('supplier_debts').select('id,supplier,item').in('id', ids); (dd || []).forEach(d => { dmap[d.id] = d }) }
-        ;(data || []).forEach(x => { const d = dmap[x.supplier_debt_id] || {}; add({ id: x.id, kind: 'supplier_payment', date: x.paid_at, source: 'Hutang Supplier', category: 'Bayar Hutang Supplier', ref: d.item || '', party: d.supplier || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }) })
+        ;(data || []).forEach(x => { const d = dmap[x.supplier_debt_id] || {}; add({ id: x.id, kind: 'supplier_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Hutang Supplier', category: 'Bayar Hutang Supplier', ref: d.item || '', party: d.supplier || '', method: x.method, amount: Math.round(x.amount || 0), note: x.note }) })
       }
       // 4) Pembayaran Hutang Bank (sumber resmi = bank_loan_payments, BUKAN expenses)
       {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
-        ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 5) Kasbon Karyawan keluar (advance, bukan saldo awal/opening)
       {
-        const { data } = await supabase.from('employee_cash_advances').select('id,advance_date,amount,payment_method,note,employee_name,is_opening,status').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to)
-        ;(data || []).filter(x => !x.is_opening && !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'kasbon', date: x.advance_date, source: 'Kasbon Karyawan', category: 'Kasbon Keluar', party: x.employee_name || '', method: x.payment_method, amount: Math.round(x.amount || 0), note: x.note }))
+        const { data } = await supabase.from('employee_cash_advances').select('id,advance_date,created_at,amount,payment_method,note,employee_name,is_opening,status').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to)
+        ;(data || []).filter(x => !x.is_opening && !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'kasbon', date: x.advance_date, createdAt: x.created_at, source: 'Kasbon Karyawan', category: 'Kasbon Keluar', party: x.employee_name || '', method: x.payment_method, amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 6) Pengeluaran Migrasi Data Lama
       {
-        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', 'old_expense').gte('trx_date', from).lte('trx_date', to)
-        ;(data || []).forEach(x => add({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', category: 'Migrasi Pengeluaran', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
+        const { data } = await supabase.from('migration_details').select('id,trx_date,created_at,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', 'old_expense').gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => add({ id: x.id, kind: 'migration', date: x.trx_date, createdAt: x.created_at, source: 'Migrasi Data', category: 'Migrasi Pengeluaran', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
       // CATATAN SEWA DIBAYAR DIMUKA:
       //   Pembayaran sewa di muka TIDAK dihitung di sini sebagai uang keluar penuh.
@@ -565,28 +565,28 @@ export function useAccounting() {
         const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,paid,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
         ;(data || []).forEach(x => {
           const initPaid = Math.max(0, Math.round(x.paid || 0) - (cicByInv[x.invoice_no] || 0))
-          if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no })
+          if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, createdAt: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no })
         })
       }
       // 2) Cicilan piutang
       {
-        const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
+        const { data } = await supabase.from('debt_payments').select('id,paid_at,created_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
       }
       // 3) Credibook (semua jenis = kas masuk)
       {
-        const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
-        if (!error) (data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.transaction_date, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, category: 'Pemasukkan Manual', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+        const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,created_at,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
+        if (!error) (data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.transaction_date, createdAt: x.created_at, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, category: 'Pemasukkan Manual', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 4) Migrasi pemasukan lama
       {
-        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.trx_date, source: 'Migrasi Data', ref: x.name, category: 'Migrasi Pemasukan', method: x.method, status: 'migrasi', amount: Math.round(x.amount || 0), note: x.notes }))
+        const { data } = await supabase.from('migration_details').select('id,trx_date,created_at,name,customer,amount,method,notes').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.trx_date, createdAt: x.created_at, source: 'Migrasi Data', ref: x.name, category: 'Migrasi Pemasukan', method: x.method, status: 'migrasi', amount: Math.round(x.amount || 0), note: x.notes }))
       }
       // 5) Pengembalian kasbon karyawan (employee_cash_advance_payments) = kas masuk
       {
-        const { data } = await supabase.from('employee_cash_advance_payments').select('id,payment_date,amount,payment_method,note,advance_id').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, source: 'Kasbon Karyawan', ref: '', category: 'Pengembalian Kasbon', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+        const { data } = await supabase.from('employee_cash_advance_payments').select('id,payment_date,created_at,amount,payment_method,note,advance_id').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, createdAt: x.created_at, source: 'Kasbon Karyawan', ref: '', category: 'Pengembalian Kasbon', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // KELUAR — pengeluaran aktual (single source of truth)
       const out = await getOutflowTransactions(from, to)

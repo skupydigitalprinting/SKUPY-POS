@@ -192,6 +192,31 @@ export function formatDateTime(dateStr) {
   })
 }
 
+// "16 Jun 2026 • 14:35" — tanggal dari dateValue, jam dari timeValue (created_at).
+// Timezone Asia/Jakarta. Aman untuk dateValue 'YYYY-MM-DD' (tanpa geser hari).
+const _MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+export function formatDateTimeWIB(dateValue, timeValue) {
+  if (!dateValue && !timeValue) return '—'
+  let datePart = ''
+  const dv = dateValue != null ? String(dateValue) : ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dv)) {
+    // Tanggal murni (date-only) → format manual, tidak kena pergeseran timezone.
+    const [y, m, dd] = dv.split('-')
+    datePart = `${parseInt(dd, 10)} ${_MONTHS_ID[parseInt(m, 10) - 1]} ${y}`
+  } else {
+    const src = dateValue || timeValue
+    datePart = new Date(src).toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', year: 'numeric' })
+  }
+  // Jam: dari timeValue (timestamp lengkap). Kalau dateValue sendiri sudah punya jam, pakai itu.
+  const ts = timeValue || (dv.length > 10 ? dateValue : null)
+  let timePart = ''
+  if (ts) {
+    const dt = new Date(ts)
+    if (!isNaN(dt.getTime())) timePart = dt.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+  return timePart ? `${datePart} • ${timePart}` : datePart
+}
+
 export function timeAgo(dateStr) {
   const diff = (Date.now() - new Date(dateStr).getTime()) / 1000
   if (diff < 60) return 'baru saja'

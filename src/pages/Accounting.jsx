@@ -5,7 +5,7 @@ import {
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
   HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
 import ArusKasDetail from '../components/ArusKasDetail'
@@ -1550,7 +1550,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
               <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.category}{x.note ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {x.note}</span> : null}</div>
-                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.expense_date)}</span><span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', textTransform: 'uppercase', fontSize: 9 }}>{x.method}</span></div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{formatDateTimeWIB(x.expense_date, x.created_at)}</span><span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', textTransform: 'uppercase', fontSize: 9 }}>{x.method}</span></div>
                 </div>
                 <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{fmt(x.amount)}</div>
                 <button onClick={() => setEditExp({ id: x.id, date: x.expense_date, category: x.category || 'Pembelian Bahan', amount: String(Math.round(x.amount || 0)), method: x.method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
@@ -1828,7 +1828,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                                 ) : (
                                   <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
                                     <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>
-                                    <td className="px-2 py-2" style={{ color: 'var(--text-secondary)' }}>{dt(p.paid_at)}</td>
+                                    <td className="px-2 py-2" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(p.paid_at, p.paid_at)}</td>
                                     <td className="px-2 py-2 text-right font-bold" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</td>
                                     <td className="px-2 py-2" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>{p.method}</td>
                                     <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 140 }}>{p.note}</td>
@@ -2555,7 +2555,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                   {(history.rows || []).map(p => hEdit?.id === p.id ? (
                     <tr key={p.id} style={{ background: 'rgba(139,92,246,0.05)', borderBottom: '1px solid var(--border)' }}>
                       {isBank && <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>}
-                      <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{dt(p.paid_at)}</td>
+                      <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{formatDateTimeWIB(p.paid_at, p.paid_at)}</td>
                       <td className="px-2 py-2" colSpan={editCols}>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           <MoneyInput value={hEdit.amount} onChange={v => setHEdit(s => ({ ...s, amount: v }))} placeholder="Nominal" className="px-2 py-1 rounded text-xs" style={inp} />
@@ -2584,7 +2584,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                   ) : (
                     <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
                       {isBank && <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>}
-                      <td className="px-2 py-2" style={{ color: 'var(--text-secondary)' }}>{dt(p.paid_at)}</td>
+                      <td className="px-2 py-2" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(p.paid_at, p.paid_at)}</td>
                       <td className="px-2 py-2 text-right font-bold" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</td>
                       <td className="px-2 py-2" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>{p.method}</td>
                       <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 160 }}>{p.note}</td>
@@ -2649,7 +2649,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{n.item || '—'} <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${stColor}22`, color: stColor }}>{status}</span></div>
-                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{dt(n.created_at)}{n.due_date ? ` · Tempo ${dt(n.due_date)}` : ''}</div>
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatDateTimeWIB(n.created_at, n.created_at)}{n.due_date ? ` · Tempo ${dt(n.due_date)}` : ''}</div>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
                           {rem > 0 && <button onClick={() => { setPayId(payId === n.id ? null : n.id); setPayVal(String(rem)); setPayMethod('transfer'); setPayNote('') }} className="px-2 h-7 rounded-lg text-[11px] font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
@@ -2679,7 +2679,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                             {pays.length === 0 ? <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran.</p>
                             : pays.map(p => (
                               <div key={p.id} className="flex items-center justify-between gap-2 text-[10px] py-0.5">
-                                <span style={{ color: 'var(--text-secondary)' }}>{dt(p.paid_at)} · <span className="uppercase">{p.method}</span>{p.fifo_group ? ' · FIFO' : ''}{p.note ? ` · ${p.note}` : ''}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(p.paid_at, p.paid_at)} · <span className="uppercase">{p.method}</span>{p.fifo_group ? ' · FIFO' : ''}{p.note ? ` · ${p.note}` : ''}</span>
                                 <span className="font-bold flex-shrink-0" style={{ color: '#10d98a' }}>{fmt(p.amount)}</span>
                               </div>
                             ))}

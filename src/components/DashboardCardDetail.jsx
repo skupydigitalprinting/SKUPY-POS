@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { Pencil, Trash2, Check, X, Loader2, Wallet } from 'lucide-react'
 import Modal from './Modal'
 import { Button, Badge } from './ui'
-import { formatRupiah, formatDate, parseCurrency, STATUS_MAP } from '../utils/helpers'
+import { formatRupiah, formatDate, formatDateTimeWIB, parseCurrency, STATUS_MAP } from '../utils/helpers'
 import { useToast } from './Toast'
 
 const PAY_LABEL = { cash: 'Cash', transfer: 'Transfer', qris: 'QRIS', hutang: 'Hutang' }
@@ -225,7 +225,7 @@ export default function DashboardCardDetail({
                           : <span style={{ color: 'var(--text-primary)' }}>{r.invoiceNo}</span>)
                       : <span style={{ color: 'var(--text-primary)' }}>—</span>}
                   </td>
-                  <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>{r.date ? formatDate(r.date) : '—'}</td>
+                  <td className="px-2 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{r.date ? formatDateTimeWIB(r.date, r.createdAt || r.date) : '—'}</td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-secondary)' }}>{r.customer || '—'}</td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-muted)' }}>{r.cashierName || '—'}</td>
                   <td className="px-2 py-2.5" style={{ color: 'var(--text-muted)' }}>{PAY_LABEL[r.paymentMethod] || r.paymentMethod || '—'}</td>

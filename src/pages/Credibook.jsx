@@ -3,7 +3,7 @@ import {
   TrendingUp, TrendingDown, Scale, Plus, Pencil, Trash2, Check, X, Loader2,
   Receipt, Wallet, Calendar, NotebookPen, ArrowRight,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB } from '../utils/helpers'
 import { useAccounting } from '../hooks/useAccounting'
 import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
@@ -224,7 +224,7 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
                 <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{x.name}{x.note ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {x.note}</span> : null}</div>
-                    <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{dt(x.transaction_date)}</span>{(() => { const it = x.income_type || 'omzet'; const c = ITYPE_COLOR[it] || '#64748b'; return <span className="px-1.5 py-0.5 rounded font-bold" style={{ background: `${c}22`, color: c, fontSize: 9, textTransform: 'uppercase' }}>{ITYPE_LABEL[it] || it}</span> })()}<span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(148,163,184,0.12)', color: 'var(--text-secondary)', fontSize: 9, textTransform: 'uppercase' }}>{x.payment_method}</span>{x.created_by_name && <span>· oleh {x.created_by_name}</span>}</div>
+                    <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{formatDateTimeWIB(x.transaction_date, x.created_at)}</span>{(() => { const it = x.income_type || 'omzet'; const c = ITYPE_COLOR[it] || '#64748b'; return <span className="px-1.5 py-0.5 rounded font-bold" style={{ background: `${c}22`, color: c, fontSize: 9, textTransform: 'uppercase' }}>{ITYPE_LABEL[it] || it}</span> })()}<span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(148,163,184,0.12)', color: 'var(--text-secondary)', fontSize: 9, textTransform: 'uppercase' }}>{x.payment_method}</span>{x.created_by_name && <span>· oleh {x.created_by_name}</span>}</div>
                   </div>
                   <div className="text-sm font-bold whitespace-nowrap" style={{ color: '#10d98a', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{fmt(x.amount)}</div>
                   <button onClick={() => setEdit({ id: x.id, incomeType: x.income_type || 'omzet', name: x.name, date: (x.transaction_date || '').slice(0, 10), amount: String(Math.round(x.amount || 0)), method: x.payment_method || 'transfer', note: x.note || '' })} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={12} /></button>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, TrendingDown, Scale, Loader2, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import Modal from './Modal'
-import { formatRupiah, formatDate } from '../utils/helpers'
+import { formatRupiah, formatDateTimeWIB } from '../utils/helpers'
 
 const RANGES = [
   { id: 'today', label: 'Hari Ini' },
@@ -116,7 +116,7 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
                 const clickable = onInvoiceClick && r.invoiceNo
                 return (
                   <tr key={`${r.type}-${r.id}-${idx}`} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td className="px-2 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDate(r.date)}</td>
+                    <td className="px-2 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(r.date, r.createdAt)}</td>
                     <td className="px-2 py-2.5">
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-bold" style={{ fontSize: 9, textTransform: 'uppercase', color, background: `${color}1f` }}>
                         {masuk ? <ArrowDownCircle size={10} /> : <ArrowUpCircle size={10} />}{masuk ? 'Masuk' : 'Keluar'}
