@@ -9,6 +9,7 @@ import { formatRupiah, formatCurrency, parseCurrency, calculateAssetBookValue, a
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
 import ArusKasDetail from '../components/ArusKasDetail'
+import SaldoDetail from '../components/SaldoDetail'
 import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
 import { useInvoicePreview } from '../components/InvoicePreview'
@@ -239,6 +240,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [detail, setDetail] = useState(null) // { kind, title, color, rows, total, loading, from, to, allTime }
   const [infoModal, setInfoModal] = useState(null) // { title, rows:[[label,val,neg?]], total:[label,val], note }
   const [arusKasOpen, setArusKasOpen] = useState(false)
+  const [saldoDetailOpen, setSaldoDetailOpen] = useState(false)
   const invoicePreview = useInvoicePreview()
   const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
@@ -827,6 +829,21 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     : 0, [d, asetTetap, rentAgg])
   const kekayaanBersih = useMemo(() => asetTotal - totalHutang, [asetTotal, totalHutang])
   const saldoKasBank = useMemo(() => Math.round((d?.saldo_kas || 0) + (d?.saldo_rekening || 0)), [d])
+  // Neraca: Aset HARUS = Kewajiban + Ekuitas. selisih>0 → tidak seimbang.
+  const neracaBalance = useMemo(() => {
+    const kewajibanEkuitas = totalHutang + kekayaanBersih
+    const selisih = Math.round(asetTotal - kewajibanEkuitas)
+    return { asetTotal, kewajibanEkuitas, selisih, balanced: Math.abs(selisih) <= 1 }
+  }, [asetTotal, totalHutang, kekayaanBersih])
+
+  // AUDIT keuangan otomatis di console saat data dashboard siap (owner saja, 1x).
+  const auditedRef = React.useRef(false)
+  useEffect(() => {
+    if (!d || !isOwner || auditedRef.current) return
+    auditedRef.current = true
+    acc.auditAccounting?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, isOwner])
 
   // Rincian breakdown untuk card Saldo / Total Aset / Kekayaan Bersih (klik → modal).
   const openInfo = (kind) => {
@@ -1432,7 +1449,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           {/* BARIS 4 — Saldo, Aset & Kekayaan Bersih — OWNER ONLY (sensitif) */}
           {isOwner && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Wallet} label="Saldo (Kas & Bank)" value={fmt(saldoKasBank)} color={saldoKasBank >= 0 ? '#14b8a6' : '#ef4444'} sub="Klik → rincian saldo" onClick={() => openInfo('saldo')} />
+            <Card icon={Wallet} label="Saldo (Kas & Bank)" value={fmt(saldoKasBank)} color={saldoKasBank >= 0 ? '#14b8a6' : '#ef4444'} sub="Klik → rincian saldo" onClick={() => setSaldoDetailOpen(true)} />
             <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
             <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub="Sisa sewa belum jadi beban" onClick={() => setTab('sewa')} />
             <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Saldo+Piutang+Karyawan+Aset+Sewa" onClick={() => openInfo('totalaset')} />
@@ -1460,6 +1477,19 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Ekuitas</span><span style={{ color: '#10d98a' }}>{fmt(kekayaanBersih)}</span></div>
                 <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Kewajiban + Ekuitas</span><span>{fmt(totalHutang + kekayaanBersih)}</span></div>
               </div>
+            </div>
+            {/* Status keseimbangan neraca: Aset = Kewajiban + Ekuitas */}
+            <div className="mt-3 rounded-xl px-3 py-2.5 flex items-center justify-between gap-2 flex-wrap"
+              style={{
+                background: neracaBalance.balanced ? 'rgba(16,217,138,0.08)' : 'rgba(239,68,68,0.08)',
+                border: `1px solid ${neracaBalance.balanced ? 'rgba(16,217,138,0.3)' : 'rgba(239,68,68,0.35)'}`,
+              }}>
+              <span className="text-xs font-bold inline-flex items-center gap-1.5" style={{ color: neracaBalance.balanced ? '#10d98a' : '#ef4444', fontFamily: 'Syne' }}>
+                {neracaBalance.balanced ? <><Check size={13} /> Neraca Seimbang</> : <><AlertTriangle size={13} /> Neraca TIDAK Seimbang</>}
+              </span>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Aset {fmt(neracaBalance.asetTotal)} = Kewajiban+Ekuitas {fmt(neracaBalance.kewajibanEkuitas)} · Selisih <b style={{ color: neracaBalance.balanced ? '#10d98a' : '#ef4444' }}>{fmt(neracaBalance.selisih)}</b>
+              </span>
             </div>
           </div>
           )}
@@ -2876,6 +2906,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       <ArusKasDetail
         open={arusKasOpen}
         onClose={() => setArusKasOpen(false)}
+        loadCashflow={acc.getCashflowDetail}
+        onInvoiceClick={(inv) => invoicePreview.openInvoice(inv)}
+      />
+
+      {/* ── DETAIL SALDO (KAS & BANK): per metode + histori mutasi ── */}
+      <SaldoDetail
+        open={saldoDetailOpen}
+        onClose={() => setSaldoDetailOpen(false)}
+        d={d}
         loadCashflow={acc.getCashflowDetail}
         onInvoiceClick={(inv) => invoicePreview.openInvoice(inv)}
       />

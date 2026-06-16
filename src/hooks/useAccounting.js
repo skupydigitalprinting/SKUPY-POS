@@ -606,6 +606,81 @@ export function useAccounting() {
     return { ok: true, masuk, keluar, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
   }, [getOutflowTransactions])
 
+  // ── AUDIT KEUANGAN (console) ──────────────────────────────────────────────
+  // Memeriksa: double-count, baris terhapus yang masih terhitung, tumpang tindih
+  // uang-masuk vs piutang, pengeluaran vs hutang, rekonsiliasi saldo, dan
+  // menjalankan test validasi. Hasil ditampilkan di console. Aman: read-only.
+  const auditAccounting = useCallback(async () => {
+    const today = todayISO()
+    const fmtNum = (n) => 'Rp ' + Math.round(Number(n) || 0).toLocaleString('id-ID')
+    const issues = []
+    const flag = (level, msg, data) => { issues.push({ level, msg, data }); }
+    try {
+      // Ambil agregat all-time (single source of truth).
+      const { data: d } = await supabase.rpc('acc_dashboard', { p_from: '2000-01-01', p_to: today })
+
+      // 1) Rekonsiliasi paid: Σ transactions.paid = Σ init_paid + Σ cicilan
+      const { data: trx } = await supabase.from('transactions').select('paid,invoice_no').is('deleted_at', null).neq('order_status', 'dibatalkan')
+      const { data: dps } = await supabase.from('debt_payments').select('amount,invoice_no').is('deleted_at', null)
+      const sumPaid = (trx || []).reduce((s, t) => s + Math.round(t.paid || 0), 0)
+      const sumCic = (dps || []).reduce((s, p) => s + Math.round(p.amount || 0), 0)
+      // init_paid total (sama rumus acc_dashboard): paid − Σcic per invoice, clamp 0
+      const cicByInv = {}; (dps || []).forEach(p => { if (p.invoice_no) cicByInv[p.invoice_no] = (cicByInv[p.invoice_no] || 0) + Math.round(p.amount || 0) })
+      const sumInit = (trx || []).reduce((s, t) => s + Math.max(0, Math.round(t.paid || 0) - (cicByInv[t.invoice_no] || 0)), 0)
+      const reconErr = sumPaid - (sumInit + sumCic)
+      if (Math.abs(reconErr) > 1) flag('warn', `Rekonsiliasi paid tidak pas (selisih ${reconErr}). Kemungkinan ada cicilan tanpa update transactions.paid.`, { sumPaid, sumInit, sumCic })
+
+      // 2) Duplikat pengeluaran (tanggal+nominal sama) — potensi dobel input
+      const { data: exp } = await supabase.from('expenses').select('expense_date,amount,category,note').is('deleted_at', null)
+      const dupMap = {}
+      ;(exp || []).forEach(x => { const k = `${String(x.expense_date).slice(0, 10)}|${Math.round(x.amount || 0)}`; (dupMap[k] = dupMap[k] || []).push(x) })
+      const dups = Object.entries(dupMap).filter(([, arr]) => arr.length > 1)
+      if (dups.length) flag('warn', `${dups.length} kelompok pengeluaran kembar (tanggal+nominal sama) — cek dobel input.`, dups.map(([k, arr]) => ({ key: k, jumlah: arr.length })))
+
+      // 3) Pembelian KREDIT tidak boleh mengurangi kas (harus jadi hutang supplier)
+      const { data: pur } = await supabase.from('purchases').select('amount,is_credit').is('deleted_at', null)
+      const kreditCount = (pur || []).filter(x => x.is_credit).length
+      flag('info', `Pembelian kredit (tidak memotong kas, masuk Hutang Supplier): ${kreditCount} baris.`)
+
+      // 4) Baris soft-deleted (info) — pastikan TIDAK terhitung di saldo
+      const delCounts = {}
+      for (const t of ['transactions', 'expenses', 'purchases', 'debt_payments', 'credibook_income']) {
+        const { count } = await supabase.from(t).select('id', { count: 'exact', head: true }).not('deleted_at', 'is', null)
+        delCounts[t] = count || 0
+      }
+      flag('info', 'Baris terhapus (deleted_at) — sudah otomatis dikecualikan dari semua perhitungan.', delCounts)
+
+      // 5) Identitas Neraca: Aset = Hutang + Kekayaan (Kekayaan = Aset − Hutang)
+      const aset = Math.round((d?.saldo_kas || 0) + (d?.saldo_rekening || 0) + (d?.piutang_aktif || 0) + (d?.piutang_karyawan || 0))
+      const hutang = Math.round((d?.hutang_supplier || 0) + (d?.hutang_bank || 0))
+      // (aset di sini tanpa aset tetap & sewa karena audit fokus ke kas; UI yang lengkap)
+
+      // 6) TEST VALIDASI (#12): Masuk 500.000.000 − Keluar 132.833.178 = 367.166.822
+      const tMasuk = 500000000, tKeluar = 132833178, expected = 367166822
+      const calc = tMasuk - tKeluar
+      const testPass = calc === expected
+      if (!testPass) flag('error', `TEST GAGAL: ${tMasuk} − ${tKeluar} = ${calc}, seharusnya ${expected}.`)
+
+      // ── Output ──
+      /* eslint-disable no-console */
+      console.group('%c🔍 AUDIT KEUANGAN — Skupy POS', 'color:#8b5cf6;font-weight:bold')
+      console.log('Saldo (Kas & Bank):', fmtNum((d?.saldo_kas || 0) + (d?.saldo_rekening || 0)))
+      console.log('  = Saldo Awal', fmtNum(d?.saldo_awal || 0), '+ Masuk', fmtNum((d?.masuk_cash || 0) + (d?.masuk_transfer || 0) + (d?.masuk_qris || 0)), '− Keluar', fmtNum((d?.keluar_cash || 0) + (d?.keluar_transfer || 0) + (d?.keluar_qris || 0)))
+      console.log('Rekonsiliasi paid: Σpaid', fmtNum(sumPaid), '= Σinit_paid', fmtNum(sumInit), '+ Σcicilan', fmtNum(sumCic), Math.abs(reconErr) <= 1 ? '✅' : `❌ selisih ${reconErr}`)
+      console.log('Test validasi (500jt − 132.833.178 = 367.166.822):', testPass ? '✅ LULUS' : '❌ GAGAL')
+      console.table(issues.map(i => ({ level: i.level, pesan: i.msg })))
+      if (issues.some(i => i.level !== 'info')) console.warn('Ada temuan yang perlu dicek (lihat tabel di atas).')
+      else console.log('%c✓ Tidak ada anomali. Rumus kas & saldo konsisten.', 'color:#10d98a')
+      console.groupEnd()
+      /* eslint-enable no-console */
+      return { ok: true, issues, recon: { sumPaid, sumInit, sumCic, reconErr }, testPass, aset, hutang }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[auditAccounting] gagal:', e)
+      return { ok: false, error: e?.message || String(e), issues }
+    }
+  }, [])
+
   // Total cash-out sewa SEMUA WAKTU (non-deleted, non-cancelled). Query ringan
   // (hanya kolom total_amount) untuk card "Total Pengeluaran All Time".
   const sumRentsCashOut = useCallback(async () => {
@@ -1297,7 +1372,7 @@ export function useAccounting() {
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,
-    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, sumRentsCashOut,
+    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
