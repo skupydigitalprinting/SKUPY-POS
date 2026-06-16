@@ -5,7 +5,7 @@ import {
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
   HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download,
 } from 'lucide-react'
-import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset } from '../utils/helpers'
+import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset, QUICK_PRESETS } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
 import ArusKasDetail from '../components/ArusKasDetail'
@@ -421,7 +421,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     if (out.ok) setPengOutAll(out.total); else if (dRes.ok) setPengOutAll(Math.round(dRes.data.pengeluaran_total || 0))
   }
   const loadEntries = async (page = 0) => { const r = await acc.listEntries({ page, from, to }); if (r.ok) { setEntries(r.data); setEntCount(r.count); setEntPage(page) } else if (/relation|does not exist/i.test(r.error || '')) setSetupNeeded(true) }
-  const loadExpenses = async () => { const r = await acc.listExpenses({}); if (r.ok) setExpenses(r.data) }
+  const loadExpenses = async () => { const r = await acc.listExpensesByRange({ from, to }); if (r.ok) setExpenses(r.data) }
   const loadExpCats = async () => { const r = await acc.listExpenseCategories(); if (r.ok) setExpCats(r.data) }
   const loadPurchases = async () => { const r = await acc.listPurchases({}); if (r.ok) setPurchases(r.data) }
   const loadSuppliers = async () => { const r = await acc.listSuppliers(supSearch); if (r.ok) setSuppliers(r.data) }
@@ -1544,8 +1544,13 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             <Button variant="primary" className="w-full" onClick={submitExpense} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Catat Pengeluaran</Button>
           </FormCard>
           <div className="space-y-2">
-            <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pengeluaran</div>
-            {expenses.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pengeluaran tercatat</p>}
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+              <div className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pengeluaran</div>
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Menampilkan <b style={{ color: 'var(--text-secondary)' }}>{expenses.length}</b> transaksi · Periode: <b style={{ color: 'var(--accent-light)' }}>{(QUICK_PRESETS.find(([k]) => k === detectPreset(from, to)) || [])[1] || `${dt(from)} – ${dt(to)}`}</b>
+              </div>
+            </div>
+            {expenses.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada pengeluaran pada periode ini</p>}
             {expenses.map(x => (
               <div key={x.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex-1 min-w-0">

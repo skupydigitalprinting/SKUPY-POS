@@ -47,6 +47,22 @@ function MoneyInput({ value, onChange, placeholder = '0', className, style }) {
     className={className} style={style} />
 }
 
+// Kartu statistik dashboard Credibook (module-level).
+function MiniCard({ icon: Icon, label, value, color, sub, highlight }) {
+  return (
+    <div className="rounded-2xl p-4 min-w-0" style={{ background: highlight ? `${color}14` : 'var(--bg-card)', border: `1px solid ${highlight ? `${color}66` : 'var(--border)'}` }}>
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}1f`, border: `1px solid ${color}4d` }}>
+          <Icon size={15} style={{ color }} />
+        </div>
+        <span className="text-xs font-semibold leading-tight" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+      </div>
+      <div className="font-bold" style={{ fontFamily: 'Syne', color, fontSize: 'clamp(15px,4.4vw,22px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(value)}</div>
+      {sub && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{sub}</div>}
+    </div>
+  )
+}
+
 // Module-level (jangan di dalam komponen) agar input tidak remount tiap ketik.
 function Field({ icon: Icon, label, required, error, children }) {
   return (
@@ -71,6 +87,8 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
 
   const [rows, setRows] = useState([]); const [loading, setLoading] = useState(false)
   const [expTotal, setExpTotal] = useState(0)
+  const [omsetInvoice, setOmsetInvoice] = useState(0) // omset dari invoice/kasir (per book)
+  const [piutangBook, setPiutangBook] = useState(0)   // piutang aktif (per book)
   const inp = { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
   const FIELD = 'w-full px-3.5 py-3 rounded-xl text-sm'
 
@@ -82,14 +100,26 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
     setLoading(true)
     const r = await acc.listCredibookIncome({ bookId: activeBookId || undefined, from: range.from, to: range.to })
     setRows(r.ok ? r.data : [])
-    setExpTotal(await acc.sumExpensesRange(range.from, range.to))
+    const [exp, omset, piutang] = await Promise.all([
+      acc.sumExpensesRange(range.from, range.to),
+      acc.sumOmsetByBook({ bookId: activeBookId || undefined, from: range.from, to: range.to }),
+      acc.sumPiutangByBook({ bookId: activeBookId || undefined }),
+    ])
+    setExpTotal(exp); setOmsetInvoice(omset); setPiutangBook(piutang)
     setLoading(false)
   }
   // Muat ulang saat range / book berubah (realtime saat pindah book).
   useEffect(() => { load() /* eslint-disable-next-line */ }, [rangeId, activeBookId])
 
-  const totalMasuk = useMemo(() => rows.reduce((s, x) => s + Math.round(x.amount || 0), 0), [rows])
-  const saldoBersih = totalMasuk - expTotal
+  // ── 6 angka dashboard (semua per Book aktif) ──
+  const omsetCredibook = useMemo(() => rows.filter(x => (x.income_type || 'omzet') === 'omzet').reduce((s, x) => s + Math.round(x.amount || 0), 0), [rows])
+  const nonOmset = useMemo(() => rows.filter(x => (x.income_type || 'omzet') !== 'omzet').reduce((s, x) => s + Math.round(x.amount || 0), 0), [rows])
+  const omsetBook = omsetInvoice + omsetCredibook      // 1
+  const totalPemasukan = omsetBook + nonOmset          // 3
+  const saldoBook = totalPemasukan - expTotal          // 6
+  // kompat lama
+  const totalMasuk = totalPemasukan
+  const saldoBersih = saldoBook
 
   const submit = async () => {
     const e = {}
@@ -138,22 +168,14 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
           ))}
         </div>
 
-        {/* Mini dashboard */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-          <div className="rounded-2xl p-4 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <div className="flex items-center gap-2 mb-2"><div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(16,217,138,0.12)', border: '1px solid rgba(16,217,138,0.3)' }}><TrendingUp size={15} style={{ color: '#10d98a' }} /></div><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Pemasukkan</span></div>
-            <div className="font-bold" style={{ fontFamily: 'Syne', color: '#10d98a', fontSize: 'clamp(15px,4.4vw,22px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(totalMasuk)}</div>
-          </div>
-          <div className="rounded-2xl p-4 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-            <div className="flex items-center gap-2 mb-2"><div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)' }}><TrendingDown size={15} style={{ color: '#ef4444' }} /></div><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Pengeluaran</span></div>
-            <div className="font-bold" style={{ fontFamily: 'Syne', color: '#ef4444', fontSize: 'clamp(15px,4.4vw,22px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(expTotal)}</div>
-            <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Dari Accounting (semua book)</div>
-          </div>
-          <div className="rounded-2xl p-4 min-w-0" style={{ background: saldoBersih >= 0 ? 'rgba(20,184,166,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${saldoBersih >= 0 ? 'rgba(20,184,166,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
-            <div className="flex items-center gap-2 mb-2"><div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(20,184,166,0.15)', border: '1px solid rgba(20,184,166,0.4)' }}><Scale size={15} style={{ color: '#14b8a6' }} /></div><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Saldo Bersih</span></div>
-            <div className="font-bold" style={{ fontFamily: 'Syne', color: saldoBersih >= 0 ? '#14b8a6' : '#ef4444', fontSize: 'clamp(15px,4.4vw,22px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(saldoBersih)}</div>
-            <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Pemasukkan − Pengeluaran</div>
-          </div>
+        {/* Dashboard 6 card — semua mengikuti Book aktif */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
+          <MiniCard icon={Receipt} label="Omset Book" value={omsetBook} color="#3b82f6" sub="Invoice kasir + Credibook (Omset)" />
+          <MiniCard icon={TrendingUp} label="Pemasukkan Non Omset" value={nonOmset} color="#10d98a" sub="Refund / modal / lainnya" />
+          <MiniCard icon={Wallet} label="Total Pemasukkan" value={totalPemasukan} color="#22c55e" sub="Omset + Non Omset" />
+          <MiniCard icon={TrendingDown} label="Total Pengeluaran" value={expTotal} color="#ef4444" sub="Dari Accounting (semua book)" />
+          <MiniCard icon={Calendar} label="Piutang Book" value={piutangBook} color="#f59e0b" sub="Piutang aktif (saldo berjalan)" />
+          <MiniCard icon={Scale} label="Saldo Book" value={saldoBook} color="#06b6d4" sub="Total Pemasukkan − Pengeluaran" highlight />
         </div>
 
         {/* Tombol Pemasukkan / Pengeluaran */}

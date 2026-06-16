@@ -137,6 +137,21 @@ export function useAccounting() {
     return { ok: true, data: data || [], count: count || 0 }
   }, [])
 
+  // Riwayat pengeluaran MENGIKUTI filter waktu (from..to). expense_date dipakai
+  // untuk periode; jam tetap dari created_at. Exclude deleted. Urut terbaru dulu
+  // (expense_date desc, lalu created_at desc). Cap tinggi = "tampilkan semua".
+  const listExpensesByRange = useCallback(async ({ from, to } = {}) => {
+    let q = supabase.from('expenses').select('*', { count: 'exact' }).is('deleted_at', null)
+    if (from) q = q.gte('expense_date', from)
+    if (to) q = q.lte('expense_date', to)
+    const { data, error, count } = await q
+      .order('expense_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(5000)
+    if (error) return { ok: false, error: error.message, data: [], count: 0 }
+    return { ok: true, data: data || [], count: count || 0 }
+  }, [])
+
   const listPurchases = useCallback(async ({ page = 0 } = {}) => {
     const { data, error, count } = await supabase.from('purchases')
       .select('*', { count: 'exact' })
@@ -989,6 +1004,35 @@ export function useAccounting() {
     const { error } = await supabase.from('credibook_income').update({ deleted_at: new Date().toISOString() }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
+  // Omset invoice/kasir per Book (sum total invoice valid) dalam rentang.
+  // bookId undefined/null = semua book. Defensif jika kolom book_id belum ada.
+  const sumOmsetByBook = useCallback(async ({ bookId, from, to } = {}) => {
+    const run = async (withBook) => {
+      let q = supabase.from('transactions').select('total').is('deleted_at', null).neq('order_status', 'dibatalkan')
+      if (from) q = q.gte('created_at', from)
+      if (to) q = q.lte('created_at', to + 'T23:59:59')
+      if (withBook && bookId) q = q.eq('book_id', bookId)
+      return await q.limit(10000)
+    }
+    let { data, error } = await run(true)
+    if (error && /book_id/i.test(error.message || '')) ({ data, error } = await run(false))
+    if (error) return 0
+    return (data || []).reduce((s, t) => s + Math.round(t.total || 0), 0)
+  }, [])
+
+  // Total piutang AKTIF (sisa) per Book — saldo berjalan, tidak ikut filter tanggal.
+  const sumPiutangByBook = useCallback(async ({ bookId } = {}) => {
+    const run = async (withBook) => {
+      let q = supabase.from('debts').select('total_debt,paid').is('deleted_at', null)
+      if (withBook && bookId) q = q.eq('book_id', bookId)
+      return await q.limit(10000)
+    }
+    let { data, error } = await run(true)
+    if (error && /book_id/i.test(error.message || '')) ({ data, error } = await run(false))
+    if (error) return 0
+    return (data || []).reduce((s, d) => s + Math.max(0, Math.round(d.total_debt || 0) - Math.round(d.paid || 0)), 0)
+  }, [])
+
   // Total pengeluaran (expenses) dalam rentang — untuk mini-dashboard Credibook.
   const sumExpensesRange = useCallback(async (from, to) => {
     let q = supabase.from('expenses').select('amount').is('deleted_at', null)
@@ -1372,12 +1416,12 @@ export function useAccounting() {
     listSuppliers, addSupplier, updateSupplier, deleteSupplier,
     listBankLoans, addBankLoan, deleteBankLoan, payBankLoan,
     listBankPayments, editBankPayment, deleteBankPayment,
-    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut,
+    getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut, listExpensesByRange,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
-    listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange,
+    listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange, sumOmsetByBook, sumPiutangByBook,
     listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
