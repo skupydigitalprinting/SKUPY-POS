@@ -51,11 +51,21 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
   // Gabung & urutkan terbaru dulu untuk tabel.
   const rows = useMemo(() => [...data.masuk, ...data.keluar].sort((a, b) => new Date(b.date) - new Date(a.date)), [data])
 
+  // Breakdown per metode (cash / transfer / qris). 'hutang' (DP invoice hutang) → cash.
+  const bd = useMemo(() => {
+    const bucket = (mthd) => { const m = String(mthd || '').toLowerCase(); return m === 'transfer' ? 'transfer' : m === 'qris' ? 'qris' : 'cash' }
+    const z = { cash: 0, transfer: 0, qris: 0 }
+    const masuk = { ...z }, keluar = { ...z }
+    data.masuk.forEach(r => { masuk[bucket(r.method)] += Math.round(r.amount || 0) })
+    data.keluar.forEach(r => { keluar[bucket(r.method)] += Math.round(r.amount || 0) })
+    return { masuk, keluar }
+  }, [data])
+
   const inp = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }
 
   return (
-    <Modal open={open} onClose={onClose} title="Detail — Arus Kas Bersih"
-      subtitle="Uang yang benar-benar diterima & dikeluarkan" size="xl" mobileFull>
+    <Modal open={open} onClose={onClose} title="Detail — Arus Saldo (Kas & Bank)"
+      subtitle="Mutasi saldo aktual: Cash · Transfer · QRIS" size="xl" mobileFull>
       {/* Filter waktu */}
       <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
         {RANGES.map(r => (
@@ -87,16 +97,29 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
           <div className="font-bold" style={{ fontFamily: 'Syne', color: '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(data.totalKeluar)}</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: data.net >= 0 ? 'rgba(20,184,166,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${data.net >= 0 ? 'rgba(20,184,166,0.4)' : 'rgba(239,68,68,0.4)'}` }}>
-          <div className="flex items-center gap-1.5 mb-1"><Scale size={13} style={{ color: '#14b8a6' }} /><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Arus Kas Bersih</span></div>
+          <div className="flex items-center gap-1.5 mb-1"><Scale size={13} style={{ color: '#14b8a6' }} /><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Arus Saldo Bersih</span></div>
           <div className="font-bold" style={{ fontFamily: 'Syne', color: data.net >= 0 ? '#14b8a6' : '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(data.net)}</div>
         </div>
+      </div>
+
+      {/* Breakdown per metode */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+        {[
+          ['Cash Masuk', bd.masuk.cash, '#10d98a'], ['Transfer Masuk', bd.masuk.transfer, '#10d98a'], ['QRIS Masuk', bd.masuk.qris, '#10d98a'],
+          ['Cash Keluar', bd.keluar.cash, '#ef4444'], ['Transfer Keluar', bd.keluar.transfer, '#ef4444'], ['QRIS Keluar', bd.keluar.qris, '#ef4444'],
+        ].map(([label, val, color]) => (
+          <div key={label} className="rounded-xl px-3 py-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{label}</div>
+            <div className="text-xs font-bold" style={{ color, fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{fmt(val)}</div>
+          </div>
+        ))}
       </div>
 
       {/* Tabel */}
       {loading ? (
         <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
       ) : rows.length === 0 ? (
-        <p className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>Tidak ada arus kas pada periode ini</p>
+        <p className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>Tidak ada mutasi saldo pada periode ini</p>
       ) : (
         <div className="overflow-x-auto -mx-1">
           <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
