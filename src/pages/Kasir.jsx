@@ -10,6 +10,7 @@ import {
 } from '../utils/helpers'
 import { useCategories, ALL_CATEGORY } from '../hooks/useCategories'
 import { Button, ProductImage, EmptyState } from '../components/ui'
+import AddCustomerModal from '../components/AddCustomerModal'
 const Invoice = React.lazy(() => import('../components/Invoice'))
 
 // ---------- QtyInput ----------
@@ -129,7 +130,7 @@ function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
   )
 }
 
-export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy, currentUser, setProductFavorite }) {
+export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy, currentUser, setProductFavorite, addCustomer, admins = [] }) {
   const { categories } = useCategories()
   const categoryFilters = [ALL_CATEGORY, ...categories]
   const canEditFav = currentUser?.role === 'owner' || currentUser?.role === 'admin'
@@ -144,6 +145,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const [paymentMethod, setPaymentMethod] = useState('transfer')
   const [customerName, setCustomerName] = useState('')
   const [customerId, setCustomerId] = useState('')
+  const [addCustOpen, setAddCustOpen] = useState(false)
   const [dp, setDp] = useState('')
   const [dueDate, setDueDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 14)
@@ -382,6 +384,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
 
       {/* Customer picker */}
       <div className="px-4 py-3 space-y-2" style={{ borderBottom: '1px solid var(--border)' }}>
+        {addCustomer && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Pelanggan</span>
+            <button type="button" onClick={() => setAddCustOpen(true)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold btn-press"
+              style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.3)', fontFamily: 'Syne' }}>
+              <Plus size={11} /> Tambah Customer
+            </button>
+          </div>
+        )}
         <div className="relative">
           <User size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
             style={{ color: 'var(--text-muted)' }} />
@@ -1244,6 +1256,18 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
             onClose={() => { setShowInvoice(false); setAutoShareWA(false) }}
           />
         </React.Suspense>
+      )}
+
+      {/* Tambah Customer langsung dari Kasir — otomatis terpilih setelah simpan */}
+      {addCustomer && (
+        <AddCustomerModal
+          open={addCustOpen}
+          onClose={() => setAddCustOpen(false)}
+          addCustomer={addCustomer}
+          admins={admins}
+          currentUser={currentUser}
+          onCreated={(c) => { if (c) { setCustomerId(c.id); setCustomerName(c.name); setCustomerSearch('') } }}
+        />
       )}
     </div>
   )

@@ -295,6 +295,8 @@ function AppShell() {
       products={store.products}
       customers={scopedCustomers}
       addTransaction={store.addTransaction}
+      addCustomer={store.addCustomer}
+      admins={store.admins}
       storeInfo={store.storeInfo}
       currentUser={store.currentUser}
       setProductFavorite={store.setProductFavorite}
