@@ -103,11 +103,24 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
     const node = printRef.current
     if (!node) throw new Error('Invoice belum siap')
 
-    // Wait for fonts to load before capture (prevents reflow during render)
-    try { if (document.fonts?.ready) await document.fonts.ready } catch {}
-    // Two RAFs to ensure layout is stable
+    // Wait for fonts to load before capture (prevents reflow during render).
+    // Muat eksplisit semua bobot Open Sans yang dipakai invoice agar PNG tidak
+    // jatuh ke fallback (yang bikin badge & teks bergeser).
+    try {
+      if (document.fonts?.load) {
+        await Promise.all([
+          document.fonts.load('400 12px "Open Sans"'),
+          document.fonts.load('600 12px "Open Sans"'),
+          document.fonts.load('700 12px "Open Sans"'),
+          document.fonts.load('800 22px "Open Sans"'),
+        ])
+      }
+      if (document.fonts?.ready) await document.fonts.ready
+    } catch {}
+    // Two RAFs + delay kecil supaya layout & font benar-benar stabil sebelum capture
     await new Promise(r => requestAnimationFrame(r))
     await new Promise(r => requestAnimationFrame(r))
+    await new Promise(r => setTimeout(r, 200))
 
     // CRITICAL — use scrollWidth/scrollHeight to capture the ENTIRE invoice content,
     // not just what's currently visible inside the modal's scrollable preview area.
@@ -546,10 +559,11 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                   #{t.invoiceNo}
                 </div>
                 <div style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  marginTop: 8, padding: '0 12px', height: 24, borderRadius: 999,
+                  display: 'inline-block',
+                  marginTop: 8, padding: '0 12px', height: 24, lineHeight: '24px',
+                  borderRadius: 999, textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box',
                   fontSize: 10, fontWeight: 700, fontFamily: '"Open Sans", sans-serif',
-                  letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1,
+                  letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap',
                   background: badgeBg, color: status?.hex || '#3b82f6',
                   border: `1px solid ${(status?.hex || '#3b82f6')}33`,
                 }}>
@@ -668,22 +682,23 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     }}>
                       {item.name}
                       <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
+                        display: 'inline-block',
                         marginLeft: 8,
                         padding: '0 8px',
                         height: 18,
+                        lineHeight: '18px',
                         borderRadius: 6,
+                        boxSizing: 'border-box',
+                        textAlign: 'center',
                         fontSize: 10,
                         fontWeight: 700,
-                        lineHeight: 1,
                         color: '#8b5cf6',
                         background: 'rgba(139,92,246,0.10)',
                         border: '1px solid rgba(139,92,246,0.18)',
                         fontFamily: '"Open Sans", sans-serif',
                         letterSpacing: '0.04em',
                         textTransform: 'uppercase',
+                        whiteSpace: 'nowrap',
                         verticalAlign: 'middle',
                       }}>
                         {qtyDisplay} {unitLabel}
