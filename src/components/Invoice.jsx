@@ -173,7 +173,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
       <!DOCTYPE html>
       <html><head><title>Invoice ${t.invoiceNo}</title><meta charset="UTF-8" />
       <style>
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=Bree+Serif&family=Sora:wght@600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=Bree+Serif&family=Sora:wght@600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@500;600;700&family=Open+Sans:wght@400;600;700;800&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         html, body { background: #f1f1f5; }
         body { font-family: 'DM Sans', sans-serif; color: #1a1a25; padding: 24px; display: flex; justify-content: center; }
@@ -546,10 +546,10 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                   #{t.invoiceNo}
                 </div>
                 <div style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  marginTop: 8, padding: '5px 12px', borderRadius: 999,
-                  fontSize: 10, fontWeight: 700, fontFamily: 'Syne',
-                  letterSpacing: '0.06em', textTransform: 'uppercase',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  marginTop: 8, padding: '0 12px', height: 24, borderRadius: 999,
+                  fontSize: 10, fontWeight: 700, fontFamily: '"Open Sans", sans-serif',
+                  letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1,
                   background: badgeBg, color: status?.hex || '#3b82f6',
                   border: `1px solid ${(status?.hex || '#3b82f6')}33`,
                 }}>
@@ -567,26 +567,26 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             }}>
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Dari</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
+                <div style={{ fontFamily: '"Open Sans", sans-serif', fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
                   {issuerName}
                 </div>
-                <div style={{ fontSize: 10.5, color: '#55556a', lineHeight: 1.5 }}>
+                <div style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 400, fontSize: 10.5, color: '#55556a', lineHeight: 1.5 }}>
                   {issuerAddress}
                 </div>
-                <div style={{ fontSize: 10.5, color: '#55556a', marginTop: 6 }}>
+                <div style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 400, fontSize: 10.5, color: '#55556a', marginTop: 6 }}>
                   {issuerPhone}
                 </div>
               </div>
 
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Ditagihkan Kepada</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
+                <div style={{ fontFamily: '"Open Sans", sans-serif', fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
                   {(!t.customer || /^umum$/i.test(String(t.customer).trim())) ? 'Pelanggan Umum' : t.customer}
                 </div>
                 {t.customerPhone && (
-                  <div style={{ fontSize: 10.5, color: '#55556a' }}>{t.customerPhone}</div>
+                  <div style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 400, fontSize: 10.5, color: '#55556a' }}>{t.customerPhone}</div>
                 )}
-                <div style={{ fontSize: 10.5, color: '#55556a', marginTop: 6 }}>Pelanggan</div>
+                <div style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 400, fontSize: 10.5, color: '#55556a', marginTop: 6 }}>Pelanggan</div>
               </div>
 
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
@@ -668,16 +668,20 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     }}>
                       {item.name}
                       <span style={{
-                        display: 'inline-block',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
                         marginLeft: 8,
-                        padding: '2px 8px',
+                        padding: '0 8px',
+                        height: 18,
                         borderRadius: 6,
                         fontSize: 10,
                         fontWeight: 700,
+                        lineHeight: 1,
                         color: '#8b5cf6',
                         background: 'rgba(139,92,246,0.10)',
                         border: '1px solid rgba(139,92,246,0.18)',
-                        fontFamily: 'Syne',
+                        fontFamily: '"Open Sans", sans-serif',
                         letterSpacing: '0.04em',
                         textTransform: 'uppercase',
                         verticalAlign: 'middle',
@@ -731,25 +735,31 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 <div style={{
                   background: '#0a0a0f',
                   color: '#fff',
-                  padding: '14px 16px',
+                  padding: '16px',
                   borderRadius: 10,
-                  fontFamily: '"Bree Serif", serif',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'flex-start',
+                  gap: 6,
+                  minHeight: 96,
+                  fontFamily: '"Open Sans", sans-serif',
                 }}>
                   <div style={{
                     fontSize: 12.5, color: '#a3ff3a', letterSpacing: '0.04em',
-                    fontFamily: '"Bree Serif", serif',
+                    fontFamily: '"Open Sans", sans-serif', fontWeight: 700, lineHeight: 1.1,
                   }}>
                     {bank.name || '-'}
                   </div>
                   <div style={{
                     fontSize: 22, color: '#fff', letterSpacing: 2,
-                    fontFamily: '"Bree Serif", serif', margin: '4px 0 2px',
+                    fontFamily: '"Open Sans", sans-serif', fontWeight: 800, lineHeight: 1.1,
                     wordBreak: 'break-all',
                   }}>
                     {bank.number || '-'}
                   </div>
                   <div style={{
-                    fontSize: 13, color: '#e0e0e8', fontFamily: '"Bree Serif", serif',
+                    fontSize: 13, color: '#e0e0e8', fontFamily: '"Open Sans", sans-serif', fontWeight: 700, lineHeight: 1.1,
                   }}>
                     a.n. {bank.holder || '-'}
                   </div>
@@ -935,11 +945,11 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             }}>
               <div style={{ flex: 1, minWidth: 240 }}>
                 <div style={infoLabel}>Catatan</div>
-                <p style={{ fontSize: 11, color: '#55556a', lineHeight: 1.6, marginBottom: 6 }}>
-                  Terima kasih atas kepercayaan Anda. Pembayaran via transfer ke <strong>{bank.name} {bank.number}</strong> a.n. <strong>{bank.holder}</strong>.
+                <p style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 700, fontSize: 11.5, color: '#1a1a25', lineHeight: 1.6 }}>
+                  Terima Kasih atas Kepercayaan Anda
                 </p>
-                <p style={{ fontSize: 11, color: '#55556a', lineHeight: 1.6 }}>
-                  Untuk pertanyaan, hubungi {issuerPhone}.
+                <p style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 700, fontSize: 11.5, color: '#1a1a25', lineHeight: 1.6 }}>
+                  Kami Akan Melayani Anda Dengan Sepenuh Hati
                 </p>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -988,7 +998,7 @@ const infoLabel = {
 
 function DetailRow({ k, v }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, marginBottom: 5 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, marginBottom: 5, fontFamily: '"Open Sans", sans-serif' }}>
       <span style={{ color: '#8888a8' }}>{k}</span>
       <span style={{ color: '#1a1a25', fontWeight: 600, textAlign: 'right' }}>{v}</span>
     </div>
