@@ -12,11 +12,6 @@ const PAYMENT_LABEL = {
 
 export default function Invoice({ transaction: t, onClose, storeInfo, autoShare = false }) {
   const STORE_INFO = storeInfo || DEFAULT_STORE
-  // Rekening bank: pakai SNAPSHOT pada transaksi (rekening admin pembuat saat
-  // invoice dibuat) agar histori aman; fallback ke rekening toko bila kosong.
-  const bank = (t.bankName || t.bankNumber || t.bankHolder)
-    ? { name: t.bankName || '', number: t.bankNumber || '', holder: t.bankHolder || '' }
-    : (STORE_INFO.bank || {})
   const printRef = useRef(null)
   const [sharing, setSharing] = useState(false)
   const [shareInfo, setShareInfo] = useState(null)
@@ -735,19 +730,19 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     fontSize: 12.5, color: '#a3ff3a', letterSpacing: '0.04em',
                     fontFamily: '"Bree Serif", serif',
                   }}>
-                    {bank.name || '-'}
+                    {STORE_INFO.bank?.name || '-'}
                   </div>
                   <div style={{
                     fontSize: 22, color: '#fff', letterSpacing: 2,
                     fontFamily: '"Bree Serif", serif', margin: '4px 0 2px',
                     wordBreak: 'break-all',
                   }}>
-                    {bank.number || '-'}
+                    {STORE_INFO.bank?.number || '-'}
                   </div>
                   <div style={{
                     fontSize: 13, color: '#e0e0e8', fontFamily: '"Bree Serif", serif',
                   }}>
-                    a.n. {bank.holder || '-'}
+                    a.n. {STORE_INFO.bank?.holder || '-'}
                   </div>
                 </div>
               </div>
@@ -932,7 +927,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               <div style={{ flex: 1, minWidth: 240 }}>
                 <div style={infoLabel}>Catatan</div>
                 <p style={{ fontSize: 11, color: '#55556a', lineHeight: 1.6, marginBottom: 6 }}>
-                  Terima kasih atas kepercayaan Anda. Pembayaran via transfer ke <strong>{bank.name} {bank.number}</strong> a.n. <strong>{bank.holder}</strong>.
+                  Terima kasih atas kepercayaan Anda. Pembayaran via transfer ke <strong>{STORE_INFO.bank?.name} {STORE_INFO.bank?.number}</strong> a.n. <strong>{STORE_INFO.bank?.holder}</strong>.
                 </p>
                 <p style={{ fontSize: 11, color: '#55556a', lineHeight: 1.6 }}>
                   Untuk pertanyaan, hubungi {STORE_INFO.phone}.

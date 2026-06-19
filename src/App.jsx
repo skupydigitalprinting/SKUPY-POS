@@ -456,10 +456,6 @@ function AppShell() {
             reassignAdminCustomers={store.reassignAdminCustomers}
             changePassword={store.changePassword}
             logout={() => { setSettingsOpen(false); store.logout() }}
-            adminBankAccounts={store.adminBankAccounts}
-            addBankAccount={store.addBankAccount}
-            updateBankAccount={store.updateBankAccount}
-            deleteBankAccount={store.deleteBankAccount}
           />
         </Suspense>
       )}
