@@ -54,10 +54,10 @@ export default function MasterDataSettings({
   }
 
   const SubNav = (
-    <div className="flex gap-1.5 mb-4 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+    <div className="flex flex-wrap gap-1.5 mb-4">
       {SUBTABS.map(({ id, label, icon: Icon }) => (
         <button key={id} onClick={() => { setSub(id); setErr('') }}
-          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap"
           style={{ background: sub === id ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: sub === id ? '#fff' : 'var(--text-secondary)', border: `1px solid ${sub === id ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>
           <Icon size={13} /> {label}
         </button>

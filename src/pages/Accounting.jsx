@@ -3,7 +3,7 @@ import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
   FileSpreadsheet, Users as UsersIcon, Building2, Pencil, Check, X, ChevronDown, Search, Home,
-  HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download,
+  HandCoins, CreditCard, MoreHorizontal, Settings, Database, Upload, Download, Eye,
 } from 'lucide-react'
 import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset, QUICK_PRESETS } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
@@ -279,6 +279,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [groupPay, setGroupPay] = useState(null) // { key, name, sisa, amount, method, date, note }
   const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
   const [editPay, setEditPay] = useState(null) // pembayaran kasbon yang sedang diedit { id, amount, method, date, note }
+  const [payDetail, setPayDetail] = useState(null) // detail pembayaran kasbon (lihat saja)
   // ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ──
   const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', customer: '', amount: '', method: 'cash', note: '' }
   const blankMigOut = { type: 'old_expense', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
@@ -2313,8 +2314,38 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         )}
       </Modal>
 
+      {/* ── DETAIL PEMBAYARAN KASBON (lihat saja) ── */}
+      <Modal open={!!payDetail} zIndex={1100} onClose={() => setPayDetail(null)} title="Detail Pembayaran Kasbon" size="sm">
+        {payDetail && (() => {
+          const rows = [
+            ['Nama Karyawan', payDetail.employeeName || '—'],
+            ['Tanggal Pembayaran', formatDateTimeWIB(payDetail.payment_date, payDetail.created_at)],
+            ['Nominal Pembayaran', fmt(payDetail.amount)],
+            ['Metode Pembayaran', String(payDetail.payment_method || '—').toUpperCase()],
+            ['Catatan', payDetail.notes || '—'],
+            ['Dibuat Oleh', (admins.find(a => a.id === payDetail.cashier_id)?.name) || (admins.find(a => a.id === payDetail.cashier_id)?.username) || '—'],
+            ['Waktu Dibuat', payDetail.created_at ? formatDateTimeWIB(payDetail.created_at, payDetail.created_at) : '—'],
+            ...(payDetail.updated_at && payDetail.updated_at !== payDetail.created_at ? [['Terakhir Diubah', formatDateTimeWIB(payDetail.updated_at, payDetail.updated_at)]] : []),
+          ]
+          return (
+            <div className="space-y-1.5">
+              {rows.map(([k, v], i) => (
+                <div key={i} className="flex justify-between gap-3 py-1.5 text-sm" style={{ borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>{k}</span>
+                  <span className="font-semibold text-right" style={{ color: k === 'Nominal Pembayaran' ? '#10d98a' : 'var(--text-primary)' }}>{v}</span>
+                </div>
+              ))}
+              <div className="flex gap-2 pt-2">
+                <Button variant="secondary" className="flex-1" onClick={() => { const p = payDetail; setPayDetail(null); setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.payment_method === 'transfer' ? 'transfer' : 'cash', date: String(p.payment_date).slice(0, 10), note: p.notes || '' }) }}><Pencil size={14} /> Edit</Button>
+                <Button variant="primary" className="flex-1" onClick={() => setPayDetail(null)}>Tutup</Button>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+
       {/* ── DETAIL KASBON PER KARYAWAN (rincian semua kasbon + riwayat bayar) ── */}
-      <Modal open={!!detailEmp} mobileFull zIndex={1010} lockClose={!!editAdv || !!groupPay || !!editPay} onClose={() => { setDetailEmp(null); setDetailPayRows({}); setAdvPayInModal(null) }} title={detailEmp ? `Kasbon — ${detailEmp.name}` : ''} subtitle={detailEmp ? `${detailEmp.items.length} kasbon` : ''} size="lg">
+      <Modal open={!!detailEmp} mobileFull zIndex={1010} lockClose={!!editAdv || !!groupPay || !!editPay || !!payDetail} onClose={() => { setDetailEmp(null); setDetailPayRows({}); setAdvPayInModal(null) }} title={detailEmp ? `Kasbon — ${detailEmp.name}` : ''} subtitle={detailEmp ? `${detailEmp.items.length} kasbon` : ''} size="lg">
         {detailEmp && (() => {
           const todayLocal = new Date().toLocaleDateString('en-CA')
           const sum = [['Total Kasbon', fmt(detailEmp.totalAmount), 'var(--text-primary)'], ['Sudah Bayar', fmt(detailEmp.totalPaid), '#10d98a'], ['Sisa', fmt(detailEmp.totalSisa), detailEmp.totalSisa > 0 ? '#ef4444' : '#10d98a'], ['Status', detailEmp.status, detailEmp.totalSisa <= 0 ? '#10d98a' : detailEmp.overdue ? '#fb923c' : '#f59e0b']]
@@ -2366,6 +2397,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                                 <span className="uppercase text-[9px]" style={{ color: 'var(--text-muted)' }}>{p.payment_method}</span>
                                 {p.notes && <span className="truncate" style={{ color: 'var(--text-muted)' }}>· {p.notes}</span>}
                                 <div className="ml-auto flex items-center gap-1 flex-shrink-0">
+                                  <button onClick={() => setPayDetail({ ...p, employeeName: detailEmp.name })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }} title="Detail pembayaran"><Eye size={10} /></button>
                                   <button onClick={() => setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.payment_method === 'transfer' ? 'transfer' : 'cash', date: String(p.payment_date).slice(0, 10), note: p.notes || '' })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }} title="Edit pembayaran"><Pencil size={10} /></button>
                                   {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus pembayaran kasbon ini?', message: 'Pembayaran dibatalkan (soft delete). Sisa kasbon naik kembali; uang masuk, arus kas, piutang karyawan & dashboard menyesuaikan.' }))) return; const r = await acc.deleteAdvancePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus pembayaran"><Trash2 size={10} /></button>}
                                 </div>
