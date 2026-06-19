@@ -152,6 +152,11 @@ const trxFromDB = (r) => ({
   cashierId: r.cashier_id,
   dueDate: r.due_date || null,
   date: r.created_at,
+  // Snapshot rekening bank admin pembuat (histori invoice tetap aman)
+  bankAccountId: r.bank_account_id || null,
+  bankName: r.bank_name || '',
+  bankNumber: r.bank_account_number || '',
+  bankHolder: r.bank_account_holder || '',
 })
 
 const trxToDB = (t) => ({
@@ -175,6 +180,14 @@ const trxToDB = (t) => ({
   due_date: t.dueDate || null,
   // PIC (owner) — hanya disertakan bila di-set (hindari error bila kolom belum ada)
   ...(t.ownerUserId ? { owner_user_id: t.ownerUserId, owner_name: t.ownerName || '' } : {}),
+  // Snapshot rekening bank admin pembuat — hanya bila ada (kolom mungkin belum ada)
+  ...((t.bankAccountId || t.bankName) ? {
+    bank_account_id: t.bankAccountId || null,
+    bank_name: t.bankName || '',
+    bank_account_number: t.bankNumber || '',
+    bank_account_holder: t.bankHolder || '',
+    created_by_admin_id: t.cashierId || null,
+  } : {}),
 })
 
 // Order workflow statuses (separate from payment status)
@@ -223,6 +236,8 @@ export function useStore() {
   // activeBookId null = "Semua Book" (perilaku lama, tanpa filter). Memilih book
   // tertentu menyaring data PENJUALAN (transactions/customers/debts/debt_payments).
   const [books, setBooks] = useState([])
+  // Rekening bank per admin (owner kelola). Snapshot dipakai invoice.
+  const [adminBankAccounts, setAdminBankAccounts] = useState([])
   const [activeBookId, setActiveBookId] = useState(() => {
     try { return localStorage.getItem('skupy_active_book') || null } catch { return null }
   })
@@ -298,6 +313,11 @@ export function useStore() {
         const bk = await supabase.from('books').select('*').is('deleted_at', null).order('created_at', { ascending: true })
         if (!bk.error && mounted.current) setBooks(bk.data || [])
       } catch { /* tabel books belum ada — fitur Book nonaktif sampai migrasi dijalankan */ }
+      // Rekening bank per admin (defensif: tabel mungkin belum ada).
+      try {
+        const ba = await supabase.from('admin_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true })
+        if (!ba.error && mounted.current) setAdminBankAccounts(ba.data || [])
+      } catch { /* tabel admin_bank_accounts belum ada — fitur rekening nonaktif sampai migrasi */ }
       // Pemasukkan Credibook (book-scoped) — masuk Omset di dashboard. Defensif.
       try {
         const cb = await applyBook(supabase.from('credibook_income')
@@ -388,6 +408,63 @@ export function useStore() {
     if (mounted.current) setBooks(prev => prev.map(b => b.id === id ? row : b))
     return { ok: true }
   }, [])
+
+  // ── REKENING BANK PER ADMIN (owner only) ──
+  const refreshBankAccounts = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('admin_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true })
+      if (!error && mounted.current) setAdminBankAccounts(data || [])
+    } catch { /* tabel belum ada */ }
+  }, [])
+  // Rekening default aktif untuk admin tertentu (untuk snapshot invoice).
+  const bankAccountForAdmin = useCallback((adminId) => {
+    if (!adminId) return null
+    const list = adminBankAccounts.filter(b => b.admin_id === adminId && b.is_active !== false && !b.deleted_at)
+    return list.find(b => b.is_default) || list[0] || null
+  }, [adminBankAccounts])
+  const addBankAccount = useCallback(async (data) => wrap(async () => {
+    if (!data.adminId) return { ok: false, error: 'Pilih admin dulu' }
+    if (!(data.bankName || '').trim()) return { ok: false, error: 'Nama bank wajib diisi' }
+    if (!(data.accountNumber || '').trim()) return { ok: false, error: 'Nomor rekening wajib diisi' }
+    if (!(data.accountHolder || '').trim()) return { ok: false, error: 'Atas nama wajib diisi' }
+    const makeDefault = !!data.isDefault
+    // Jika dijadikan default → matikan default lama admin ini dulu (rule #3).
+    if (makeDefault) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', data.adminId).is('deleted_at', null)
+    const payload = {
+      admin_id: data.adminId, bank_name: data.bankName.trim(), account_number: data.accountNumber.trim(),
+      account_holder: data.accountHolder.trim(), branch: (data.branch || '').trim() || null, note: (data.note || '').trim() || null,
+      is_active: data.isActive !== false, is_default: makeDefault,
+    }
+    const { data: row, error: e } = await supabase.from('admin_bank_accounts').insert(payload).select('*').single()
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true, data: row }
+  }), [wrap, refreshBankAccounts])
+  const updateBankAccount = useCallback(async (id, data) => wrap(async () => {
+    const cur = adminBankAccounts.find(b => b.id === id)
+    const adminId = data.adminId || cur?.admin_id
+    const makeDefault = !!data.isDefault
+    if (makeDefault && adminId) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', adminId).is('deleted_at', null).neq('id', id)
+    const patch = { updated_at: new Date().toISOString() }
+    if (data.adminId !== undefined) patch.admin_id = data.adminId
+    if (data.bankName !== undefined) patch.bank_name = data.bankName.trim()
+    if (data.accountNumber !== undefined) patch.account_number = data.accountNumber.trim()
+    if (data.accountHolder !== undefined) patch.account_holder = data.accountHolder.trim()
+    if (data.branch !== undefined) patch.branch = (data.branch || '').trim() || null
+    if (data.note !== undefined) patch.note = (data.note || '').trim() || null
+    if (data.isActive !== undefined) patch.is_active = data.isActive
+    if (data.isDefault !== undefined) patch.is_default = makeDefault
+    const { error: e } = await supabase.from('admin_bank_accounts').update(patch).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true }
+  }), [wrap, adminBankAccounts, refreshBankAccounts])
+  const deleteBankAccount = useCallback(async (id) => wrap(async () => {
+    const { error: e } = await supabase.from('admin_bank_accounts').update({ deleted_at: new Date().toISOString(), is_default: false }).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true }
+  }), [wrap, refreshBankAccounts])
 
   // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
   const refreshCustomers = useCallback(async () => {
@@ -1080,6 +1157,12 @@ export function useStore() {
       const _cust = (trx.customerId && customers.find(c => c.id === trx.customerId)) || null
       const ownerUserId = _cust?.ownerUserId || cashierId || null
       const ownerName = _cust?.ownerName || cashier || ''
+      // Snapshot rekening bank admin pembuat invoice (default aktif miliknya).
+      const _bank = bankAccountForAdmin(cashierId)
+      const bankSnap = _bank ? {
+        bankAccountId: _bank.id, bankName: _bank.bank_name,
+        bankNumber: _bank.account_number, bankHolder: _bank.account_holder,
+      } : {}
       const statusHistory = [{
         order_status: trx.orderStatus || 'menunggu',
         changed_at: nowIso,
@@ -1108,6 +1191,7 @@ export function useStore() {
           invoiceNo, orderNo,
           cashier, cashierId, cashierRole,
           ownerUserId, ownerName,
+          ...bankSnap,
           statusHistory,
           orderStatus: trx.orderStatus || 'menunggu',
         })
@@ -1136,6 +1220,10 @@ export function useStore() {
         // Fallback bila kolom book_id belum ada (migrasi Book belum dijalankan).
         if (res.error && isSchemaCacheError(res.error, 'book_id')) {
           res = await supabase.from('transactions').insert(omit(payload, ['book_id'])).select().single()
+        }
+        // Fallback bila kolom snapshot rekening bank belum ada (migrasi belum jalan).
+        if (res.error && (isSchemaCacheError(res.error, 'bank_account_id') || isSchemaCacheError(res.error, 'bank_name') || isSchemaCacheError(res.error, 'bank_account_number') || isSchemaCacheError(res.error, 'bank_account_holder') || isSchemaCacheError(res.error, 'created_by_admin_id'))) {
+          res = await supabase.from('transactions').insert(omit(payload, ['bank_account_id', 'bank_name', 'bank_account_number', 'bank_account_holder', 'created_by_admin_id'])).select().single()
         }
         row = res.data
         e = res.error
@@ -1956,6 +2044,7 @@ export function useStore() {
     products, transactions, storeInfo, stats,
     admins, currentUser, customers, debts, debtPayments,
     books, activeBookId, defaultBookId, setActiveBook, addBook, updateBook,
+    adminBankAccounts, refreshBankAccounts, bankAccountForAdmin, addBankAccount, updateBankAccount, deleteBankAccount,
     credibookIncome, refreshCredibook, getTransactionByInvoice,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
