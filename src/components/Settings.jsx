@@ -18,7 +18,6 @@ const TABS = [
   { id: 'kategori', label: 'Kategori Produk', icon: Tag },
   { id: 'logo', label: 'Logo', icon: Image },
   { id: 'admin', label: 'Admin', icon: Users },
-  { id: 'rekening', label: 'Rekening Bank', icon: Landmark },
   { id: 'master', label: 'Master Invoice', icon: FileText },
   { id: 'password', label: 'Password', icon: Lock },
 ]
@@ -378,23 +377,9 @@ export default function Settings({
               <Input label="Nomor HP / Telepon" value={tokoForm.phone}
                 onChange={e => setTokoForm(p => ({ ...p, phone: e.target.value }))} />
 
-              <div className="rounded-xl p-4"
-                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-                <div className="text-xs font-semibold mb-3"
-                  style={{ color: 'var(--accent-light)', fontFamily: 'Syne', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  🏦 Rekening Bank
-                </div>
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <Input label="Nama Bank" value={tokoForm.bankName}
-                      onChange={e => setTokoForm(p => ({ ...p, bankName: e.target.value }))} placeholder="Bank BCA" />
-                    <Input label="No Rekening" value={tokoForm.bankNumber}
-                      onChange={e => setTokoForm(p => ({ ...p, bankNumber: e.target.value }))} placeholder="2065033222" />
-                  </div>
-                  <Input label="Atas Nama" value={tokoForm.bankHolder}
-                    onChange={e => setTokoForm(p => ({ ...p, bankHolder: e.target.value }))} placeholder="Nama pemilik rekening" />
-                </div>
-              </div>
+              {/* Panel "Rekening Bank" dipindah ke Pengaturan → Master Invoice.
+                  Data rekening toko (storeInfo.bank) TIDAK dihapus — tetap disimpan
+                  saat Simpan (lihat handleSaveToko), hanya tampilannya disembunyikan. */}
 
               <div className="flex justify-end pt-2">
                 <Button variant="primary" onClick={handleSaveToko} disabled={savingToko}>
@@ -628,66 +613,10 @@ export default function Settings({
             </div>
           )}
 
-          {/* === REKENING BANK (owner only) === */}
-          {tab === 'rekening' && (
-            <div className="space-y-4 animate-fadeIn">
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                Atur rekening bank per admin. Invoice otomatis memakai rekening default admin pembuat transaksi. Invoice lama tetap menyimpan rekening saat dibuat.
-              </p>
-
-              {/* Form tambah/edit */}
-              <div className="rounded-2xl p-4 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>{bankEditId ? 'Edit Rekening' : 'Tambah Rekening'}</div>
-                {bankErr && <Banner kind="error">{bankErr}</Banner>}
-                <div>
-                  <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>Pilih Admin <span style={{ color: '#ef4444' }}>*</span></label>
-                  <select value={bankForm.adminId} onChange={e => setBankForm(p => ({ ...p, adminId: e.target.value }))} className="w-full px-3 py-2.5 rounded-xl text-sm" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
-                    <option value="">— Pilih admin —</option>
-                    {admins.map(a => <option key={a.id} value={a.id}>{a.name || a.username}{a.role === 'owner' ? ' (Owner)' : ''}</option>)}
-                  </select>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Input label="Nama Bank" value={bankForm.bankName} onChange={e => setBankForm(p => ({ ...p, bankName: e.target.value }))} placeholder="BCA / BRI / Mandiri" />
-                  <Input label="Nomor Rekening" value={bankForm.accountNumber} onChange={e => setBankForm(p => ({ ...p, accountNumber: e.target.value }))} placeholder="1234567890" />
-                </div>
-                <Input label="Atas Nama" value={bankForm.accountHolder} onChange={e => setBankForm(p => ({ ...p, accountHolder: e.target.value }))} placeholder="Nama pemilik rekening" />
-                <Input label="Cabang / Catatan" value={bankForm.branch} onChange={e => setBankForm(p => ({ ...p, branch: e.target.value }))} placeholder="Opsional" />
-                <div className="flex items-center gap-4 flex-wrap">
-                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-                    <input type="checkbox" checked={bankForm.isActive} onChange={e => setBankForm(p => ({ ...p, isActive: e.target.checked }))} /> Aktif
-                  </label>
-                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-                    <input type="checkbox" checked={bankForm.isDefault} onChange={e => setBankForm(p => ({ ...p, isDefault: e.target.checked }))} /> Jadikan rekening default admin ini
-                  </label>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="primary" className="flex-1" onClick={submitBank} disabled={bankBusy}>{bankBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {bankEditId ? 'Simpan Perubahan' : 'Simpan Rekening'}</Button>
-                  {bankEditId && <Button variant="secondary" onClick={resetBankForm}>Batal</Button>}
-                </div>
-              </div>
-
-              {/* Daftar rekening per admin */}
-              <div className="space-y-2">
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Daftar Rekening</div>
-                {adminBankAccounts.length === 0 && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada rekening</p>}
-                {adminBankAccounts.map(b => (
-                  <div key={b.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-card)', border: `1px solid ${b.is_default ? 'rgba(16,217,138,0.35)' : 'var(--border)'}`, opacity: b.is_active === false ? 0.55 : 1 }}>
-                    <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.25)' }}><Landmark size={15} style={{ color: 'var(--accent-light)' }} /></div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{b.bank_name} · {b.account_number}</span>
-                        {b.is_default && <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Star size={8} /> DEFAULT</span>}
-                        {b.is_active === false && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(148,163,184,0.15)', color: 'var(--text-muted)' }}>NONAKTIF</span>}
-                      </div>
-                      <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>a.n. {b.account_holder} · PIC: <b style={{ color: 'var(--text-secondary)' }}>{adminLabel(b.admin_id)}</b>{b.branch ? ` · ${b.branch}` : ''}</div>
-                    </div>
-                    <button onClick={() => editBank(b)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={12} /></button>
-                    <button onClick={() => removeBank(b)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus"><Trash2 size={12} /></button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Menu "Rekening Bank" dihilangkan dari UI — pengelolaan rekening kini
+              di Pengaturan → Master Invoice. State & fungsi CRUD (addBankAccount,
+              updateBankAccount, deleteBankAccount) sengaja DIPERTAHANKAN agar
+              data & API rekening per-admin tidak hilang / tidak merusak invoice. */}
 
           {/* === MASTER INVOICE (alamat/kontak/rekening + profil admin) === */}
           {tab === 'master' && (
