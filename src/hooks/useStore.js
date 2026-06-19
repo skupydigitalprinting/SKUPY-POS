@@ -157,6 +157,10 @@ const trxFromDB = (r) => ({
   bankName: r.bank_name || '',
   bankNumber: r.bank_account_number || '',
   bankHolder: r.bank_account_holder || '',
+  // Snapshot identitas toko (master data invoice)
+  storeNameSnapshot: r.store_name_snapshot || '',
+  addressSnapshot: r.address_snapshot || '',
+  phoneSnapshot: r.phone_snapshot || '',
 })
 
 const trxToDB = (t) => ({
@@ -187,6 +191,12 @@ const trxToDB = (t) => ({
     bank_account_number: t.bankNumber || '',
     bank_account_holder: t.bankHolder || '',
     created_by_admin_id: t.cashierId || null,
+  } : {}),
+  // Snapshot identitas toko (master data) — hanya bila ada
+  ...((t.storeNameSnapshot || t.addressSnapshot || t.phoneSnapshot) ? {
+    store_name_snapshot: t.storeNameSnapshot || '',
+    address_snapshot: t.addressSnapshot || '',
+    phone_snapshot: t.phoneSnapshot || '',
   } : {}),
 })
 
@@ -238,6 +248,11 @@ export function useStore() {
   const [books, setBooks] = useState([])
   // Rekening bank per admin (owner kelola). Snapshot dipakai invoice.
   const [adminBankAccounts, setAdminBankAccounts] = useState([])
+  // Master data invoice (owner): alamat, kontak, rekening + profil per admin.
+  const [storeLocations, setStoreLocations] = useState([])
+  const [storeContacts, setStoreContacts] = useState([])
+  const [storeBankAccounts, setStoreBankAccounts] = useState([])
+  const [adminInvoiceProfiles, setAdminInvoiceProfiles] = useState([])
   const [activeBookId, setActiveBookId] = useState(() => {
     try { return localStorage.getItem('skupy_active_book') || null } catch { return null }
   })
@@ -318,6 +333,21 @@ export function useStore() {
         const ba = await supabase.from('admin_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true })
         if (!ba.error && mounted.current) setAdminBankAccounts(ba.data || [])
       } catch { /* tabel admin_bank_accounts belum ada — fitur rekening nonaktif sampai migrasi */ }
+      // Master data invoice (defensif: tabel mungkin belum ada).
+      try {
+        const [loc, con, sba, aip] = await Promise.all([
+          supabase.from('store_locations').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+          supabase.from('store_contacts').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+          supabase.from('store_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+          supabase.from('admin_invoice_profiles').select('*').is('deleted_at', null),
+        ])
+        if (mounted.current) {
+          if (!loc.error) setStoreLocations(loc.data || [])
+          if (!con.error) setStoreContacts(con.data || [])
+          if (!sba.error) setStoreBankAccounts(sba.data || [])
+          if (!aip.error) setAdminInvoiceProfiles(aip.data || [])
+        }
+      } catch { /* tabel master data belum ada — fitur nonaktif sampai migrasi */ }
       // Pemasukkan Credibook (book-scoped) — masuk Omset di dashboard. Defensif.
       try {
         const cb = await applyBook(supabase.from('credibook_income')
@@ -634,6 +664,115 @@ export function useStore() {
     await refreshBankAccounts()
     return { ok: true }
   }), [wrap, refreshBankAccounts])
+
+  // ── MASTER DATA INVOICE (owner): alamat / kontak / rekening + profil admin ──
+  const refreshMasterData = useCallback(async () => {
+    try {
+      const [loc, con, sba, aip] = await Promise.all([
+        supabase.from('store_locations').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+        supabase.from('store_contacts').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+        supabase.from('store_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true }),
+        supabase.from('admin_invoice_profiles').select('*').is('deleted_at', null),
+      ])
+      if (!mounted.current) return
+      if (!loc.error) setStoreLocations(loc.data || [])
+      if (!con.error) setStoreContacts(con.data || [])
+      if (!sba.error) setStoreBankAccounts(sba.data || [])
+      if (!aip.error) setAdminInvoiceProfiles(aip.data || [])
+    } catch { /* tabel belum ada */ }
+  }, [])
+
+  // Generic CRUD master (table, state setter). Soft delete.
+  const _masterAdd = (table) => async (payload) => wrap(async () => {
+    const { data: row, error: e } = await supabase.from(table).insert(payload).select('*').single()
+    if (e) return { ok: false, error: e.message }
+    await refreshMasterData()
+    return { ok: true, data: row }
+  })
+  const _masterUpdate = (table) => async (id, patch) => wrap(async () => {
+    const { error: e } = await supabase.from(table).update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshMasterData()
+    return { ok: true }
+  })
+  const _masterDelete = (table) => async (id) => wrap(async () => {
+    const { error: e } = await supabase.from(table).update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshMasterData()
+    return { ok: true }
+  })
+
+  const addLocation = useCallback(async (d) => {
+    if (!(d.locationName || '').trim()) return { ok: false, error: 'Nama lokasi wajib diisi' }
+    if (!(d.address || '').trim()) return { ok: false, error: 'Alamat wajib diisi' }
+    return _masterAdd('store_locations')({ location_name: d.locationName.trim(), store_name: (d.storeName || '').trim() || null, address: d.address.trim(), city: (d.city || '').trim() || null, note: (d.note || '').trim() || null, is_active: d.isActive !== false })
+  }, [wrap, refreshMasterData])
+  const updateLocation = useCallback(async (id, d) => {
+    const patch = {}
+    if (d.locationName !== undefined) patch.location_name = d.locationName.trim()
+    if (d.storeName !== undefined) patch.store_name = (d.storeName || '').trim() || null
+    if (d.address !== undefined) patch.address = d.address.trim()
+    if (d.city !== undefined) patch.city = (d.city || '').trim() || null
+    if (d.note !== undefined) patch.note = (d.note || '').trim() || null
+    if (d.isActive !== undefined) patch.is_active = d.isActive
+    return _masterUpdate('store_locations')(id, patch)
+  }, [wrap, refreshMasterData])
+  const deleteLocation = useCallback(async (id) => _masterDelete('store_locations')(id), [wrap, refreshMasterData])
+
+  const addContact = useCallback(async (d) => {
+    if (!(d.contactName || '').trim()) return { ok: false, error: 'Nama kontak wajib diisi' }
+    return _masterAdd('store_contacts')({ contact_name: d.contactName.trim(), phone: (d.phone || '').trim() || null, whatsapp: (d.whatsapp || '').trim() || null, note: (d.note || '').trim() || null, is_active: d.isActive !== false })
+  }, [wrap, refreshMasterData])
+  const updateContact = useCallback(async (id, d) => {
+    const patch = {}
+    if (d.contactName !== undefined) patch.contact_name = d.contactName.trim()
+    if (d.phone !== undefined) patch.phone = (d.phone || '').trim() || null
+    if (d.whatsapp !== undefined) patch.whatsapp = (d.whatsapp || '').trim() || null
+    if (d.note !== undefined) patch.note = (d.note || '').trim() || null
+    if (d.isActive !== undefined) patch.is_active = d.isActive
+    return _masterUpdate('store_contacts')(id, patch)
+  }, [wrap, refreshMasterData])
+  const deleteContact = useCallback(async (id) => _masterDelete('store_contacts')(id), [wrap, refreshMasterData])
+
+  const addStoreBank = useCallback(async (d) => {
+    if (!(d.bankName || '').trim()) return { ok: false, error: 'Nama bank wajib diisi' }
+    if (!(d.accountNumber || '').trim()) return { ok: false, error: 'Nomor rekening wajib diisi' }
+    if (!(d.accountHolder || '').trim()) return { ok: false, error: 'Atas nama wajib diisi' }
+    return _masterAdd('store_bank_accounts')({ bank_name: d.bankName.trim(), account_number: d.accountNumber.trim(), account_holder: d.accountHolder.trim(), note: (d.note || '').trim() || null, is_active: d.isActive !== false })
+  }, [wrap, refreshMasterData])
+  const updateStoreBank = useCallback(async (id, d) => {
+    const patch = {}
+    if (d.bankName !== undefined) patch.bank_name = d.bankName.trim()
+    if (d.accountNumber !== undefined) patch.account_number = d.accountNumber.trim()
+    if (d.accountHolder !== undefined) patch.account_holder = d.accountHolder.trim()
+    if (d.note !== undefined) patch.note = (d.note || '').trim() || null
+    if (d.isActive !== undefined) patch.is_active = d.isActive
+    return _masterUpdate('store_bank_accounts')(id, patch)
+  }, [wrap, refreshMasterData])
+  const deleteStoreBank = useCallback(async (id) => _masterDelete('store_bank_accounts')(id), [wrap, refreshMasterData])
+
+  // Set / upsert profil invoice admin (1 aktif per admin).
+  const setAdminInvoiceProfile = useCallback(async (adminId, d) => wrap(async () => {
+    if (!adminId) return { ok: false, error: 'Pilih admin dulu' }
+    const existing = adminInvoiceProfiles.find(p => p.admin_id === adminId && !p.deleted_at)
+    const body = { admin_id: adminId, location_id: d.locationId || null, contact_id: d.contactId || null, bank_account_id: d.bankAccountId || null, is_active: true, updated_at: new Date().toISOString() }
+    let e
+    if (existing) ({ error: e } = await supabase.from('admin_invoice_profiles').update(body).eq('id', existing.id))
+    else ({ error: e } = await supabase.from('admin_invoice_profiles').insert(body))
+    if (e) return { ok: false, error: e.message }
+    await refreshMasterData()
+    return { ok: true }
+  }), [wrap, adminInvoiceProfiles, refreshMasterData])
+
+  // Resolusi data invoice untuk admin (location/contact/bank dari master).
+  const invoiceProfileForAdmin = useCallback((adminId) => {
+    const prof = adminInvoiceProfiles.find(p => p.admin_id === adminId && !p.deleted_at)
+    if (!prof) return null
+    const location = storeLocations.find(l => l.id === prof.location_id && !l.deleted_at) || null
+    const contact = storeContacts.find(c => c.id === prof.contact_id && !c.deleted_at) || null
+    const bank = storeBankAccounts.find(b => b.id === prof.bank_account_id && !b.deleted_at) || null
+    return { profile: prof, location, contact, bank }
+  }, [adminInvoiceProfiles, storeLocations, storeContacts, storeBankAccounts])
 
   // ---------- AUTH ----------
   const login = useCallback(async (username, password, remember = false) => wrap(async () => {
@@ -1160,12 +1299,19 @@ export function useStore() {
       const _cust = (trx.customerId && customers.find(c => c.id === trx.customerId)) || null
       const ownerUserId = _cust?.ownerUserId || cashierId || null
       const ownerName = _cust?.ownerName || cashier || ''
-      // Snapshot rekening bank admin pembuat invoice (default aktif miliknya).
-      const _bank = bankAccountForAdmin(cashierId)
-      const bankSnap = _bank ? {
-        bankAccountId: _bank.id, bankName: _bank.bank_name,
-        bankNumber: _bank.account_number, bankHolder: _bank.account_holder,
-      } : {}
+      // Snapshot identitas invoice admin pembuat: utamakan Profil Invoice (master
+      // data), fallback rekening per-admin lama, lalu identitas toko default.
+      const _prof = invoiceProfileForAdmin(cashierId)
+      const _legacyBank = bankAccountForAdmin(cashierId)
+      const _bank = _prof?.bank || _legacyBank
+      const invoiceSnap = {
+        ...(_bank ? { bankAccountId: _bank.id, bankName: _bank.bank_name, bankNumber: _bank.account_number, bankHolder: _bank.account_holder } : {}),
+        ...((_prof?.location || _prof?.contact) ? {
+          storeNameSnapshot: _prof?.location?.store_name || _prof?.location?.location_name || '',
+          addressSnapshot: _prof?.location?.address || '',
+          phoneSnapshot: _prof?.contact?.whatsapp || _prof?.contact?.phone || '',
+        } : {}),
+      }
       const statusHistory = [{
         order_status: trx.orderStatus || 'menunggu',
         changed_at: nowIso,
@@ -1194,7 +1340,7 @@ export function useStore() {
           invoiceNo, orderNo,
           cashier, cashierId, cashierRole,
           ownerUserId, ownerName,
-          ...bankSnap,
+          ...invoiceSnap,
           statusHistory,
           orderStatus: trx.orderStatus || 'menunggu',
         })
@@ -1227,6 +1373,10 @@ export function useStore() {
         // Fallback bila kolom snapshot rekening bank belum ada (migrasi belum jalan).
         if (res.error && (isSchemaCacheError(res.error, 'bank_account_id') || isSchemaCacheError(res.error, 'bank_name') || isSchemaCacheError(res.error, 'bank_account_number') || isSchemaCacheError(res.error, 'bank_account_holder') || isSchemaCacheError(res.error, 'created_by_admin_id'))) {
           res = await supabase.from('transactions').insert(omit(payload, ['bank_account_id', 'bank_name', 'bank_account_number', 'bank_account_holder', 'created_by_admin_id'])).select().single()
+        }
+        // Fallback bila kolom snapshot identitas toko belum ada (migrasi belum jalan).
+        if (res.error && (isSchemaCacheError(res.error, 'store_name_snapshot') || isSchemaCacheError(res.error, 'address_snapshot') || isSchemaCacheError(res.error, 'phone_snapshot'))) {
+          res = await supabase.from('transactions').insert(omit(payload, ['store_name_snapshot', 'address_snapshot', 'phone_snapshot'])).select().single()
         }
         row = res.data
         e = res.error
@@ -1316,7 +1466,7 @@ export function useStore() {
       }
       return { ok: true, data: newTrx }
     } catch (err) { return { ok: false, error: err.message || String(err) } }
-  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin])
+  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin, invoiceProfileForAdmin])
 
   // ---------- SYNC DEBT ↔ TRANSACTION ↔ CUSTOMER ----------
   // syncDebtPaymentStatus(invoiceNo)
@@ -2048,6 +2198,11 @@ export function useStore() {
     admins, currentUser, customers, debts, debtPayments,
     books, activeBookId, defaultBookId, setActiveBook, addBook, updateBook,
     adminBankAccounts, refreshBankAccounts, bankAccountForAdmin, addBankAccount, updateBankAccount, deleteBankAccount,
+    storeLocations, storeContacts, storeBankAccounts, adminInvoiceProfiles, refreshMasterData, invoiceProfileForAdmin,
+    addLocation, updateLocation, deleteLocation,
+    addContact, updateContact, deleteContact,
+    addStoreBank, updateStoreBank, deleteStoreBank,
+    setAdminInvoiceProfile,
     credibookIncome, refreshCredibook, getTransactionByInvoice,
     refreshAll, refreshCustomers, refreshDebts, refreshTransactions, refreshDebtPayments,
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,

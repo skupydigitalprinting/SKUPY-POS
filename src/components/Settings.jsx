@@ -7,6 +7,8 @@ import {
 import Modal from './Modal'
 import { Input, Button } from './ui'
 import Logo from './Logo'
+import MasterDataSettings from './MasterDataSettings'
+import { FileText } from 'lucide-react'
 import { useConfirm } from './Confirm'
 import { useCategories } from '../hooks/useCategories'
 import { ROLE_OPTIONS, roleLabel, compressImage } from '../utils/helpers'
@@ -17,6 +19,7 @@ const TABS = [
   { id: 'logo', label: 'Logo', icon: Image },
   { id: 'admin', label: 'Admin', icon: Users },
   { id: 'rekening', label: 'Rekening Bank', icon: Landmark },
+  { id: 'master', label: 'Master Invoice', icon: FileText },
   { id: 'password', label: 'Password', icon: Lock },
 ]
 
@@ -45,6 +48,7 @@ export default function Settings({
   updateStoreInfo, updateLogo,
   addAdmin, updateAdmin, deleteAdmin, changePassword, logout, reassignAdminCustomers,
   adminBankAccounts = [], addBankAccount, updateBankAccount, deleteBankAccount,
+  masterData = {},
 }) {
   const confirm = useConfirm()
   const { addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories } = useCategories()
@@ -683,6 +687,28 @@ export default function Settings({
                 ))}
               </div>
             </div>
+          )}
+
+          {/* === MASTER INVOICE (alamat/kontak/rekening + profil admin) === */}
+          {tab === 'master' && (
+            <MasterDataSettings
+              locations={masterData.storeLocations}
+              contacts={masterData.storeContacts}
+              banks={masterData.storeBankAccounts}
+              profiles={masterData.adminInvoiceProfiles}
+              admins={admins}
+              addLocation={masterData.addLocation}
+              updateLocation={masterData.updateLocation}
+              deleteLocation={masterData.deleteLocation}
+              addContact={masterData.addContact}
+              updateContact={masterData.updateContact}
+              deleteContact={masterData.deleteContact}
+              addStoreBank={masterData.addStoreBank}
+              updateStoreBank={masterData.updateStoreBank}
+              deleteStoreBank={masterData.deleteStoreBank}
+              setAdminInvoiceProfile={masterData.setAdminInvoiceProfile}
+              invoiceProfileForAdmin={masterData.invoiceProfileForAdmin}
+            />
           )}
 
           {/* === PASSWORD === */}

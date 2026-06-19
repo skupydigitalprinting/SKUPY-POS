@@ -460,6 +460,17 @@ function AppShell() {
             addBankAccount={store.addBankAccount}
             updateBankAccount={store.updateBankAccount}
             deleteBankAccount={store.deleteBankAccount}
+            masterData={{
+              storeLocations: store.storeLocations,
+              storeContacts: store.storeContacts,
+              storeBankAccounts: store.storeBankAccounts,
+              adminInvoiceProfiles: store.adminInvoiceProfiles,
+              addLocation: store.addLocation, updateLocation: store.updateLocation, deleteLocation: store.deleteLocation,
+              addContact: store.addContact, updateContact: store.updateContact, deleteContact: store.deleteContact,
+              addStoreBank: store.addStoreBank, updateStoreBank: store.updateStoreBank, deleteStoreBank: store.deleteStoreBank,
+              setAdminInvoiceProfile: store.setAdminInvoiceProfile,
+              invoiceProfileForAdmin: store.invoiceProfileForAdmin,
+            }}
           />
         </Suspense>
       )}

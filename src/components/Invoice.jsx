@@ -17,6 +17,10 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
   const bank = (t.bankName || t.bankNumber || t.bankHolder)
     ? { name: t.bankName || '', number: t.bankNumber || '', holder: t.bankHolder || '' }
     : (STORE_INFO.bank || {})
+  // Identitas toko: snapshot dari profil admin pembuat (master data), fallback toko.
+  const issuerName = t.storeNameSnapshot || STORE_INFO.name
+  const issuerAddress = t.addressSnapshot || STORE_INFO.address
+  const issuerPhone = t.phoneSnapshot || STORE_INFO.phone
   const printRef = useRef(null)
   const [sharing, setSharing] = useState(false)
   const [shareInfo, setShareInfo] = useState(null)
@@ -520,7 +524,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 24,
                     color: '#0a0a0f', letterSpacing: '-0.02em', lineHeight: 1.1,
                   }}>
-                    {STORE_INFO.name}
+                    {issuerName}
                   </div>
                   <div style={{ fontSize: 12, color: '#6b6b80', marginTop: 3, fontStyle: 'italic' }}>
                     {STORE_INFO.tagline}
@@ -564,13 +568,13 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
               <div style={{ padding: 16, borderRadius: 12, background: '#f8f8fb', border: '1px solid #ececf2' }}>
                 <div style={infoLabel}>Dari</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a25', marginBottom: 6 }}>
-                  {STORE_INFO.name}
+                  {issuerName}
                 </div>
                 <div style={{ fontSize: 10.5, color: '#55556a', lineHeight: 1.5 }}>
-                  {STORE_INFO.address}
+                  {issuerAddress}
                 </div>
                 <div style={{ fontSize: 10.5, color: '#55556a', marginTop: 6 }}>
-                  {STORE_INFO.phone}
+                  {issuerPhone}
                 </div>
               </div>
 
@@ -935,7 +939,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                   Terima kasih atas kepercayaan Anda. Pembayaran via transfer ke <strong>{bank.name} {bank.number}</strong> a.n. <strong>{bank.holder}</strong>.
                 </p>
                 <p style={{ fontSize: 11, color: '#55556a', lineHeight: 1.6 }}>
-                  Untuk pertanyaan, hubungi {STORE_INFO.phone}.
+                  Untuk pertanyaan, hubungi {issuerPhone}.
                 </p>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -946,7 +950,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                   minWidth: 160,
                   fontSize: 11, fontWeight: 600, color: '#1a1a25', fontFamily: 'Syne',
                 }}>
-                  {STORE_INFO.name}
+                  {issuerName}
                 </div>
               </div>
             </div>
