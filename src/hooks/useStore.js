@@ -409,62 +409,8 @@ export function useStore() {
     return { ok: true }
   }, [])
 
-  // ── REKENING BANK PER ADMIN (owner only) ──
-  const refreshBankAccounts = useCallback(async () => {
-    try {
-      const { data, error } = await supabase.from('admin_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true })
-      if (!error && mounted.current) setAdminBankAccounts(data || [])
-    } catch { /* tabel belum ada */ }
-  }, [])
-  // Rekening default aktif untuk admin tertentu (untuk snapshot invoice).
-  const bankAccountForAdmin = useCallback((adminId) => {
-    if (!adminId) return null
-    const list = adminBankAccounts.filter(b => b.admin_id === adminId && b.is_active !== false && !b.deleted_at)
-    return list.find(b => b.is_default) || list[0] || null
-  }, [adminBankAccounts])
-  const addBankAccount = useCallback(async (data) => wrap(async () => {
-    if (!data.adminId) return { ok: false, error: 'Pilih admin dulu' }
-    if (!(data.bankName || '').trim()) return { ok: false, error: 'Nama bank wajib diisi' }
-    if (!(data.accountNumber || '').trim()) return { ok: false, error: 'Nomor rekening wajib diisi' }
-    if (!(data.accountHolder || '').trim()) return { ok: false, error: 'Atas nama wajib diisi' }
-    const makeDefault = !!data.isDefault
-    // Jika dijadikan default → matikan default lama admin ini dulu (rule #3).
-    if (makeDefault) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', data.adminId).is('deleted_at', null)
-    const payload = {
-      admin_id: data.adminId, bank_name: data.bankName.trim(), account_number: data.accountNumber.trim(),
-      account_holder: data.accountHolder.trim(), branch: (data.branch || '').trim() || null, note: (data.note || '').trim() || null,
-      is_active: data.isActive !== false, is_default: makeDefault,
-    }
-    const { data: row, error: e } = await supabase.from('admin_bank_accounts').insert(payload).select('*').single()
-    if (e) return { ok: false, error: e.message }
-    await refreshBankAccounts()
-    return { ok: true, data: row }
-  }), [wrap, refreshBankAccounts])
-  const updateBankAccount = useCallback(async (id, data) => wrap(async () => {
-    const cur = adminBankAccounts.find(b => b.id === id)
-    const adminId = data.adminId || cur?.admin_id
-    const makeDefault = !!data.isDefault
-    if (makeDefault && adminId) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', adminId).is('deleted_at', null).neq('id', id)
-    const patch = { updated_at: new Date().toISOString() }
-    if (data.adminId !== undefined) patch.admin_id = data.adminId
-    if (data.bankName !== undefined) patch.bank_name = data.bankName.trim()
-    if (data.accountNumber !== undefined) patch.account_number = data.accountNumber.trim()
-    if (data.accountHolder !== undefined) patch.account_holder = data.accountHolder.trim()
-    if (data.branch !== undefined) patch.branch = (data.branch || '').trim() || null
-    if (data.note !== undefined) patch.note = (data.note || '').trim() || null
-    if (data.isActive !== undefined) patch.is_active = data.isActive
-    if (data.isDefault !== undefined) patch.is_default = makeDefault
-    const { error: e } = await supabase.from('admin_bank_accounts').update(patch).eq('id', id)
-    if (e) return { ok: false, error: e.message }
-    await refreshBankAccounts()
-    return { ok: true }
-  }), [wrap, adminBankAccounts, refreshBankAccounts])
-  const deleteBankAccount = useCallback(async (id) => wrap(async () => {
-    const { error: e } = await supabase.from('admin_bank_accounts').update({ deleted_at: new Date().toISOString(), is_default: false }).eq('id', id)
-    if (e) return { ok: false, error: e.message }
-    await refreshBankAccounts()
-    return { ok: true }
-  }), [wrap, refreshBankAccounts])
+  // (Rekening bank per admin dipindah ke bawah — setelah `wrap` dideklarasikan,
+  //  agar tidak TDZ "Cannot access 'wrap' before initialization".)
 
   // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
   const refreshCustomers = useCallback(async () => {
@@ -631,6 +577,63 @@ export function useStore() {
     try { return await fn() }
     finally { if (mounted.current) setBusy(false) }
   }, [])
+
+  // ── REKENING BANK PER ADMIN (owner only) — SETELAH `wrap` agar tidak TDZ ──
+  const refreshBankAccounts = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('admin_bank_accounts').select('*').is('deleted_at', null).order('created_at', { ascending: true })
+      if (!error && mounted.current) setAdminBankAccounts(data || [])
+    } catch { /* tabel belum ada */ }
+  }, [])
+  // Rekening default aktif untuk admin tertentu (untuk snapshot invoice).
+  const bankAccountForAdmin = useCallback((adminId) => {
+    if (!adminId) return null
+    const list = adminBankAccounts.filter(b => b.admin_id === adminId && b.is_active !== false && !b.deleted_at)
+    return list.find(b => b.is_default) || list[0] || null
+  }, [adminBankAccounts])
+  const addBankAccount = useCallback(async (data) => wrap(async () => {
+    if (!data.adminId) return { ok: false, error: 'Pilih admin dulu' }
+    if (!(data.bankName || '').trim()) return { ok: false, error: 'Nama bank wajib diisi' }
+    if (!(data.accountNumber || '').trim()) return { ok: false, error: 'Nomor rekening wajib diisi' }
+    if (!(data.accountHolder || '').trim()) return { ok: false, error: 'Atas nama wajib diisi' }
+    const makeDefault = !!data.isDefault
+    // Jika dijadikan default → matikan default lama admin ini dulu (rule #3).
+    if (makeDefault) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', data.adminId).is('deleted_at', null)
+    const payload = {
+      admin_id: data.adminId, bank_name: data.bankName.trim(), account_number: data.accountNumber.trim(),
+      account_holder: data.accountHolder.trim(), branch: (data.branch || '').trim() || null, note: (data.note || '').trim() || null,
+      is_active: data.isActive !== false, is_default: makeDefault,
+    }
+    const { data: row, error: e } = await supabase.from('admin_bank_accounts').insert(payload).select('*').single()
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true, data: row }
+  }), [wrap, refreshBankAccounts])
+  const updateBankAccount = useCallback(async (id, data) => wrap(async () => {
+    const cur = adminBankAccounts.find(b => b.id === id)
+    const adminId = data.adminId || cur?.admin_id
+    const makeDefault = !!data.isDefault
+    if (makeDefault && adminId) await supabase.from('admin_bank_accounts').update({ is_default: false }).eq('admin_id', adminId).is('deleted_at', null).neq('id', id)
+    const patch = { updated_at: new Date().toISOString() }
+    if (data.adminId !== undefined) patch.admin_id = data.adminId
+    if (data.bankName !== undefined) patch.bank_name = data.bankName.trim()
+    if (data.accountNumber !== undefined) patch.account_number = data.accountNumber.trim()
+    if (data.accountHolder !== undefined) patch.account_holder = data.accountHolder.trim()
+    if (data.branch !== undefined) patch.branch = (data.branch || '').trim() || null
+    if (data.note !== undefined) patch.note = (data.note || '').trim() || null
+    if (data.isActive !== undefined) patch.is_active = data.isActive
+    if (data.isDefault !== undefined) patch.is_default = makeDefault
+    const { error: e } = await supabase.from('admin_bank_accounts').update(patch).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true }
+  }), [wrap, adminBankAccounts, refreshBankAccounts])
+  const deleteBankAccount = useCallback(async (id) => wrap(async () => {
+    const { error: e } = await supabase.from('admin_bank_accounts').update({ deleted_at: new Date().toISOString(), is_default: false }).eq('id', id)
+    if (e) return { ok: false, error: e.message }
+    await refreshBankAccounts()
+    return { ok: true }
+  }), [wrap, refreshBankAccounts])
 
   // ---------- AUTH ----------
   const login = useCallback(async (username, password, remember = false) => wrap(async () => {
@@ -1313,7 +1316,7 @@ export function useStore() {
       }
       return { ok: true, data: newTrx }
     } catch (err) { return { ok: false, error: err.message || String(err) } }
-  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary])
+  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin])
 
   // ---------- SYNC DEBT ↔ TRANSACTION ↔ CUSTOMER ----------
   // syncDebtPaymentStatus(invoiceNo)
