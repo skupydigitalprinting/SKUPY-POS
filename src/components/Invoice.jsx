@@ -117,10 +117,17 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
       }
       if (document.fonts?.ready) await document.fonts.ready
     } catch {}
+    // Tunggu semua gambar (logo) selesai dimuat sebelum capture.
+    try {
+      const imgs = Array.from(node.querySelectorAll('img'))
+      await Promise.all(imgs.map(img => (img.complete && img.naturalWidth)
+        ? Promise.resolve()
+        : new Promise(res => { img.onload = img.onerror = () => res() })))
+    } catch {}
     // Two RAFs + delay kecil supaya layout & font benar-benar stabil sebelum capture
     await new Promise(r => requestAnimationFrame(r))
     await new Promise(r => requestAnimationFrame(r))
-    await new Promise(r => setTimeout(r, 200))
+    await new Promise(r => setTimeout(r, 220))
 
     // CRITICAL — use scrollWidth/scrollHeight to capture the ENTIRE invoice content,
     // not just what's currently visible inside the modal's scrollable preview area.
@@ -559,11 +566,11 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                   #{t.invoiceNo}
                 </div>
                 <div style={{
-                  display: 'inline-block',
-                  marginTop: 8, padding: '0 12px', height: 24, lineHeight: '24px',
-                  borderRadius: 999, textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box',
-                  fontSize: 10, fontWeight: 700, fontFamily: '"Open Sans", sans-serif',
-                  letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  marginTop: 8, height: 26, minWidth: 72, padding: '0 14px',
+                  lineHeight: 1, whiteSpace: 'nowrap', boxSizing: 'border-box', textAlign: 'center',
+                  borderRadius: 999, fontSize: 10.5, fontWeight: 700, fontFamily: '"Open Sans", sans-serif',
+                  letterSpacing: '0.04em', textTransform: 'uppercase',
                   background: badgeBg, color: status?.hex || '#3b82f6',
                   border: `1px solid ${(status?.hex || '#3b82f6')}33`,
                 }}>
@@ -682,11 +689,13 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                     }}>
                       {item.name}
                       <span style={{
-                        display: 'inline-block',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
                         marginLeft: 8,
-                        padding: '0 8px',
-                        height: 18,
-                        lineHeight: '18px',
+                        padding: '0 10px',
+                        height: 20,
+                        lineHeight: 1,
                         borderRadius: 6,
                         boxSizing: 'border-box',
                         textAlign: 'center',
@@ -701,7 +710,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                         whiteSpace: 'nowrap',
                         verticalAlign: 'middle',
                       }}>
-                        {qtyDisplay} {unitLabel}
+                        {qtyDisplay}&nbsp;{unitLabel}
                       </span>
                     </span>
                     <span style={{
@@ -960,12 +969,13 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
             }}>
               <div style={{ flex: 1, minWidth: 240 }}>
                 <div style={infoLabel}>Catatan</div>
-                <p style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 700, fontSize: 11.5, color: '#1a1a25', lineHeight: 1.6 }}>
-                  Terima Kasih atas Kepercayaan Anda
-                </p>
-                <p style={{ fontFamily: '"Open Sans", sans-serif', fontWeight: 700, fontSize: 11.5, color: '#1a1a25', lineHeight: 1.6 }}>
-                  Kami Akan Melayani Anda Dengan Sepenuh Hati
-                </p>
+                <div style={{
+                  fontFamily: '"Open Sans", sans-serif', fontWeight: 700, fontSize: 11.5, color: '#1a1a25',
+                  lineHeight: 1.45, letterSpacing: 0, wordSpacing: 'normal', whiteSpace: 'pre-line',
+                  textTransform: 'none',
+                }}>
+                  {'Terima Kasih atas Kepercayaan Anda\nKami Akan Melayani Anda Dengan Sepenuh Hati'}
+                </div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ ...infoLabel, marginBottom: 28 }}>Tanda Tangan</div>
