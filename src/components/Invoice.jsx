@@ -565,16 +565,8 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                 }}>
                   #{t.invoiceNo}
                 </div>
-                <div style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  marginTop: 8, height: 26, minWidth: 72, padding: '0 14px',
-                  lineHeight: 1, whiteSpace: 'nowrap', boxSizing: 'border-box', textAlign: 'center',
-                  borderRadius: 999, fontSize: 10.5, fontWeight: 700, fontFamily: '"Open Sans", sans-serif',
-                  letterSpacing: '0.04em', textTransform: 'uppercase',
-                  background: badgeBg, color: status?.hex || '#3b82f6',
-                  border: `1px solid ${(status?.hex || '#3b82f6')}33`,
-                }}>
-                  {status?.label || t.status}
+                <div style={{ marginTop: 8 }}>
+                  <StatusBadge label={status?.label || t.status} hex={status?.hex || '#3b82f6'} bg={badgeBg} />
                 </div>
               </div>
             </div>
@@ -688,30 +680,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                       whiteSpace: 'normal',
                     }}>
                       {item.name}
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        marginLeft: 8,
-                        padding: '0 10px',
-                        height: 20,
-                        lineHeight: 1,
-                        borderRadius: 6,
-                        boxSizing: 'border-box',
-                        textAlign: 'center',
-                        fontSize: 10,
-                        fontWeight: 700,
-                        color: '#8b5cf6',
-                        background: 'rgba(139,92,246,0.10)',
-                        border: '1px solid rgba(139,92,246,0.18)',
-                        fontFamily: '"Open Sans", sans-serif',
-                        letterSpacing: '0.04em',
-                        textTransform: 'uppercase',
-                        whiteSpace: 'nowrap',
-                        verticalAlign: 'middle',
-                      }}>
-                        {qtyDisplay}&nbsp;{unitLabel}
-                      </span>
+                      <QtyBadge text={`${qtyDisplay} ${unitLabel}`} />
                     </span>
                     <span style={{
                       textAlign: 'center', color: '#1a1a25', fontFamily: 'Syne', fontWeight: 700,
@@ -1027,5 +996,40 @@ function DetailRow({ k, v }) {
       <span style={{ color: '#8888a8' }}>{k}</span>
       <span style={{ color: '#1a1a25', fontWeight: 600, textAlign: 'right' }}>{v}</span>
     </div>
+  )
+}
+
+// ── Badge reusable (dipakai preview & PNG yang sama) ──
+// Centering pakai HEIGHT === LINE-HEIGHT (inline-block) — satu-satunya teknik
+// yang dirender konsisten oleh browser DAN html2canvas. Hindari flex align-items
+// (sering top-align di PNG), transform, dan absolute.
+const _badgeBase = {
+  display: 'inline-block',
+  boxSizing: 'border-box',
+  textAlign: 'center',
+  verticalAlign: 'middle',
+  whiteSpace: 'nowrap',
+  fontFamily: '"Open Sans", sans-serif',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+}
+function StatusBadge({ label, hex, bg }) {
+  return (
+    <span style={{
+      ..._badgeBase,
+      height: 26, lineHeight: '26px', minWidth: 76, padding: '0 14px', borderRadius: 999,
+      fontSize: 10.5, letterSpacing: '0.04em',
+      background: bg, color: hex, border: `1px solid ${hex}33`,
+    }}>{label}</span>
+  )
+}
+function QtyBadge({ text }) {
+  return (
+    <span style={{
+      ..._badgeBase,
+      marginLeft: 8, height: 20, lineHeight: '20px', padding: '0 10px', borderRadius: 6,
+      fontSize: 10, letterSpacing: '0.04em',
+      color: '#8b5cf6', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.18)',
+    }}>{text}</span>
   )
 }
