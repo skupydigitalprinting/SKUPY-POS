@@ -1003,12 +1003,15 @@ function DetailRow({ k, v }) {
 // Centering pakai HEIGHT === LINE-HEIGHT (inline-block) — satu-satunya teknik
 // yang dirender konsisten oleh browser DAN html2canvas. Hindari flex align-items
 // (sering top-align di PNG), transform, dan absolute.
+// Centering pakai PADDING SIMETRIS + line-height:1 (tanpa height tetap). Ini
+// dirender konsisten browser DAN html2canvas — teks tidak naik/turun di PNG.
 const _badgeBase = {
   display: 'inline-block',
   boxSizing: 'border-box',
   textAlign: 'center',
   verticalAlign: 'middle',
   whiteSpace: 'nowrap',
+  lineHeight: 1,
   fontFamily: '"Open Sans", sans-serif',
   fontWeight: 700,
   textTransform: 'uppercase',
@@ -1017,8 +1020,8 @@ function StatusBadge({ label, hex, bg }) {
   return (
     <span style={{
       ..._badgeBase,
-      height: 26, lineHeight: '26px', minWidth: 76, padding: '0 14px', borderRadius: 999,
-      fontSize: 10.5, letterSpacing: '0.04em',
+      padding: '8px 16px', borderRadius: 999, minWidth: 76,
+      fontSize: 11, letterSpacing: '0.04em',
       background: bg, color: hex, border: `1px solid ${hex}33`,
     }}>{label}</span>
   )
@@ -1027,7 +1030,7 @@ function QtyBadge({ text }) {
   return (
     <span style={{
       ..._badgeBase,
-      marginLeft: 8, height: 20, lineHeight: '20px', padding: '0 10px', borderRadius: 6,
+      marginLeft: 8, padding: '5px 10px', borderRadius: 6,
       fontSize: 10, letterSpacing: '0.04em',
       color: '#8b5cf6', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.18)',
     }}>{text}</span>
