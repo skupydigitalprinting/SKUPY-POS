@@ -232,14 +232,6 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const acc = useAccounting()
   const isOwner = currentUser?.role === 'owner'
   const [tab, setTab] = useState('ringkasan')
-  // Muat riwayat penjualan aset saat modal detail aset dibuka.
-  useEffect(() => {
-    let alive = true
-    if (detailAsset?.id) acc.listAssetSales?.(detailAsset.id).then(r => { if (alive) setAssetSaleHist(r?.ok ? r.data : []) })
-    else setAssetSaleHist([])
-    return () => { alive = false }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailAsset])
 
   // Deep-link: pindah tab saat diminta dari luar (mis. Credibook → Pengeluaran).
   useEffect(() => {
@@ -351,6 +343,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [assetForm, setAssetForm] = useState(blankAsset); const [assetErr, setAssetErr] = useState({})
   const [editAsset, setEditAsset] = useState(null); const [detailAsset, setDetailAsset] = useState(null)
   const [sellState, setSellState] = useState(null); const [photoBusy, setPhotoBusy] = useState(false)
+  // Muat riwayat penjualan aset saat modal detail aset dibuka (setelah state siap → tanpa TDZ).
+  useEffect(() => {
+    let alive = true
+    if (detailAsset?.id) acc.listAssetSales?.(detailAsset.id).then(r => { if (alive) setAssetSaleHist(r?.ok ? r.data : []) })
+    else setAssetSaleHist([])
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailAsset])
   const [assetFilter, setAssetFilter] = useState({ cat: 'all', status: 'all', method: 'all' })
   const assetCatOptions = useMemo(() => {
     const map = new Map()
