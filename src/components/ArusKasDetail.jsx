@@ -32,7 +32,7 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
     return computeRange(rangeId)
   }, [rangeId, custom])
 
-  const [data, setData] = useState({ masuk: [], keluar: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
+  const [data, setData] = useState({ masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
@@ -41,15 +41,16 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
     setLoading(true)
     loadCashflow(range.from, range.to).then(r => {
       if (!alive) return
-      setData(r?.ok ? r : { masuk: [], keluar: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
+      setData(r?.ok ? r : { masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
       setLoading(false)
     })
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, range.from, range.to])
 
-  // Gabung & urutkan terbaru dulu untuk tabel.
-  const rows = useMemo(() => [...data.masuk, ...data.keluar].sort((a, b) => new Date(b.date) - new Date(a.date)), [data])
+  // Gabung & urutkan terbaru dulu untuk tabel. `pending` ikut TAMPIL tapi
+  // TIDAK dihitung ke total (uang belum diterima).
+  const rows = useMemo(() => [...data.masuk, ...data.keluar, ...(data.pending || [])].sort((a, b) => new Date(b.date) - new Date(a.date)), [data])
 
   // Breakdown per metode (cash / transfer / qris). 'hutang' (DP invoice hutang) → cash.
   const bd = useMemo(() => {
@@ -133,16 +134,17 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
             </thead>
             <tbody>
               {rows.map((r, idx) => {
+                const isPending = r.type === 'pending'
                 const masuk = r.type === 'masuk'
-                const color = masuk ? '#10d98a' : '#ef4444'
+                const color = isPending ? '#94a3b8' : masuk ? '#10d98a' : '#ef4444'
                 const refTxt = r.ref || r.category || '—'
                 const clickable = onInvoiceClick && r.invoiceNo
                 return (
-                  <tr key={`${r.type}-${r.id}-${idx}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <tr key={`${r.type}-${r.id}-${idx}`} style={{ borderBottom: '1px solid var(--border)', opacity: isPending ? 0.7 : 1 }}>
                     <td className="px-2 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(r.date, r.createdAt)}</td>
                     <td className="px-2 py-2.5">
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-bold" style={{ fontSize: 9, textTransform: 'uppercase', color, background: `${color}1f` }}>
-                        {masuk ? <ArrowDownCircle size={10} /> : <ArrowUpCircle size={10} />}{masuk ? 'Masuk' : 'Keluar'}
+                        {isPending ? null : masuk ? <ArrowDownCircle size={10} /> : <ArrowUpCircle size={10} />}{isPending ? 'Pending' : masuk ? 'Masuk' : 'Keluar'}
                       </span>
                     </td>
                     <td className="px-2 py-2.5" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', whiteSpace: 'nowrap' }}>{r.source}</td>
@@ -154,7 +156,7 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
                     <td className="px-2 py-2.5 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{r.method || '—'}</td>
                     <td className="px-2 py-2.5 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{r.status || '—'}</td>
                     <td className="px-2 py-2.5 text-right font-bold whitespace-nowrap" style={{ color, fontVariantNumeric: 'tabular-nums' }}>
-                      {masuk ? '+' : '−'}{fmt(r.amount)}
+                      {isPending ? '(belum)' : (masuk ? '+' : '−') + ''}{isPending ? ' ' : ''}{fmt(r.amount)}
                     </td>
                   </tr>
                 )

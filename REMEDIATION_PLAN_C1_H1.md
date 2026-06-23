@@ -1,98 +1,111 @@
-# RENCANA PERBAIKAN — C1 (Keamanan) & H1 (Multi-book Accounting)
+# RENCANA PERBAIKAN — Keputusan & Plan
 
-Dokumen RENCANA. Belum dieksekusi. Butuh persetujuan karena keduanya
-perubahan arsitektur yang bisa berdampak luas.
-
----
-
-## C1 — Keamanan: dari "gating frontend" ke RLS berbasis peran
-
-### Kondisi sekarang
-- Satu **anon key** dipakai semua user. Policy tiap tabel `FOR ALL USING(true)`.
-- Peran (owner/admin/kasir) hanya disimpan di tabel `admins` & dicek di React.
-- Akibat: data apa pun bisa diakses/diubah lewat API langsung memakai anon key.
-
-### Opsi remediasi (urut dari paling ringan → paling kuat)
-
-**Tahap 1 — Pengerasan tanpa ubah login (cepat, mitigasi)**
-1. Pindahkan operasi **DESTRUKTIF & sensitif** ke RPC `SECURITY DEFINER`
-   yang menerima `actor_id` + cek peran di dalam fungsi:
-   - `delete_transaction`, `delete_debt_payment`, `delete_expense`,
-     `delete_bank_loan_payment`, dsb.
-   - Revoke akses `DELETE`/`UPDATE` langsung dari anon pada tabel terkait,
-     hanya izinkan lewat RPC.
-2. Sembunyikan kolom sensitif (laba/owner) di belakang RPC, bukan SELECT bebas.
-   Risiko: sedang (perlu mapping semua aksi delete/edit ke RPC). Tidak ubah UI.
-
-**Tahap 2 — Auth nyata (paling benar)**
-1. Migrasi login ke **Supabase Auth** (email/username+password → `auth.users`).
-2. Simpan peran di `profiles(user_id, role)`.
-3. Tulis RLS per tabel berbasis `auth.uid()` + peran:
-   - owner: full. admin: sesuai book/aksi. kasir: hanya book yang ditugaskan,
-     hanya INSERT transaksi/pembayaran miliknya, tidak boleh baca accounting.
-4. Hapus policy `USING(true)`.
-   Risiko: tinggi (menyentuh seluruh alur login & query). Perlu test menyeluruh.
-
-### Rekomendasi
-Mulai **Tahap 1** (mitigasi delete/edit lewat RPC) karena dampak besar dengan
-risiko UI minimal; jadwalkan **Tahap 2** sebagai proyek terpisah dengan QA penuh.
-Tidak menyentuh rumus akuntansi sama sekali.
-
-### Yang saya butuhkan dari Anda
-- Konfirmasi boleh memakai RPC `SECURITY DEFINER` + revoke delete anon (Tahap 1)?
-- Atau langsung rencanakan Supabase Auth (Tahap 2)?
+Status keputusan owner (audit follow-up):
+- **H1 (multi-book accounting): DIBATALKAN.** Accounting tetap GLOBAL (gabungan
+  semua book). Hanya Omset/Customer/Piutang yang per-book. Biaya bersama (sewa,
+  gaji) tetap global. → Tidak ada perubahan `acc_dashboard`. Risiko nol.
+  - Konsekuensi: temuan **M2** (Dashboard Owner Laba pakai omset global) menjadi
+    **bukan bug** — memang konsisten dengan keputusan "accounting global".
+  - **M1** (Credibook "Total Pengeluaran" global) tetap berlaku & memang sesuai
+    desain; label "semua book" sudah ada di kartu.
+- **C1 (keamanan): rencanakan Tahap 2 — Supabase Auth + RLS per peran** (plan
+  saja, belum dieksekusi; perlu jadwal & QA penuh).
 
 ---
 
-## H1 — Multi-book Accounting (pengeluaran/hutang/aset per book)
+## C1 — RENCANA TAHAP 2: Supabase Auth + RLS per peran
 
-### Kondisi sekarang
-- `book_id` hanya ada di `transactions, customers, debts, debt_payments`.
-- `acc_dashboard(p_from, p_to)` **global** (tanpa book).
-- Pengeluaran, Pembelian, Hutang Supplier/Bank, Kasbon, Sewa, Aset = gabungan.
+Sasaran: hentikan akses bebas via anon key. Setiap user login sebagai identitas
+Supabase Auth; database menegakkan peran (owner/admin/kasir) lewat RLS — bukan
+hanya React.
 
-### Rencana (non-destruktif, bertahap)
+### A. Skema & data
+1. Aktifkan **Supabase Auth** (Email atau Phone). Untuk login berbasis username
+   yang ada sekarang: petakan `username@skupy.local` → email sintetis, atau
+   migrasi ke email asli.
+2. Tabel `profiles`:
+   ```sql
+   create table public.profiles (
+     user_id uuid primary key references auth.users(id) on delete cascade,
+     admin_id uuid,              -- link ke baris admins lama (opsional)
+     role text not null default 'kasir',  -- owner|admin|kasir
+     created_at timestamptz default now()
+   );
+   ```
+3. Helper peran (dipakai semua policy):
+   ```sql
+   create or replace function public.current_role() returns text
+   language sql stable security definer as $$
+     select role from public.profiles where user_id = auth.uid()
+   $$;
+   ```
+4. Migrasi user lama: untuk tiap baris `admins`, buat `auth.users` + `profiles`
+   (role disalin). Simpan mapping `profiles.admin_id`.
 
-**Langkah 1 — Migrasi DB (additive)**
-- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS book_id uuid` pada:
-  `expenses, purchases, supplier_debts, supplier_debt_payments,
-   bank_loans, bank_loan_payments, employee_cash_advances,
-   employee_cash_advance_payments, prepaid_rents, assets`.
-- Backfill semua baris lama → book default (SKUPY) agar data lama tidak hilang.
-- Index `book_id`.
+### B. RLS per tabel (ganti `USING(true)`)
+Pola umum (contoh `transactions`):
+```sql
+alter table public.transactions enable row level security;
+drop policy if exists "anon all transactions" on public.transactions;
 
-**Langkah 2 — `acc_dashboard(p_from, p_to, p_book uuid DEFAULT NULL)`**
-- Tambah parameter opsional `p_book`. Setiap CTE memfilter
-  `(p_book IS NULL OR book_id = p_book)`. `p_book NULL` = perilaku lama (global)
-  → **tidak memecah apa pun yang sekarang sudah benar**.
-- Saldo/Arus Kas/Total Aset/Kekayaan/Pengeluaran/Hutang ikut `p_book`.
+-- Baca: owner & admin semua; kasir hanya book yang ditugaskan (admin_book_access)
+create policy trx_select on public.transactions for select using (
+  public.current_role() in ('owner','admin')
+  or exists (select 1 from public.admin_book_access a
+             where a.admin_id = (select admin_id from public.profiles where user_id=auth.uid())
+               and a.book_id = transactions.book_id)
+);
+-- Tulis: owner/admin bebas; kasir hanya INSERT (checkout) untuk book-nya
+create policy trx_insert on public.transactions for insert with check (
+  public.current_role() in ('owner','admin','kasir')
+);
+-- Hapus/Update sensitif: owner saja (atau admin terbatas)
+create policy trx_update on public.transactions for update using (
+  public.current_role() in ('owner','admin')
+);
+create policy trx_delete on public.transactions for delete using (
+  public.current_role() = 'owner'
+);
+```
+Terapkan pola serupa:
+- **Accounting (expenses, purchases, supplier_debts, bank_loans, kasbon, assets,
+  prepaid_rents, migration_details, acc_dashboard RPC):** SELECT/INSERT/UPDATE/
+  DELETE hanya `owner` (admin opsional). Kasir: **tanpa akses**.
+- **credibook_income, debts, debt_payments:** owner/admin penuh; kasir sesuai book.
+- **customers, products:** owner/admin tulis; kasir baca + insert customer.
+- **settings, admins, profiles, master data, bank accounts:** owner saja.
+- **acc_dashboard / RPC sensitif:** `REVOKE EXECUTE ... FROM anon;`
+  `GRANT EXECUTE ... TO authenticated;` + cek `current_role()='owner'` di dalam,
+  atau bungkus dengan wrapper yang menolak non-owner.
 
-**Langkah 3 — Hook & UI**
-- `getDashboard`, `getOutflowTransactions`, `getCardDetail`, `getCashflowDetail`,
-  `auditAccounting` menerima `bookId` dan meneruskannya.
-- Tulis `book_id = writeBookId` saat membuat expense/purchase/hutang/kasbon/aset
-  (omit-fallback bila kolom belum ada).
-- Accounting page kirim `activeBookId` ke semua fetch; tambah indikator
-  "Accounting: Book Aktif" + opsi "Semua Book".
+### C. Perubahan frontend (terukur, bukan refactor besar)
+1. `src/lib/supabase.js`: tetap createClient, tapi tambahkan alur
+   `supabase.auth.signInWithPassword(...)` di `login()` (`useStore`).
+2. `loadSession()` → pakai `supabase.auth.getSession()` + listener
+   `onAuthStateChange`. Peran diambil dari `profiles`.
+3. Semua query yang sekarang anon otomatis berjalan sebagai user terautentikasi
+   (header JWT dikirim Supabase client). Tidak perlu ubah query satu-satu.
+4. Gating UI yang ada tetap dipertahankan sebagai lapisan UX (defense in depth).
 
-**Langkah 4 — Verifikasi ketat**
-- Untuk `p_book = NULL`, semua angka HARUS sama persis dengan sekarang
-  (regression test — Saldo rekonsiliasi pas ke rupiah).
-- Untuk tiap book, jumlah per-book = total global.
+### D. Rollout aman
+1. Buat policy baru **berdampingan** (mode shadow) di staging.
+2. Migrasi user → auth + profiles.
+3. Uji tiap peran: owner (full), admin (sesuai book), kasir (hanya kasir/order,
+   tidak bisa baca accounting via API).
+4. Setelah lolos: `DROP POLICY "anon all ..."` di semua tabel, cabut hak anon.
+5. Sediakan akun owner darurat + prosedur reset.
 
-### Risiko
-- **Tinggi.** Menyentuh fungsi `acc_dashboard` yang sudah tervalidasi
-  (Saldo rekonsiliasi pas). Salah filter → Saldo/Laba bergeser diam-diam.
-- Mitigasi: parameter `p_book` default NULL (mode lama), uji A/B
-  (global lama vs global baru) sebelum aktifkan filter per book.
+### E. Risiko & mitigasi
+- Risiko: salah satu policy terlalu ketat → fitur gagal senyap. Mitigasi: uji
+  matriks peran × tabel sebelum mencabut policy lama; simpan rollback.
+- Tidak menyentuh rumus akuntansi sama sekali (hanya akses).
 
-### Keputusan yang diperlukan
-1. Apakah benar **pengeluaran, hutang, kasbon, aset** harus per-book?
-   (Banyak toko menaruh biaya operasional sebagai bersama/global.)
-2. Bagaimana biaya yang memang dipakai bersama 2 brand (mis. sewa, gaji)?
-   - Opsi: tetap global, atau dialokasikan, atau ditandai "Bersama".
-3. Backfill data lama → SKUPY semua, atau Anda mau bagi manual sebagian?
+### Estimasi langkah eksekusi (saat disetujui)
+1. Migrasi `profiles` + helper `current_role()` + seed dari `admins`.
+2. Alur `auth.signInWithPassword` di `login()` + session listener.
+3. Policy per tabel (batch: penjualan → piutang → accounting → master).
+4. Revoke anon + uji peran.
+5. Go-live.
 
-> Setelah Anda jawab 1–3, saya kerjakan H1 bertahap dengan format
-> FIXED / RETEST / RISK, dan **mode lama (global) tetap jadi fallback**
-> sampai verifikasi lolos.
+> Semua di atas adalah RENCANA. Beri aba-aba bila ingin saya mulai dari langkah 1
+> (migrasi `profiles` + helper) — itu langkah paling aman & fondasi untuk sisanya.

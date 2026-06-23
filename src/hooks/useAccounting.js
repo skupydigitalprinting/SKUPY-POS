@@ -566,7 +566,7 @@ export function useAccounting() {
   //   Keluar = getOutflowTransactions + pembayaran sewa dibayar dimuka (full).
   const getCashflowDetail = useCallback(async (from, to) => {
     const toEnd = (to || from) + 'T23:59:59'
-    const masuk = [], keluar = []
+    const masuk = [], keluar = [], pending = []
     const CB_LABEL = { omzet: 'Credibook · Omset', refund: 'Credibook · Refund', capital: 'Credibook · Modal Tambahan', other: 'Credibook · Lainnya' }
     try {
       // Σ cicilan per invoice (semua waktu) → untuk hitung init_paid
@@ -575,12 +575,16 @@ export function useAccounting() {
         const { data } = await supabase.from('debt_payments').select('invoice_no, amount').is('deleted_at', null)
         ;(data || []).forEach(x => { if (x.invoice_no) cicByInv[x.invoice_no] = (cicByInv[x.invoice_no] || 0) + Math.round(x.amount || 0) })
       }
-      // 1) Penjualan — init_paid (uang diterima di awal, bukan total tagihan)
+      // 1) Penjualan — init_paid (uang diterima di awal, bukan total tagihan).
+      //    Sisa yang BELUM diterima (pending/hutang) → daftar `pending` saja
+      //    (tampil di tabel, TIDAK masuk Total Masuk).
       {
-        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,paid,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,paid,remaining,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
         ;(data || []).forEach(x => {
           const initPaid = Math.max(0, Math.round(x.paid || 0) - (cicByInv[x.invoice_no] || 0))
           if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, createdAt: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no })
+          const rem = Math.max(0, Math.round(x.remaining != null ? x.remaining : (Math.round(x.total || 0) - Math.round(x.paid || 0))))
+          if (rem > 0) pending.push({ id: x.id, type: 'pending', date: x.created_at, createdAt: x.created_at, source: 'Invoice Belum Lunas', ref: x.invoice_no, category: 'Belum diterima (tidak dihitung)', method: x.payment_method, status: x.status || 'pending', amount: rem, invoiceNo: x.invoice_no })
         })
       }
       // 2) Cicilan piutang
@@ -603,6 +607,16 @@ export function useAccounting() {
         const { data } = await supabase.from('employee_cash_advance_payments').select('id,payment_date,created_at,amount,payment_method,note,advance_id').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
         ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, createdAt: x.created_at, source: 'Kasbon Karyawan', ref: '', category: 'Pengembalian Kasbon', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
+      // 6) Penjualan aset = kas masuk (harga jual). Bukan omset.
+      {
+        const { data, error } = await supabase.from('asset_sales').select('id,sale_date,created_at,asset_id,sale_price,gain_loss,payment_method,note').is('deleted_at', null).gte('sale_date', from).lte('sale_date', to)
+        if (!error) {
+          const ids = [...new Set((data || []).map(x => x.asset_id).filter(Boolean))]
+          const nameMap = {}
+          if (ids.length) { const { data: aa } = await supabase.from('assets').select('id,name').in('id', ids); (aa || []).forEach(a => { nameMap[a.id] = a.name }) }
+          ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.sale_date, createdAt: x.created_at, source: 'Penjualan Aset', ref: nameMap[x.asset_id] || '', category: Math.round(x.gain_loss || 0) >= 0 ? 'Untung Jual Aset' : 'Rugi Jual Aset', method: x.payment_method, status: 'valid', amount: Math.round(x.sale_price || 0), note: x.note }))
+        }
+      }
       // KELUAR — pengeluaran aktual (single source of truth)
       const out = await getOutflowTransactions(from, to)
       ;(out.rows || []).forEach(r => keluar.push({ ...r, type: 'keluar' }))
@@ -612,13 +626,15 @@ export function useAccounting() {
         ;(data || []).filter(x => String(x.status || '').toLowerCase() !== 'cancelled').forEach(x => keluar.push({ id: x.id, type: 'keluar', date: x.payment_date, source: 'Sewa Dibayar Dimuka', ref: x.name || '', category: 'Pembayaran Sewa', method: x.payment_method, status: 'valid', amount: Math.round(x.total_amount || 0), note: x.note }))
       }
     } catch (e) {
-      return { ok: false, error: e?.message || String(e), masuk: [], keluar: [], totalMasuk: 0, totalKeluar: 0, net: 0 }
+      return { ok: false, error: e?.message || String(e), masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 }
     }
     masuk.sort((a, b) => new Date(b.date) - new Date(a.date))
     keluar.sort((a, b) => new Date(b.date) - new Date(a.date))
+    pending.sort((a, b) => new Date(b.date) - new Date(a.date))
+    // Total HANYA dari uang yang benar diterima/dikeluarkan. `pending` TIDAK dihitung.
     const totalMasuk = masuk.reduce((s, r) => s + (r.amount || 0), 0)
     const totalKeluar = keluar.reduce((s, r) => s + (r.amount || 0), 0)
-    return { ok: true, masuk, keluar, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
+    return { ok: true, masuk, keluar, pending, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
   }, [getOutflowTransactions])
 
   // ── AUDIT KEUANGAN (console) ──────────────────────────────────────────────
@@ -858,12 +874,34 @@ export function useAccounting() {
     const { error } = await supabase.from('assets').update({ deleted_at: new Date().toISOString(), status: 'deleted' }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
-  const sellAsset = useCallback(async (id, { soldDate, soldPrice, method, note }) => {
-    const { error } = await supabase.from('assets').update({
-      status: 'sold', sold_date: soldDate || null, sold_price: Math.round(Number(soldPrice) || 0),
-      payment_method: method || 'transfer', notes: note != null ? note : undefined, updated_at: new Date().toISOString(),
-    }).eq('id', id)
+  // Jual aset: catat di asset_sales (harga jual → kas masuk; untung/rugi),
+  // lalu update assets (status sold) TANPA payment_method (kolom itu tidak ada).
+  const sellAsset = useCallback(async (id, { soldDate, soldPrice, method, note, bookValue, createdBy }) => {
+    const price = Math.round(Number(soldPrice) || 0)
+    const bv = Math.round(Number(bookValue) || 0)
+    const pm = method === 'cash' ? 'cash' : method === 'qris' ? 'qris' : 'transfer'
+    // 1) Catat transaksi penjualan aset (sumber kas masuk + untung/rugi)
+    const saleRow = { asset_id: id, sale_date: soldDate || todayISO(), sale_price: price, book_value: bv, gain_loss: price - bv, payment_method: pm, note: note || '', created_by: createdBy || null }
+    const sres = await supabase.from('asset_sales').insert(saleRow)
+    if (sres.error && !/relation|does not exist|schema cache/i.test(sres.error.message || '')) {
+      return { ok: false, error: sres.error.message }
+    }
+    // 2) Tandai aset terjual — JANGAN kirim payment_method ke tabel assets.
+    const patch = { status: 'sold', sold_date: soldDate || null, sold_price: price, updated_at: new Date().toISOString() }
+    if (note != null) patch.notes = note
+    let { error } = await supabase.from('assets').update(patch).eq('id', id)
+    // Fallback bila kolom sold_date/sold_price belum ada.
+    if (error && /(sold_date|sold_price|schema cache|does not exist)/i.test(error.message || '')) {
+      ;({ error } = await supabase.from('assets').update({ status: 'sold', updated_at: new Date().toISOString() }).eq('id', id))
+    }
     return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const listAssetSales = useCallback(async (assetId) => {
+    let q = supabase.from('asset_sales').select('*').is('deleted_at', null).order('sale_date', { ascending: false })
+    if (assetId) q = q.eq('asset_id', assetId)
+    const { data, error } = await q.limit(500)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
   }, [])
   // Kategori aset
   const listAssetCategories = useCallback(async () => {
@@ -1418,7 +1456,7 @@ export function useAccounting() {
     listBankPayments, editBankPayment, deleteBankPayment,
     getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut, listExpensesByRange,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
-    listAssets, addAsset, updateAsset, deleteAsset, sellAsset,
+    listAssets, addAsset, updateAsset, deleteAsset, sellAsset, listAssetSales,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
     listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange, sumOmsetByBook, sumPiutangByBook,

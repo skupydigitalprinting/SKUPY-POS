@@ -232,6 +232,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const acc = useAccounting()
   const isOwner = currentUser?.role === 'owner'
   const [tab, setTab] = useState('ringkasan')
+  // Muat riwayat penjualan aset saat modal detail aset dibuka.
+  useEffect(() => {
+    let alive = true
+    if (detailAsset?.id) acc.listAssetSales?.(detailAsset.id).then(r => { if (alive) setAssetSaleHist(r?.ok ? r.data : []) })
+    else setAssetSaleHist([])
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailAsset])
+
   // Deep-link: pindah tab saat diminta dari luar (mis. Credibook → Pengeluaran).
   useEffect(() => {
     if (initialTab && TABS.some(t => t.id === initialTab)) setTab(initialTab)
@@ -280,6 +289,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [advPayInModal, setAdvPayInModal] = useState(null) // id kasbon yang sedang dibayar di detail
   const [editPay, setEditPay] = useState(null) // pembayaran kasbon yang sedang diedit { id, amount, method, date, note }
   const [payDetail, setPayDetail] = useState(null) // detail pembayaran kasbon (lihat saja)
+  const [assetSaleHist, setAssetSaleHist] = useState([]) // riwayat penjualan aset (detail)
   // ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ──
   const blankMigIn = { type: 'old_income', date: acc.todayISO(), name: '', customer: '', amount: '', method: 'cash', note: '' }
   const blankMigOut = { type: 'old_expense', date: acc.todayISO(), name: '', amount: '', method: 'cash', note: '' }
@@ -2512,6 +2522,25 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 {rows.map(([k, v]) => <div key={k} className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>{v}</div></div>)}
               </div>
               {detailAsset.notes && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Catatan: {detailAsset.notes}</p>}
+              {assetSaleHist.length > 0 && (
+                <div className="rounded-xl p-3" style={{ background: 'rgba(16,217,138,0.06)', border: '1px solid rgba(16,217,138,0.25)' }}>
+                  <div className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: '#10d98a', fontFamily: 'Syne' }}>Riwayat Penjualan Aset</div>
+                  {assetSaleHist.map(s => {
+                    const g = Math.round(s.gain_loss || 0)
+                    return (
+                      <div key={s.id} className="text-[11px] mb-1.5 pb-1.5" style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                        <div className="flex justify-between"><span>{formatDateTimeWIB(s.sale_date, s.created_at)}</span><span className="font-bold uppercase px-1.5 py-0.5 rounded" style={{ background: 'rgba(148,163,184,0.12)', fontSize: 9 }}>{s.payment_method}</span></div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                          <span>Harga Jual: <b style={{ color: '#10d98a' }}>{fmt(s.sale_price)}</b></span>
+                          <span>Nilai Buku: <b style={{ color: 'var(--text-primary)' }}>{fmt(s.book_value)}</b></span>
+                          <span>{g >= 0 ? 'Untung' : 'Rugi'}: <b style={{ color: g >= 0 ? '#10d98a' : '#ef4444' }}>{fmt(Math.abs(g))}</b></span>
+                        </div>
+                        {s.note && <div className="mt-0.5" style={{ color: 'var(--text-muted)' }}>{s.note}</div>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
               {sched.length > 1 && (
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Simulasi Penyusutan</div>
@@ -2564,8 +2593,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
               {hj > 0 && <div className="text-xs font-semibold" style={{ color: gl >= 0 ? '#10d98a' : '#ef4444' }}>{gl >= 0 ? 'Keuntungan' : 'Kerugian'} penjualan: {fmt(Math.abs(gl))}</div>}
               <Button variant="primary" className="w-full" onClick={async () => {
                 if (!(parseCurrency(sellState.soldPrice) > 0)) return toast.error('Harga jual harus > 0')
-                const r = await acc.sellAsset(sellState.id, { soldDate: sellState.soldDate, soldPrice: parseCurrency(sellState.soldPrice), method: sellState.method, note: sellState.note })
-                if (r.ok) { toast.success(`Aset terjual · ${gl >= 0 ? 'untung' : 'rugi'} ${fmt(Math.abs(gl))}`); setSellState(null); loadAssets() } else toast.error(r.error)
+                const r = await acc.sellAsset(sellState.id, { soldDate: sellState.soldDate, soldPrice: parseCurrency(sellState.soldPrice), method: sellState.method, note: sellState.note, bookValue: sellState.book, createdBy: currentUser?.id })
+                if (r.ok) { toast.success(`Aset terjual · ${gl >= 0 ? 'untung' : 'rugi'} ${fmt(Math.abs(gl))}`); setSellState(null); loadAssets(); loadDashboard() } else toast.error(r.error)
               }}><Check size={14} /> Konfirmasi Jual</Button>
             </div>
           )
