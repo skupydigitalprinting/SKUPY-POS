@@ -255,6 +255,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [setupNeeded, setSetupNeeded] = useState(false)
   const [setupError, setSetupError] = useState('')
   const [d, setD] = useState(null)
+  // Ringkasan Arus Saldo (SATU sumber dgn modal Detail Arus Saldo & kartu Uang
+  // Masuk) — supaya angka kartu = Total Masuk di detail. getCashflowDetail(from,to).
+  const [cashflow, setCashflow] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [saving, setSaving] = useState(false)
   const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
@@ -412,6 +415,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       // jumlah baris di modal Rincian. Fallback ke pengeluaran_total bila gagal.
       const out = await acc.getOutflowTransactions(from, to)
       setPengOut(out.ok ? out.total : Math.round(res.data.pengeluaran_total || 0))
+      // Arus Saldo (Total Masuk/Keluar/Net) — sumber sama dgn modal Detail.
+      const cf = await acc.getCashflowDetail(from, to)
+      setCashflow(cf.ok ? cf : null)
       // Segarkan SEMUA komponen Total Aset (Aset Tetap & Sewa Dibayar Dimuka)
       // supaya Total Aset & Kekayaan Bersih ikut berubah saat ada hapus/edit.
       loadAssets(); loadRents()
@@ -1436,9 +1442,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
             <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Arus Saldo Bersih" value={fmt((d.uang_masuk_total || 0) - (ukBasis + rentAgg.cashOutPeriod))} color="#14b8a6" sub="Uang masuk aktual − uang keluar aktual" onClick={() => setArusKasOpen(true)} />
+            <Card icon={Scale} label="Arus Saldo Bersih" value={fmt(cashflow ? cashflow.net : ((d.uang_masuk_total || 0) - (ukBasis + rentAgg.cashOutPeriod)))} color="#14b8a6" sub="Uang masuk aktual − uang keluar aktual" onClick={() => setArusKasOpen(true)} />
             <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
-            <Card icon={TrendingUp} label="Uang Masuk" value={fmt(d.uang_masuk_total)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => openDetail('uang_masuk', 'Uang Masuk', '#10d98a')} />
+            <Card icon={TrendingUp} label="Uang Masuk" value={fmt(cashflow ? cashflow.totalMasuk : (d.uang_masuk_total || 0))} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => setArusKasOpen(true)} />
           </div>
 
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
@@ -2973,6 +2979,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         open={arusKasOpen}
         onClose={() => setArusKasOpen(false)}
         loadCashflow={acc.getCashflowDetail}
+        initialFrom={from}
+        initialTo={to}
         onInvoiceClick={(inv) => invoicePreview.openInvoice(inv)}
       />
 

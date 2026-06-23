@@ -24,7 +24,7 @@ const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 
 // loadCashflow(from,to) → { ok, masuk[], keluar[], totalMasuk, totalKeluar, net }
 // onInvoiceClick(invoiceNo) opsional → buka preview invoice.
-export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceClick }) {
+export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceClick, initialFrom, initialTo }) {
   const [rangeId, setRangeId] = useState('today')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const range = useMemo(() => {
@@ -34,6 +34,16 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
 
   const [data, setData] = useState({ masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
   const [loading, setLoading] = useState(false)
+
+  // Saat dibuka dari kartu, ikuti periode halaman (from/to) agar nilainya SAMA
+  // dengan kartu Uang Masuk / Arus Saldo. Cocokkan ke preset bila pas.
+  useEffect(() => {
+    if (!open || !initialFrom || !initialTo) return
+    const presetId = (RANGES.map(r => r.id).find(id => { const r = computeRange(id); return r.from === initialFrom && r.to === initialTo }))
+    if (presetId) setRangeId(presetId)
+    else { setCustom({ from: initialFrom, to: initialTo }); setRangeId('custom') }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   useEffect(() => {
     if (!open) return
