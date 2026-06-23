@@ -579,11 +579,10 @@ export function useStore() {
       timer = setTimeout(flush, 500)  // 500ms debounce window
     }
 
-    // OPTIMASI EGRESS: realtime HANYA untuk data kasir/order/piutang yang
-    // memang harus terasa langsung (transactions, debts, debt_payments).
-    // products & customers TIDAK lagi subscribe realtime — list di-update
-    // lokal setelah mutasi (add/edit/delete sudah setProducts/setCustomers)
-    // dan bisa di-refresh manual. Ini memangkas subscription & egress.
+    // Realtime untuk data kasir/order/piutang + master ringan (customers, products)
+    // supaya konsisten antar perangkat (owner + kasir paralel). Debounce 500ms
+    // menjaga egress tetap kecil. Tabel accounting (expenses/hutang/kasbon)
+    // disegarkan oleh poll 45s di halaman Accounting (lihat M4 audit).
     const channel = supabase.channel('skupy-pos-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' },
         () => schedule('transactions'))
@@ -593,6 +592,10 @@ export function useStore() {
         () => schedule('debts', 'transactions', 'debt_payments'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'credibook_income' },
         () => schedule('credibook_income'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' },
+        () => schedule('customers'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' },
+        () => schedule('products'))
       .subscribe()
 
     return () => {
