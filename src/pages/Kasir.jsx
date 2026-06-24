@@ -352,14 +352,14 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const cartCount = cart.reduce((s, i) => s + i.qty, 0)
 
   // --- Cart UI (reused for desktop column + mobile drawer) ---
-  // ROOT = satu scroll container (overflow-y auto + min-h-0). Header sticky di atas,
-  // footer checkout sticky di bawah. Pola ini tahan di SEMUA orientasi: portrait &
-  // landscape (HP pendek) tidak akan menyembunyikan list — semua bisa di-scroll.
+  // STRUKTUR: Header(shrink) · CustomerSection(shrink) · ItemsScrollArea(flex-1 scroll) · CheckoutFooter(shrink, sticky).
+  // HANYA ItemsScrollArea yang scroll. Root overflow-hidden (bukan auto) supaya footer
+  // tidak pernah menutup item dan list tetap punya ruang di portrait & landscape.
   const cartContent = (
-    <div className="flex flex-col h-full overflow-y-auto min-h-0" style={{ background: 'var(--bg-secondary)' }}>
-      {/* Cart Header — sticky atas */}
-      <div className="px-4 sm:px-5 py-4 flex items-center gap-2 flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 20, background: 'var(--bg-secondary)' }}>
+    <div className="flex flex-col h-full overflow-hidden cart-content" style={{ background: 'var(--bg-secondary)' }}>
+      {/* Cart Header */}
+      <div className="cart-header px-4 sm:px-5 py-4 flex items-center gap-2 flex-shrink-0"
+        style={{ borderBottom: '1px solid var(--border)' }}>
         <ShoppingCart size={16} style={{ color: 'var(--accent-light)' }} />
         <span className="font-bold text-sm"
           style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
@@ -386,7 +386,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       </div>
 
       {/* Customer picker */}
-      <div className="px-4 py-3 space-y-2" style={{ borderBottom: '1px solid var(--border)' }}>
+      <div className="cart-customer px-4 py-3 space-y-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         {addCustomer && (
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-semibold" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Pelanggan</span>
@@ -470,8 +470,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* Cart Items — flex-1 mengisi ruang; scroll ditangani root container */}
-      <div className="flex-1 px-4 py-3 space-y-2 min-h-0">
+      {/* ItemsScrollArea — satu-satunya area yang scroll */}
+      <div className="cart-items flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2"
+        style={{ WebkitOverflowScrolling: 'touch', paddingBottom: 16 }}>
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
             <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
@@ -656,18 +657,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* Summary — sticky footer, compact spacing, safe-area aware */}
+      {/* CheckoutFooter — sticky bawah, solid, safe-area aware */}
       <div
-        className="px-4 py-2.5 space-y-2 flex-shrink-0"
+        className="cart-footer px-4 py-2.5 space-y-2 flex-shrink-0"
         style={{
           borderTop: '1px solid var(--border)',
-          background: 'rgba(10,10,15,0.95)',
-          backdropFilter: 'blur(12px)',
-          WebkitBackdropFilter: 'blur(12px)',
+          background: '#0a0a0f',
           position: 'sticky',
           bottom: 0,
-          paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)',
-          zIndex: 10,
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)',
+          zIndex: 50,
         }}>
 
         {/* Discount */}
@@ -770,7 +769,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
 
         {/* Payment Method */}
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="cart-pay-grid grid grid-cols-2 gap-1.5">
           {PAYMENT_METHODS.map((m) => {
             const isHutang = m.id === 'hutang'
             const active = paymentMethod === m.id
@@ -1090,9 +1089,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
           <div className="lg:hidden fixed inset-0 z-40 drawer-overlay"
             onClick={() => setCartOpen(false)} />
           <div
-            className="lg:hidden fixed inset-0 z-50 animate-slideUp"
+            className="cart-modal-mobile lg:hidden fixed inset-0 z-50 animate-slideUp"
             style={{
-              // Fullscreen sampai ke atas — tidak ada bagian yang kepotong.
+              // Fullscreen sampai atas (100dvh, bukan 100vh) — tidak ada yang kepotong.
               top: 0,
               bottom: 0,
               height: '100dvh',
@@ -1103,14 +1102,14 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
               display: 'flex',
               flexDirection: 'column',
               background: 'var(--bg-secondary)',
-              // Aman dari notch/status bar iPhone. Safe-area bawah sudah ditangani
-              // footer ringkasan (sticky) di dalam cartContent, jadi tidak digandakan.
+              // Aman dari notch/status bar iPhone. Safe-area bawah ditangani CheckoutFooter
+              // (sticky) di dalam cartContent — tidak digandakan di sini.
               paddingTop: 'env(safe-area-inset-top)',
             }}
           >
             {/* Drag handle (tombol close juga tersedia di header cartContent) */}
             <div
-              className="flex justify-center pt-2 pb-1 flex-shrink-0"
+              className="cart-handle flex justify-center pt-2 pb-1 flex-shrink-0"
               style={{ background: 'var(--bg-secondary)' }}
             >
               <div
