@@ -70,7 +70,7 @@ function groupKeluar(keluar) {
 }
 const sumRows = (rows) => rows.reduce((s, r) => s + Math.round(r.amount || 0), 0)
 
-export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummary, getOutflowTotal, admins = [], initialFrom, initialTo, onInvoiceClick }) {
+export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummary, getOutflowTotal, admins = [], initialFrom, initialTo, onInvoiceClick, cardCashIn, cardCashOut, cardNet }) {
   const [rangeId, setRangeId] = useState('today')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const range = useMemo(() => rangeId === 'custom' ? { from: custom.from || ymd(new Date()), to: custom.to || ymd(new Date()) } : computeRange(rangeId), [rangeId, custom])
@@ -107,10 +107,17 @@ export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummar
 
   const gMasuk = useMemo(() => groupMasuk(data.masuk || []), [data])
   const gKeluar = useMemo(() => groupKeluar(data.keluar || []), [data])
-  const totalMasuk = rpcMasuk != null ? rpcMasuk : data.totalMasuk
-  const totalKeluar = data.totalKeluar
-  const net = totalMasuk - totalKeluar
+  // HELPER TUNGGAL dari kartu dashboard: saat periode audit = periode halaman,
+  // angka headline & TOTAL memakai kartu PERSIS (Uang Masuk − Uang Keluar = Arus Saldo Bersih).
+  const atPagePeriod = initialFrom && initialTo && range.from === initialFrom && range.to === initialTo
+  const useCard = atPagePeriod && cardNet != null
+  const totalMasuk = useCard ? Math.round(cardCashIn || 0) : (rpcMasuk != null ? rpcMasuk : data.totalMasuk)
+  const totalKeluar = useCard ? Math.round(cardCashOut || 0) : data.totalKeluar
+  const net = useCard ? Math.round(cardNet) : totalMasuk - totalKeluar
   const reconDiff = Math.round(totalMasuk - (data.totalMasuk || 0))
+  // Selisih keluar: kartu Uang Keluar memakai BEBAN sewa (amortisasi), sedangkan
+  // rincian kas memakai kas aktual. Tampilkan baris penyeimbang agar TOTAL = kartu.
+  const keluarReconDiff = Math.round(totalKeluar - (data.totalKeluar || 0))
 
   const doCheck = async () => {
     // Hitung ulang dari rincian, bandingkan dengan angka dashboard (RPC).
@@ -225,7 +232,13 @@ export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummar
             ) : null}
           />
           <Section title="RINCIAN UANG KELUAR" color="#ef4444" groups={gKeluar}
-            order={['operasional', 'bahan', 'gaji', 'kasbon', 'supplier', 'bank', 'sewa', 'lain']} />
+            order={['operasional', 'bahan', 'gaji', 'kasbon', 'supplier', 'bank', 'sewa', 'lain']}
+            extra={keluarReconDiff !== 0 ? (
+              <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{keluarReconDiff > 0 ? 'Beban Sewa / penyeimbang ke kartu' : 'Penyesuaian ke kartu'}</span>
+                <span className="text-xs font-bold" style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>{fmt(keluarReconDiff)}</span>
+              </div>
+            ) : null} />
         </>
       )}
     </Modal>

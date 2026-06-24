@@ -24,7 +24,7 @@ const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 
 // loadCashflow(from,to) → { ok, masuk[], keluar[], totalMasuk, totalKeluar, net }
 // onInvoiceClick(invoiceNo) opsional → buka preview invoice.
-export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary, onInvoiceClick, initialFrom, initialTo }) {
+export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary, onInvoiceClick, initialFrom, initialTo, cardCashIn, cardCashOut, cardNet }) {
   const [rangeId, setRangeId] = useState('today')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const range = useMemo(() => {
@@ -64,10 +64,15 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, range.from, range.to])
 
+  // HELPER TUNGGAL dari kartu dashboard. Saat periode popup = periode halaman,
+  // headline memakai angka kartu PERSIS (totalCashIn/Out/net) supaya
+  // Arus Saldo Bersih popup = kartu = Uang Masuk − Uang Keluar.
+  const atPagePeriod = initialFrom && initialTo && range.from === initialFrom && range.to === initialTo
+  const useCard = atPagePeriod && cardNet != null
   // Total Masuk = angka dashboard (RPC) bila tersedia; fallback ke jumlah rincian.
-  const totalMasuk = rpcMasuk != null ? rpcMasuk : data.totalMasuk
-  const totalKeluar = data.totalKeluar
-  const net = totalMasuk - totalKeluar
+  const totalMasuk = useCard ? Math.round(cardCashIn || 0) : (rpcMasuk != null ? rpcMasuk : data.totalMasuk)
+  const totalKeluar = useCard ? Math.round(cardCashOut || 0) : data.totalKeluar
+  const net = useCard ? Math.round(cardNet) : totalMasuk - totalKeluar
   // Selisih rekonsiliasi: bila jumlah baris masuk < angka dashboard, tampilkan 1
   // baris penyeimbang agar tabel = Total Masuk (transparan, biasanya 0).
   const reconDiff = Math.round(totalMasuk - (data.totalMasuk || 0))
