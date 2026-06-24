@@ -657,15 +657,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* CheckoutFooter — ikut flow flex (relative), bukan overlay. Selalu di bawah,
-          tidak menutup item. JANGAN pakai fixed/absolute/sticky bottom:0. */}
+      {/* CheckoutFooter — SETELAH CartItemsArea di DOM, ikut flow flex (static),
+          bukan overlay. CSS .cart-footer memaksa position:static!important di mobile. */}
       <div
         className="cart-footer px-4 py-2.5 space-y-2 flex-shrink-0"
         style={{
           borderTop: '1px solid rgba(255,255,255,.08)',
           background: '#0b0b12',
-          position: 'relative',
+          position: 'static',
           bottom: 'auto',
+          transform: 'none',
           paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)',
         }}>
 

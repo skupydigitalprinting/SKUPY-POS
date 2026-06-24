@@ -308,19 +308,37 @@ input[type="number"].no-spin::-webkit-outer-spin-button,
 }
 
 /* ───────── Keranjang mobile: fullscreen modal stabil ─────────
-   Hanya .cart-items yang scroll. Header/Customer/Footer flex-shrink:0.
-   Footer sticky di bawah, items tidak pernah ketutup. */
+   Struktur: Header(shrink) · Customer(shrink) · Items(flex-1, scroll) · Footer(shrink, static).
+   HANYA .cart-items yang scroll. Footer SELALU in-flow (static) → tidak pernah overlay/menutup item. */
 .cart-modal-mobile { height: 100dvh; max-height: 100dvh; }
 
-/* Landscape HP pendek: rapatkan header/customer/footer agar item tetap
-   terlihat & bisa scroll; metode bayar jadi 4 kolom (1 baris) supaya footer ringkas.
+/* Footer checkout dipaksa in-flow di SEMUA mobile (anti-overlay, override apa pun yg cached). */
+.cart-modal-mobile .cart-footer {
+  position: static !important;
+  bottom: auto !important;
+  top: auto !important;
+  transform: none !important;
+  z-index: auto !important;
+  margin: 0 !important;
+  background: #0b0b12;
+}
+.cart-modal-mobile .cart-items { padding-bottom: 24px; }
+
+/* Landscape HP pendek: footer tetap static (tidak overlay) + dibuat compact agar
+   list barang dapat sisa tinggi dan bisa scroll; metode bayar 4 kolom 1 baris.
    Scoped ke .cart-modal-mobile → desktop & portrait tidak terpengaruh. */
 @media (orientation: landscape) and (max-height: 600px) {
+  .cart-modal-mobile .cart-footer {
+    position: static !important;
+    bottom: auto !important;
+    transform: none !important;
+    padding-top: 6px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
   .cart-modal-mobile .cart-header { padding-top: 8px; padding-bottom: 8px; }
   .cart-modal-mobile .cart-customer { padding-top: 6px; padding-bottom: 6px; }
   .cart-modal-mobile .cart-customer > * + * { margin-top: 4px; }
   .cart-modal-mobile .cart-handle { padding-top: 4px; padding-bottom: 2px; }
-  .cart-modal-mobile .cart-footer { padding-top: 6px; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
   .cart-modal-mobile .cart-footer > * + * { margin-top: 6px; }
   /* Metode bayar 1 baris ringkas */
   .cart-modal-mobile .cart-pay-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
