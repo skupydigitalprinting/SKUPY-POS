@@ -1081,25 +1081,33 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </button>
 
-      {/* Mobile Cart Bottom Sheet */}
+      {/* Mobile Cart — FULLSCREEN sheet (mobile/portrait only; desktop pakai kolom kanan) */}
       {cartOpen && (
         <>
           <div className="lg:hidden fixed inset-0 z-40 drawer-overlay"
             onClick={() => setCartOpen(false)} />
           <div
-            className="lg:hidden fixed left-0 right-0 bottom-0 z-50 animate-slideUp"
+            className="lg:hidden fixed inset-0 z-50 animate-slideUp"
             style={{
-              maxHeight: '85dvh',
-              borderTopLeftRadius: 20,
-              borderTopRightRadius: 20,
+              // Fullscreen sampai ke atas — tidak ada bagian yang kepotong.
+              top: 0,
+              bottom: 0,
+              height: '100dvh',
+              maxHeight: '100dvh',
+              borderRadius: 0,
               overflow: 'hidden',
               boxShadow: '0 -8px 32px rgba(0,0,0,0.45)',
-              paddingBottom: 'env(safe-area-inset-bottom)',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'var(--bg-secondary)',
+              // Aman dari notch/status bar iPhone. Safe-area bawah sudah ditangani
+              // footer ringkasan (sticky) di dalam cartContent, jadi tidak digandakan.
+              paddingTop: 'env(safe-area-inset-top)',
             }}
           >
-            {/* Drag handle */}
+            {/* Drag handle (tombol close juga tersedia di header cartContent) */}
             <div
-              className="flex justify-center pt-2 pb-1"
+              className="flex justify-center pt-2 pb-1 flex-shrink-0"
               style={{ background: 'var(--bg-secondary)' }}
             >
               <div
@@ -1109,7 +1117,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
                 }}
               />
             </div>
-            <div style={{ height: 'calc(85dvh - 24px)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               {cartContent}
             </div>
           </div>
