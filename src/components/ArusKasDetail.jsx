@@ -24,7 +24,7 @@ const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 
 // loadCashflow(from,to) → { ok, masuk[], keluar[], totalMasuk, totalKeluar, net }
 // onInvoiceClick(invoiceNo) opsional → buka preview invoice.
-export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceClick, initialFrom, initialTo }) {
+export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary, onInvoiceClick, initialFrom, initialTo }) {
   const [rangeId, setRangeId] = useState('today')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const range = useMemo(() => {
@@ -33,6 +33,8 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
   }, [rangeId, custom])
 
   const [data, setData] = useState({ masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
+  // Total Masuk OTORITATIF = sama dengan kartu "Uang Masuk" dashboard (acc_dashboard.uang_masuk_total).
+  const [rpcMasuk, setRpcMasuk] = useState(null)
   const [loading, setLoading] = useState(false)
 
   // Saat dibuka dari kartu, ikuti periode halaman (from/to) agar nilainya SAMA
@@ -49,18 +51,35 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
     if (!open) return
     let alive = true
     setLoading(true)
-    loadCashflow(range.from, range.to).then(r => {
+    Promise.all([
+      loadCashflow(range.from, range.to),
+      loadSummary ? loadSummary(range.from, range.to) : Promise.resolve(null),
+    ]).then(([r, s]) => {
       if (!alive) return
       setData(r?.ok ? r : { masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
+      setRpcMasuk((s && s.ok && s.data) ? Math.round(s.data.uang_masuk_total || 0) : null)
       setLoading(false)
     })
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, range.from, range.to])
 
+  // Total Masuk = angka dashboard (RPC) bila tersedia; fallback ke jumlah rincian.
+  const totalMasuk = rpcMasuk != null ? rpcMasuk : data.totalMasuk
+  const totalKeluar = data.totalKeluar
+  const net = totalMasuk - totalKeluar
+  // Selisih rekonsiliasi: bila jumlah baris masuk < angka dashboard, tampilkan 1
+  // baris penyeimbang agar tabel = Total Masuk (transparan, biasanya 0).
+  const reconDiff = Math.round(totalMasuk - (data.totalMasuk || 0))
+
   // Gabung & urutkan terbaru dulu untuk tabel. `pending` ikut TAMPIL tapi
   // TIDAK dihitung ke total (uang belum diterima).
-  const rows = useMemo(() => [...data.masuk, ...data.keluar, ...(data.pending || [])].sort((a, b) => new Date(b.date) - new Date(a.date)), [data])
+  const rows = useMemo(() => {
+    const extra = reconDiff > 0
+      ? [{ id: 'recon', type: 'masuk', date: range.to, source: 'Penerimaan Lain', ref: 'Penyeimbang ke total dashboard', category: 'Rekonsiliasi', method: '—', status: 'valid', amount: reconDiff }]
+      : []
+    return [...data.masuk, ...extra, ...data.keluar, ...(data.pending || [])].sort((a, b) => new Date(b.date) - new Date(a.date))
+  }, [data, reconDiff, range.to])
 
   // Breakdown per metode (cash / transfer / qris). 'hutang' (DP invoice hutang) → cash.
   const bd = useMemo(() => {
@@ -69,8 +88,9 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
     const masuk = { ...z }, keluar = { ...z }
     data.masuk.forEach(r => { masuk[bucket(r.method)] += Math.round(r.amount || 0) })
     data.keluar.forEach(r => { keluar[bucket(r.method)] += Math.round(r.amount || 0) })
+    if (reconDiff > 0) masuk.cash += reconDiff // penyeimbang → bucket Kas, agar total cocok
     return { masuk, keluar }
-  }, [data])
+  }, [data, reconDiff])
 
   const inp = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }
 
@@ -101,15 +121,15 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceCl
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
         <div className="rounded-2xl p-3.5" style={{ background: 'rgba(16,217,138,0.08)', border: '1px solid rgba(16,217,138,0.3)' }}>
           <div className="flex items-center gap-1.5 mb-1"><TrendingUp size={13} style={{ color: '#10d98a' }} /><span className="text-xs font-semibold" style={{ color: '#10d98a', fontFamily: 'Syne' }}>Total Masuk</span></div>
-          <div className="font-bold" style={{ fontFamily: 'Syne', color: '#10d98a', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(data.totalMasuk)}</div>
+          <div className="font-bold" style={{ fontFamily: 'Syne', color: '#10d98a', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(totalMasuk)}</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}>
           <div className="flex items-center gap-1.5 mb-1"><TrendingDown size={13} style={{ color: '#ef4444' }} /><span className="text-xs font-semibold" style={{ color: '#ef4444', fontFamily: 'Syne' }}>Total Keluar</span></div>
-          <div className="font-bold" style={{ fontFamily: 'Syne', color: '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(data.totalKeluar)}</div>
+          <div className="font-bold" style={{ fontFamily: 'Syne', color: '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(totalKeluar)}</div>
         </div>
-        <div className="rounded-2xl p-3.5" style={{ background: data.net >= 0 ? 'rgba(20,184,166,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${data.net >= 0 ? 'rgba(20,184,166,0.4)' : 'rgba(239,68,68,0.4)'}` }}>
+        <div className="rounded-2xl p-3.5" style={{ background: net >= 0 ? 'rgba(20,184,166,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${net >= 0 ? 'rgba(20,184,166,0.4)' : 'rgba(239,68,68,0.4)'}` }}>
           <div className="flex items-center gap-1.5 mb-1"><Scale size={13} style={{ color: '#14b8a6' }} /><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Arus Saldo Bersih</span></div>
-          <div className="font-bold" style={{ fontFamily: 'Syne', color: data.net >= 0 ? '#14b8a6' : '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(data.net)}</div>
+          <div className="font-bold" style={{ fontFamily: 'Syne', color: net >= 0 ? '#14b8a6' : '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(net)}</div>
         </div>
       </div>
 
