@@ -579,18 +579,18 @@ export function useAccounting() {
       //    Sisa yang BELUM diterima (pending/hutang) → daftar `pending` saja
       //    (tampil di tabel, TIDAK masuk Total Masuk).
       {
-        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,paid,remaining,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,paid,remaining,status,cashier_id').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
         ;(data || []).forEach(x => {
           const initPaid = Math.max(0, Math.round(x.paid || 0) - (cicByInv[x.invoice_no] || 0))
-          if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, createdAt: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no })
+          if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, createdAt: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no, cashierId: x.cashier_id })
           const rem = Math.max(0, Math.round(x.remaining != null ? x.remaining : (Math.round(x.total || 0) - Math.round(x.paid || 0))))
           if (rem > 0) pending.push({ id: x.id, type: 'pending', date: x.created_at, createdAt: x.created_at, source: 'Invoice Belum Lunas', ref: x.invoice_no, category: 'Belum diterima (tidak dihitung)', method: x.payment_method, status: x.status || 'pending', amount: rem, invoiceNo: x.invoice_no })
         })
       }
       // 2) Cicilan piutang
       {
-        const { data } = await supabase.from('debt_payments').select('id,paid_at,created_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no }))
+        const { data } = await supabase.from('debt_payments').select('id,paid_at,created_at,invoice_no,amount,payment_method,note,cashier_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no, cashierId: x.cashier_id }))
       }
       // 3) Credibook (semua jenis = kas masuk)
       {
