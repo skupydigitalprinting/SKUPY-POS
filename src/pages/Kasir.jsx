@@ -470,9 +470,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* ItemsScrollArea — satu-satunya area yang scroll */}
+      {/* CartItemsArea — satu-satunya area yang scroll */}
       <div className="cart-items flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2"
-        style={{ WebkitOverflowScrolling: 'touch', paddingBottom: 16 }}>
+        style={{ WebkitOverflowScrolling: 'touch', paddingBottom: 24 }}>
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
             <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
@@ -657,16 +657,16 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* CheckoutFooter — sticky bawah, solid, safe-area aware */}
+      {/* CheckoutFooter — ikut flow flex (relative), bukan overlay. Selalu di bawah,
+          tidak menutup item. JANGAN pakai fixed/absolute/sticky bottom:0. */}
       <div
         className="cart-footer px-4 py-2.5 space-y-2 flex-shrink-0"
         style={{
-          borderTop: '1px solid var(--border)',
-          background: '#0a0a0f',
-          position: 'sticky',
-          bottom: 0,
+          borderTop: '1px solid rgba(255,255,255,.08)',
+          background: '#0b0b12',
+          position: 'relative',
+          bottom: 'auto',
           paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)',
-          zIndex: 50,
         }}>
 
         {/* Discount */}
