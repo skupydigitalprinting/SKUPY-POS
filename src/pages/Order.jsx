@@ -58,6 +58,37 @@ function getStatus(key) {
   return STATUS_MAP[key] || STATUS_FALLBACK
 }
 
+// ─── FILTER TANGGAL ─────────────────────────────────────────────────
+const DATE_RANGES = [
+  { id: 'today', label: 'Hari Ini' },
+  { id: 'week', label: 'Minggu Ini' },
+  { id: 'month', label: 'Bulan Ini' },
+  { id: 'year', label: 'Tahun Ini' },
+  { id: 'all', label: 'Semua Waktu' },
+  { id: 'custom', label: 'Custom' },
+]
+// Mengembalikan [start, end] Date (atau null = tak terbatas) untuk filter.
+function dateBounds(id, customFrom, customTo) {
+  const now = new Date()
+  const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+  if (id === 'today') return [new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0), endToday]
+  if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); d.setHours(0, 0, 0, 0); return [d, endToday] }
+  if (id === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), endToday]
+  if (id === 'year') return [new Date(now.getFullYear(), 0, 1), endToday]
+  if (id === 'custom') {
+    const s = customFrom ? new Date(customFrom + 'T00:00:00') : null
+    const e = customTo ? new Date(customTo + 'T23:59:59') : null
+    return [s, e]
+  }
+  return [null, null] // all
+}
+// Order batal/cancelled tidak dihitung pada total. (Deleted sudah disaring store.)
+function isCancelledOrder(t) {
+  const ws = t?.orderStatus
+  const st = t?.status
+  return ws === 'dibatalkan' || st === 'batal' || st === 'cancelled' || t?.cancelled === true || !!t?.deletedAt
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // ORDER_TABLE_COLUMNS — sumber kebenaran tunggal untuk lebar kolom
 // tabel di halaman Order. Header DAN row MUST pakai constant ini agar
@@ -69,10 +100,23 @@ function getStatus(key) {
 const ORDER_TABLE_COLUMNS = 'minmax(0,1.5fr) minmax(0,1.6fr) minmax(0,1.2fr) minmax(0,1fr) 88px minmax(0,1.1fr) 80px'
 
 export default function Order({
-  transactions, storeInfo, busy, products = [], customers = [], currentUser,
+  transactions, storeInfo, busy, products = [], customers = [], admins = [], currentUser,
   updateTransactionStatus, updateTransactionPayment, deleteTransaction,
   updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
+  // ─── PIC (admin pembuat) + filter tanggal ───
+  const canSeeAllPic = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const myId = currentUser?.id
+  const picName = (id, t) => {
+    const a = (admins || []).find(x => x.id === id)
+    return a ? (a.name || a.username || 'PIC') : (t?.cashier || 'Tanpa PIC')
+  }
+  // Kasir: paksa hanya order miliknya (data sudah disaring di App, ini untuk UI).
+  const [filterPic, setFilterPic] = useState(canSeeAllPic ? 'all' : (myId || 'all'))
+  useEffect(() => { if (!canSeeAllPic && myId) setFilterPic(myId) }, [canSeeAllPic, myId])
+  const [dateRange, setDateRange] = useState('month') // default Bulan Ini
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [orderChanges, setOrderChanges] = useState([])
   const [menuFor, setMenuFor] = useState(null) // id baris yang menu "More"-nya terbuka
   const [search, setSearch] = useState('')
@@ -214,6 +258,7 @@ export default function Order({
   })
   const [exportStatusFilter, setExportStatusFilter] = useState('lunas') // 'all' | 'lunas'
   const [exportCustomerId, setExportCustomerId] = useState('all') // 'all' | customerId
+  const [exportPic, setExportPic] = useState('all') // 'all' | cashierId — ikut filter PIC halaman
 
   // Resolve transactions matching export filter
   const exportData = useMemo(() => {
@@ -228,6 +273,7 @@ export default function Order({
       .filter(t => {
         if (exportStatusFilter === 'lunas' && t.status !== 'lunas') return false
         if (exportCustomerId !== 'all' && t.customerId !== exportCustomerId) return false
+        if (exportPic !== 'all' && (t.cashierId || 'unknown') !== exportPic) return false
         if (!start && !end) return true
         const d = new Date(t.date)
         if (start && d < start) return false
@@ -235,7 +281,21 @@ export default function Order({
         return true
       })
       .sort((a, b) => new Date(a.date) - new Date(b.date))
-  }, [transactions, exportMode, exportFrom, exportTo, exportMonth, exportStatusFilter, exportCustomerId])
+  }, [transactions, exportMode, exportFrom, exportTo, exportMonth, exportStatusFilter, exportCustomerId, exportPic])
+
+  // Buka modal export → sinkronkan rentang & PIC dengan filter halaman saat ini.
+  const openExport = () => {
+    setExportPic(filterPic)
+    if (dateRange === 'all') setExportMode('all')
+    else if (dateRange === 'custom') { setExportMode('range'); if (customFrom) setExportFrom(customFrom); if (customTo) setExportTo(customTo) }
+    else {
+      const [s, e] = dateBounds(dateRange, customFrom, customTo)
+      setExportMode('range')
+      if (s) setExportFrom(toDateInputValue(s))
+      if (e) setExportTo(toDateInputValue(e))
+    }
+    setExportOpen(true)
+  }
 
   const exportSummary = useMemo(() => {
     const totalOmzet = exportData.reduce((s, t) => s + t.total, 0)
@@ -265,9 +325,25 @@ export default function Order({
     setExportOpen(false)
   }
 
-  const filtered = useMemo(() => {
+  // Batas tanggal aktif (filter waktu).
+  const [rangeStart, rangeEnd] = useMemo(
+    () => dateBounds(dateRange, customFrom, customTo),
+    [dateRange, customFrom, customTo]
+  )
+  const inRange = (dateVal) => {
+    if (!rangeStart && !rangeEnd) return true
+    const d = new Date(dateVal)
+    if (rangeStart && d < rangeStart) return false
+    if (rangeEnd && d > rangeEnd) return false
+    return true
+  }
+
+  // baseFiltered = tanggal + search + status + workflow (TANPA filter PIC).
+  // Dipakai untuk grouping per PIC + total ketika "Semua PIC".
+  const baseFiltered = useMemo(() => {
     return (transactions || []).filter((t) => {
       if (!t) return false
+      if (!inRange(t.date)) return false
       const matchStatus = filterStatus === 'all' || t.status === filterStatus
       const matchWorkflow = filterWorkflow === 'all' || (t.orderStatus || 'menunggu') === filterWorkflow
       const q = (search || '').toLowerCase()
@@ -277,21 +353,59 @@ export default function Order({
         (t.orderNo || '').toLowerCase().includes(q)
       return matchStatus && matchWorkflow && matchSearch
     })
-  }, [transactions, search, filterStatus, filterWorkflow])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, search, filterStatus, filterWorkflow, rangeStart, rangeEnd])
+
+  // filtered = baseFiltered + filter PIC (untuk daftar saat 1 PIC dipilih).
+  const filtered = useMemo(
+    () => filterPic === 'all' ? baseFiltered : baseFiltered.filter((t) => (t.cashierId || 'unknown') === filterPic),
+    [baseFiltered, filterPic]
+  )
+
+  // Daftar PIC untuk dropdown — dari SELURUH transaksi (tidak berubah oleh filter).
+  const allPics = useMemo(() => {
+    const map = new Map()
+    ;(transactions || []).forEach((t) => {
+      const id = t.cashierId || 'unknown'
+      if (!map.has(id)) map.set(id, picName(id, t))
+    })
+    return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, admins])
+
+  // Grouping per PIC (hanya hitung order yang TIDAK batal/cancelled).
+  const picGroups = useMemo(() => {
+    const map = new Map()
+    baseFiltered.forEach((t) => {
+      const id = t.cashierId || 'unknown'
+      if (!map.has(id)) map.set(id, { id, name: picName(id, t), count: 0, total: 0, paid: 0, remaining: 0 })
+      if (!isCancelledOrder(t)) {
+        const g = map.get(id)
+        g.count++; g.total += toMoney(t.total); g.paid += toMoney(t.paid); g.remaining += toMoney(t.remaining)
+      }
+    })
+    return [...map.values()].sort((a, b) => b.total - a.total)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseFiltered, admins])
+
+  // Mode grouping: owner/admin + "Semua PIC".
+  const groupingMode = canSeeAllPic && filterPic === 'all'
 
   // Pagination: render 50 transaksi terbaru dulu (DOM ringan), sisanya
-  // dimuat via tombol "Muat lebih banyak". Totals tetap dihitung dari
-  // seluruh hasil filter (akurat), hanya rendering yang dibatasi.
+  // dimuat via tombol "Muat lebih banyak".
   const PAGE_SIZE = 50
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
-  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterStatus, filterWorkflow])
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterStatus, filterWorkflow, filterPic, dateRange, customFrom, customTo])
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
 
-  const totalFiltered = filtered.reduce((s, t) => s + t.total, 0)
-  const totalLunas = filtered
-    .filter((t) => t.status === 'lunas')
-    .reduce((s, t) => s + t.total, 0)
-  const totalRemaining = filtered.reduce((s, t) => s + t.remaining, 0)
+  // Totals mengikuti filter (tanggal + PIC + status + search). Order batal TIDAK dihitung.
+  //   Total Nilai  = Σ total invoice valid
+  //   Sudah Lunas  = Σ pembayaran yang benar-benar diterima (paid)
+  //   Sisa Tagihan = Σ sisa invoice
+  const countable = useMemo(() => filtered.filter((t) => !isCancelledOrder(t)), [filtered])
+  const totalFiltered = countable.reduce((s, t) => s + toMoney(t.total), 0)
+  const totalLunas = countable.reduce((s, t) => s + toMoney(t.paid), 0)
+  const totalRemaining = countable.reduce((s, t) => s + toMoney(t.remaining), 0)
 
   const openPay = (t) => {
     setPayTrx(t)
@@ -346,11 +460,14 @@ export default function Order({
             </div>
             <h2 className="text-xl sm:text-2xl font-bold mt-0.5"
               style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-              {transactions.length} total transaksi
+              {countable.length} transaksi {filterPic === 'all' ? '' : `· ${(allPics.find(p => p.id === filterPic)?.name) || 'PIC'}`}
             </h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {(DATE_RANGES.find(r => r.id === dateRange)?.label) || 'Periode'}{dateRange === 'custom' && customFrom ? ` ${customFrom} → ${customTo || '...'}` : ''}
+            </p>
           </div>
           <button
-            onClick={() => setExportOpen(true)}
+            onClick={openExport}
             className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold btn-press flex-shrink-0"
             style={{
               background: 'linear-gradient(135deg, #10d98a 0%, #059669 100%)',
@@ -395,6 +512,73 @@ export default function Order({
             </div>
           ))}
         </div>
+
+        {/* Filter Tanggal */}
+        <div className="flex gap-2 mb-3 flex-wrap items-center">
+          <span className="text-xs font-semibold pr-1 inline-flex items-center gap-1"
+            style={{ color: 'var(--text-muted)', fontFamily: 'Syne', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            <Calendar size={12} /> Periode:
+          </span>
+          {DATE_RANGES.map((r) => {
+            const active = dateRange === r.id
+            return (
+              <button key={r.id} onClick={() => setDateRange(r.id)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: active ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)',
+                  color: active ? '#fff' : 'var(--text-secondary)',
+                  border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
+                  fontFamily: 'Syne',
+                }}>
+                {r.label}
+              </button>
+            )
+          })}
+          {dateRange === 'custom' && (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+                className="px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }} />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>—</span>
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+                className="px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }} />
+            </div>
+          )}
+        </div>
+
+        {/* Filter PIC (owner & staff admin saja) */}
+        {canSeeAllPic && (
+          <div className="flex gap-2 mb-3 flex-wrap items-center">
+            <span className="text-xs font-semibold pr-1 inline-flex items-center gap-1"
+              style={{ color: 'var(--text-muted)', fontFamily: 'Syne', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              <UserCog size={12} /> PIC:
+            </span>
+            <button onClick={() => setFilterPic('all')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: filterPic === 'all' ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)',
+                color: filterPic === 'all' ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${filterPic === 'all' ? 'transparent' : 'var(--border)'}`,
+                fontFamily: 'Syne',
+              }}>
+              Semua PIC
+            </button>
+            {allPics.map((p) => {
+              const active = filterPic === p.id
+              return (
+                <button key={p.id} onClick={() => setFilterPic(p.id)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                  style={{
+                    background: active ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)',
+                    color: active ? '#fff' : 'var(--text-secondary)',
+                    border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
+                    fontFamily: 'Syne',
+                  }}>
+                  {p.name}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex gap-3 mb-5 flex-wrap">
@@ -466,6 +650,68 @@ export default function Order({
           })}
         </div>
 
+        {/* Tombol kembali ke "Semua PIC" saat sedang melihat 1 PIC (owner/admin). */}
+        {canSeeAllPic && filterPic !== 'all' && (
+          <button onClick={() => setFilterPic('all')}
+            className="inline-flex items-center gap-1.5 mb-4 px-3 py-2 rounded-xl text-xs font-semibold btn-press"
+            style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.25)', fontFamily: 'Syne' }}>
+            <ChevronDown size={13} style={{ transform: 'rotate(90deg)' }} /> Semua PIC
+          </button>
+        )}
+
+        {groupingMode ? (
+          /* ─── GROUPING PER PIC ─── klik kartu → buka rincian order PIC tsb. */
+          picGroups.length === 0 ? (
+            <div className="rounded-2xl py-16 text-center text-sm"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+              Tidak ada transaksi pada periode ini
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+              {picGroups.map((g) => (
+                <div key={g.id} className="rounded-2xl p-4 animate-slideUp"
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                        style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }}>
+                        <UserCog size={16} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{g.name}</p>
+                        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{g.count} transaksi</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Nilai</p>
+                      <p className="text-sm font-bold truncate" style={{ color: 'var(--accent-light)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(g.total)}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Lunas</p>
+                      <p className="text-sm font-bold truncate" style={{ color: '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(g.paid)}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Tagihan</p>
+                      <p className="text-sm font-bold truncate" style={{ color: g.remaining > 0 ? '#f59e0b' : '#10d98a', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{formatRupiah(g.remaining)}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Transaksi</p>
+                      <p className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>{g.count}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setFilterPic(g.id)}
+                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold btn-press"
+                    style={{ background: 'linear-gradient(135deg, var(--accent), #6366f1)', color: '#fff', fontFamily: 'Syne' }}>
+                    <Eye size={13} /> Buka Rincian
+                  </button>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+        <>
         {/* Desktop/Tablet Table — compact & fluid, MUAT 1 layar (tanpa geser).
             overflow tidak di-clip agar menu "More" tidak terpotong. */}
         <div className="hidden md:block rounded-2xl"
@@ -645,10 +891,12 @@ export default function Order({
             })
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* Pagination — muat 50 transaksi per klik (DOM ringan) */}
-      {filtered.length > visible.length && (
+      {!groupingMode && filtered.length > visible.length && (
         <div className="flex justify-center mt-5 px-4 sm:px-6">
           <Button variant="secondary" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
             Muat lebih banyak ({visible.length}/{filtered.length})
@@ -1210,6 +1458,26 @@ export default function Order({
               })}
             </div>
           </div>
+
+          {/* PIC filter (owner & staff admin) */}
+          {canSeeAllPic && allPics.length > 1 && (
+            <div>
+              <label className="block text-xs font-semibold mb-2"
+                style={{ color: 'var(--text-secondary)', fontFamily: 'Syne', letterSpacing: '0.02em' }}>
+                Filter PIC
+              </label>
+              <select
+                value={exportPic}
+                onChange={(e) => setExportPic(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl text-sm"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+                <option value="all">Semua PIC</option>
+                {allPics.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Customer filter */}
           {customers.length > 0 && (

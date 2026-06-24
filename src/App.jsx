@@ -314,6 +314,7 @@ function AppShell() {
       transactions={scopedTransactions}
       products={store.products}
       customers={scopedCustomers}
+      admins={store.admins}
       storeInfo={store.storeInfo}
       currentUser={store.currentUser}
       updateTransactionStatus={store.updateTransactionStatus}
