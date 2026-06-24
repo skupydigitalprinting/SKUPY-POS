@@ -40,6 +40,27 @@ export function useAccounting() {
     return { ok: true, data: data || {} }
   }, [])
 
+  // REALTIME dashboard (BUG-1): subscribe perubahan tabel sumber → panggil onChange
+  // (di-debounce 800ms agar burst INSERT/UPDATE tidak memicu banyak refetch).
+  // Mengembalikan fungsi unsubscribe. Polling 45s tetap ada sebagai jaring pengaman.
+  const subscribeDashboard = useCallback((onChange) => {
+    let timer = null
+    const ping = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { onChange && onChange() }, 800) }
+    const tables = [
+      'transactions', 'debt_payments', 'expenses', 'purchases', 'asset_sales',
+      'prepaid_rents', 'assets', 'supplier_debt_payments', 'bank_loan_payments',
+      'employee_cash_advances', 'employee_cash_advance_payments', 'credibook_income',
+      'debts', 'supplier_debts', 'bank_loans', 'migration_details',
+    ]
+    let ch
+    try {
+      ch = supabase.channel('acc-dashboard-rt')
+      tables.forEach(t => ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, ping))
+      ch.subscribe()
+    } catch (e) { /* realtime opsional — jika gagal, polling tetap jalan */ }
+    return () => { try { if (ch) supabase.removeChannel(ch) } catch (e) {} }
+  }, [])
+
   // Total Piutang Aktif langsung dari debts (untuk validasi sinkron vs RPC).
   const getPiutangAktif = useCallback(async () => {
     const { data, error } = await supabase.from('debts').select('total_debt, paid').limit(5000)
@@ -1445,7 +1466,7 @@ export function useAccounting() {
 
   return {
     busy, PAGE_SIZE, todayISO, monthStartISO,
-    getSummary, getDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
+    getSummary, getDashboard, subscribeDashboard, getPiutangAktif, resync, listEntries, listExpenses, listPurchases,
     listTransactions, listCicilan, listCashMovements, listExpensesByBucket,
     addExpense, deleteExpense, updateExpense, addPurchase, deletePurchase, updatePurchase,
     listSupplierDebts, addSupplierDebt, editSupplierDebt, paySupplierDebt, deleteSupplierDebt,

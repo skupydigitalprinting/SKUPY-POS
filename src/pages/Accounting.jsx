@@ -414,6 +414,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       // jumlah baris di modal Rincian. Fallback ke pengeluaran_total bila gagal.
       const out = await acc.getOutflowTransactions(from, to)
       setPengOut(out.ok ? out.total : Math.round(res.data.pengeluaran_total || 0))
+      // BUG-5 self-check: kartu Uang Keluar (Σ baris rincian) vs RPC pengeluaran_total.
+      // Jika menyimpang > Rp 1 → warning agar divergensi tidak diam-diam.
+      if (out.ok && Math.abs((out.total || 0) - Math.round(res.data.pengeluaran_total || 0)) > 1)
+        console.warn('[Accounting] Uang Keluar tidak sinkron — rincian:', out.total, 'RPC pengeluaran_total:', Math.round(res.data.pengeluaran_total || 0))
       // Segarkan SEMUA komponen Total Aset (Aset Tetap & Sewa Dibayar Dimuka)
       // supaya Total Aset & Kekayaan Bersih ikut berubah saat ada hapus/edit.
       loadAssets(); loadRents()
@@ -507,9 +511,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
-  // OPTIMASI EGRESS: dashboard accounting TIDAK realtime. Auto-refresh ringan
-  // tiap 45 detik (hanya saat tab Ringkasan & tab browser aktif) + refresh
-  // manual lewat tombol Sinkronkan/ubah tanggal. Tidak ada subscription.
+  // BUG-1 FIX: dashboard kini REALTIME. Subscription Supabase (debounce 800ms)
+  // memicu loadDashboard saat tabel sumber berubah. Polling 45 detik DIPERTAHANKAN
+  // sebagai jaring pengaman (mis. realtime tidak aktif di project). Plus refresh
+  // saat tab kembali visible & lewat tombol Sinkronkan/ubah tanggal.
   useEffect(() => {
     if (tab !== 'ringkasan') return
     let t = null
@@ -518,7 +523,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     const onVis = () => { if (document.visibilityState === 'visible') { loadDashboard(); start() } else stop() }
     if (document.visibilityState === 'visible') start()
     document.addEventListener('visibilitychange', onVis)
-    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
+    // Realtime subscription → refresh instan saat ada perubahan data.
+    const unsub = acc.subscribeDashboard ? acc.subscribeDashboard(() => { if (document.visibilityState === 'visible') loadDashboard() }) : null
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub() }
     /* eslint-disable-next-line */
   }, [tab, from, to])
 
@@ -1455,7 +1462,21 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
               <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Uang Keluar {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (sudah termasuk beban sewa {fmt(rentAgg.bebanPeriod)})</span></div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Uang Keluar {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
+            </div>
+          )}
+
+          {/* BUG-3 FIX: Laba/Rugi penjualan aset DITAMPILKAN TERPISAH (Laba Lain-lain),
+              tidak digabung ke Laba Bersih operasional. Sumber: acc_dashboard.laba_rugi_aset. */}
+          {isOwner && Math.round(d.penjualan_aset || 0) !== 0 && (
+            <div onClick={() => openDetail('penjualan', 'Penjualan Aset (kas masuk, bukan omzet)', '#a78bfa', { from, to })}
+              className="rounded-2xl p-4 cursor-pointer hover:brightness-110 transition flex items-center justify-between gap-3"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Laba Lain-lain — Jual Aset <span style={{ opacity: 0.7 }}>(terpisah dari Laba Bersih)</span></div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Harga jual {fmt(d.penjualan_aset || 0)} · masuk Kas/Saldo, bukan Omzet</div>
+              </div>
+              <div className="font-bold" style={{ fontFamily: "'Inter', sans-serif", color: (d.laba_rugi_aset || 0) >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(18px,5vw,24px)', fontVariantNumeric: 'tabular-nums' }}>{fmt(d.laba_rugi_aset || 0)}</div>
             </div>
           )}
 
@@ -1473,14 +1494,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             <Card icon={TrendingDown} label="Uang Keluar" value={fmt(totalCashOut)} color="#ef4444" sub="Termasuk beban sewa (amortisasi)" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
             <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
-            <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
+            <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" sub="Posisi saat ini (bukan per periode)" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={HandCoins} label="Piutang Karyawan" value={fmt(d.piutang_karyawan)} color="#22c55e" sub="Total sisa kasbon aktif" onClick={() => setTab('kasbon')} />
             <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual sewa berjalan" onClick={() => setTab('sewa')} />
           </div>
 
           {/* BARIS 3 — Aset & Kewajiban: Piutang Usaha(emas) · Hutang Bank(merah tua, terakhir) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
+            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" sub="Posisi saat ini (bukan per periode)" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
             <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
           </div>
 
