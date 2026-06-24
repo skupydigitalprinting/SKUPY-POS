@@ -1060,29 +1060,32 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         {cartContent}
       </div>
 
-      {/* Mobile Cart FAB — always visible above BottomNav with safe-area */}
-      <button
-        onClick={() => setCartOpen(true)}
-        aria-label="Buka keranjang"
-        className="lg:hidden fixed right-4 z-30 flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm btn-press"
-        style={{
-          // Bottom offset = BottomNav height (64px) + safe-area + 16px gap
-          bottom: 'calc(72px + env(safe-area-inset-bottom) + 16px)',
-          background: 'linear-gradient(135deg, var(--accent), #6366f1)',
-          color: '#fff',
-          boxShadow: '0 8px 24px rgba(139,92,246,0.5)',
-          fontFamily: 'Syne',
-          minHeight: 48,
-        }}
-      >
-        <ShoppingCart size={18} />
-        Keranjang
-        {cartCount > 0 && (
-          <span className="bg-white text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold min-w-[22px] text-center">
-            {cartCount}
-          </span>
-        )}
-      </button>
+      {/* Mobile Cart FAB — z-index tertinggi (cart-floating-button), selalu clickable.
+          Disembunyikan saat keranjang terbuka agar tidak menimpa modal. */}
+      {!cartOpen && (
+        <button
+          onClick={() => setCartOpen(true)}
+          aria-label="Buka keranjang"
+          className="cart-floating-button lg:hidden fixed right-4 flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm btn-press"
+          style={{
+            // Portrait: di atas BottomNav (64px) + safe-area + gap. Landscape dioverride di CSS.
+            bottom: 'calc(72px + env(safe-area-inset-bottom) + 16px)',
+            background: 'linear-gradient(135deg, var(--accent), #6366f1)',
+            color: '#fff',
+            boxShadow: '0 8px 24px rgba(139,92,246,0.5)',
+            fontFamily: 'Syne',
+            minHeight: 48,
+          }}
+        >
+          <ShoppingCart size={18} />
+          Keranjang
+          {cartCount > 0 && (
+            <span className="bg-white text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold min-w-[22px] text-center">
+              {cartCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* Mobile Cart — FULLSCREEN sheet (mobile/portrait only; desktop pakai kolom kanan) */}
       {cartOpen && (

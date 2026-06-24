@@ -307,6 +307,24 @@ input[type="number"].no-spin::-webkit-outer-spin-button,
   box-shadow: 0 0 0 2px rgba(139,92,246,0.12);
 }
 
+/* ───────── Tombol melayang "Keranjang" (FAB) — selalu bisa diklik ─────────
+   z-index tertinggi + pointer-events auto, tidak tertutup card produk/filter/nav. */
+.cart-floating-button {
+  position: fixed !important;
+  z-index: 9999 !important;
+  pointer-events: auto !important;
+}
+/* Mobile landscape pendek: pindahkan ke pojok kanan-bawah biar tidak tertutup
+   header/filter/kategori, area klik penuh. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .cart-floating-button {
+    right: 16px !important;
+    bottom: 16px !important;
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+}
+
 /* ───────── Keranjang mobile: fullscreen modal stabil ─────────
    Struktur: Header(shrink) · Customer(shrink) · Items(flex-1, scroll) · Footer(shrink, static).
    HANYA .cart-items yang scroll. Footer SELALU in-flow (static) → tidak pernah overlay/menutup item. */
