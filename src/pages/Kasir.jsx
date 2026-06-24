@@ -352,11 +352,14 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const cartCount = cart.reduce((s, i) => s + i.qty, 0)
 
   // --- Cart UI (reused for desktop column + mobile drawer) ---
+  // ROOT = satu scroll container (overflow-y auto + min-h-0). Header sticky di atas,
+  // footer checkout sticky di bawah. Pola ini tahan di SEMUA orientasi: portrait &
+  // landscape (HP pendek) tidak akan menyembunyikan list — semua bisa di-scroll.
   const cartContent = (
-    <div className="flex flex-col h-full" style={{ background: 'var(--bg-secondary)' }}>
-      {/* Cart Header */}
-      <div className="px-4 sm:px-5 py-4 flex items-center gap-2"
-        style={{ borderBottom: '1px solid var(--border)' }}>
+    <div className="flex flex-col h-full overflow-y-auto min-h-0" style={{ background: 'var(--bg-secondary)' }}>
+      {/* Cart Header — sticky atas */}
+      <div className="px-4 sm:px-5 py-4 flex items-center gap-2 flex-shrink-0"
+        style={{ borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 20, background: 'var(--bg-secondary)' }}>
         <ShoppingCart size={16} style={{ color: 'var(--accent-light)' }} />
         <span className="font-bold text-sm"
           style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
@@ -467,8 +470,8 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         )}
       </div>
 
-      {/* Cart Items */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 min-h-0">
+      {/* Cart Items — flex-1 mengisi ruang; scroll ditangani root container */}
+      <div className="flex-1 px-4 py-3 space-y-2 min-h-0">
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
             <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
