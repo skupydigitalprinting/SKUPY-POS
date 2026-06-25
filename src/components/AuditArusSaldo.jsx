@@ -27,8 +27,9 @@ function groupMasuk(masuk) {
     pjQris: { label: 'Penjualan Lunas QRIS', rows: [] },
     dp: { label: 'DP Diterima (Hutang)', rows: [] },
     piutang: { label: 'Pembayaran / Cicilan Piutang', rows: [] },
+    kasbon: { label: 'Pembayaran Kasbon Karyawan', rows: [] },
     aset: { label: 'Penjualan Aset', rows: [] },
-    lain: { label: 'Pemasukan Lain (Credibook/Kasbon/Migrasi)', rows: [] },
+    lain: { label: 'Pemasukan Lain (Credibook/Migrasi)', rows: [] },
   }
   masuk.forEach(r => {
     const m = mlow(r.method)
@@ -38,6 +39,7 @@ function groupMasuk(masuk) {
       else if (m === 'hutang') g.dp.rows.push(r)
       else g.pjCash.rows.push(r)
     } else if (r.source === 'Pembayaran Piutang') g.piutang.rows.push(r)
+    else if (r.source === 'Pembayaran Kasbon') g.kasbon.rows.push(r)
     else if (r.source === 'Penjualan Aset') g.aset.rows.push(r)
     else g.lain.rows.push(r)
   })
@@ -223,7 +225,7 @@ export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummar
           )}
 
           <Section title="RINCIAN UANG MASUK" color="#10d98a" groups={gMasuk}
-            order={['pjCash', 'pjTransfer', 'pjQris', 'dp', 'piutang', 'aset', 'lain']}
+            order={['pjCash', 'pjTransfer', 'pjQris', 'dp', 'piutang', 'kasbon', 'aset', 'lain']}
             extra={reconDiff > 0 ? (
               <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Penerimaan Lain (penyeimbang ke dashboard)</span>

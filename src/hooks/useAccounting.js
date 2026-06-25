@@ -623,10 +623,15 @@ export function useAccounting() {
         const { data } = await supabase.from('migration_details').select('id,trx_date,created_at,name,customer,amount,method,notes').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to)
         ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.trx_date, createdAt: x.created_at, source: 'Migrasi Data', ref: x.name, category: 'Migrasi Pemasukan', method: x.method, status: 'migrasi', amount: Math.round(x.amount || 0), note: x.notes }))
       }
-      // 5) Pengembalian kasbon karyawan (employee_cash_advance_payments) = kas masuk
+      // 5) Pembayaran kasbon karyawan (employee_cash_advance_payments) = kas masuk.
+      //    Sumber 'Pembayaran Kasbon' (beda dari 'Kasbon Karyawan' yang KELUAR) +
+      //    nama karyawan sebagai ref (lookup via advance_id).
       {
         const { data } = await supabase.from('employee_cash_advance_payments').select('id,payment_date,created_at,amount,payment_method,note,advance_id').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, createdAt: x.created_at, source: 'Kasbon Karyawan', ref: '', category: 'Pengembalian Kasbon', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+        const advIds = [...new Set((data || []).map(x => x.advance_id).filter(Boolean))]
+        const empMap = {}
+        if (advIds.length) { const { data: aa } = await supabase.from('employee_cash_advances').select('id,employee_name').in('id', advIds); (aa || []).forEach(a => { empMap[a.id] = a.employee_name }) }
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, createdAt: x.created_at, source: 'Pembayaran Kasbon', ref: empMap[x.advance_id] || 'Karyawan', category: 'Pembayaran Kasbon Karyawan', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 6) Penjualan aset = kas masuk (harga jual). Bukan omset.
       {
