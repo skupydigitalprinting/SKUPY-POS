@@ -8,6 +8,7 @@ import {
 import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset, QUICK_PRESETS } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
+import PayrollTab from '../components/PayrollTab'
 import ArusKasDetail from '../components/ArusKasDetail'
 import SaldoDetail from '../components/SaldoDetail'
 import AuditArusSaldo from '../components/AuditArusSaldo'
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'ringkasan', label: 'Ringkasan', icon: Scale },
   { id: 'jurnal', label: 'Jurnal', icon: BookOpen },
   { id: 'pengeluaran', label: 'Pengeluaran', icon: Receipt },
+  { id: 'payroll', label: 'Payroll', icon: UsersIcon },
   { id: 'supplier', label: 'Supplier', icon: UsersIcon },
   { id: 'hsupplier', label: 'Hutang Supplier', icon: Truck },
   { id: 'hbank', label: 'Hutang Bank', icon: Building2 },
@@ -106,6 +108,70 @@ const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric',
 // Rentang "semua waktu" untuk card All Time (tidak ikut filter tanggal).
 const ALL_TIME_FROM = '2000-01-01'
 const todayYMD = () => new Date().toLocaleDateString('en-CA') // YYYY-MM-DD (lokal)
+
+// ── DETAIL GAJI KARYAWAN ── (data HANYA dari expenses kategori gaji) ──
+const SAL_RANGES = [
+  { id: 'today', label: 'Hari Ini' }, { id: 'week', label: 'Minggu Ini' },
+  { id: 'month', label: 'Bulan Ini' }, { id: 'year', label: 'Tahun Ini' }, { id: 'all', label: 'Semua Waktu' },
+]
+function salRange(id) {
+  const now = new Date(); const ymd = (d) => d.toLocaleDateString('en-CA')
+  if (id === 'today') return { from: ymd(now), to: ymd(now) }
+  if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymd(d), to: ymd(now) } }
+  if (id === 'month') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) }
+  if (id === 'year') return { from: ymd(new Date(now.getFullYear(), 0, 1)), to: ymd(now) }
+  return { from: ALL_TIME_FROM, to: ymd(now) }
+}
+const salName = (note) => { const m = String(note || '').match(/^Gaji\s*-\s*(.+?)(?:\s*·\s*(.*))?$/i); return m ? { name: (m[1] || '').trim(), extra: (m[2] || '').trim() } : { name: '—', extra: note || '' } }
+function SalaryDetail({ open, onClose, load, admins = [], initialRange = 'month' }) {
+  const [rangeId, setRangeId] = useState(initialRange)
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(false)
+  const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
+  useEffect(() => {
+    if (!open) return
+    let alive = true; setLoading(true)
+    const r = salRange(rangeId)
+    load({ from: r.from, to: r.to }).then(res => { if (!alive) return; setRows(res.ok ? res.data : []); setLoading(false) })
+    return () => { alive = false }
+  }, [open, rangeId, load])
+  const total = rows.reduce((s, x) => s + Math.round(x.amount || 0), 0)
+  return (
+    <Modal open={open} onClose={onClose} title="Detail Gaji Karyawan" subtitle="Sumber: Pengeluaran kategori Gaji Karyawan" size="lg" mobileFull>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {SAL_RANGES.map(r => (
+          <button key={r.id} onClick={() => setRangeId(r.id)} className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+            style={{ background: rangeId === r.id ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-card)', color: rangeId === r.id ? '#fff' : 'var(--text-secondary)', border: `1px solid ${rangeId === r.id ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>{r.label}</button>
+        ))}
+      </div>
+      <div className="rounded-2xl p-3.5 mb-3" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.3)' }}>
+        <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Total Gaji Dibayarkan</div>
+        <div className="font-bold" style={{ color: '#d97706', fontFamily: 'Syne', fontSize: 'clamp(18px,5vw,24px)', fontVariantNumeric: 'tabular-nums' }}>{fmt(total)}</div>
+      </div>
+      {loading ? <div className="py-8 text-center text-xs" style={{ color: 'var(--text-muted)' }}>Memuat…</div>
+        : rows.length === 0 ? <p className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>Tidak ada pembayaran gaji pada periode ini</p>
+          : (
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 640 }}>
+                <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Nama Karyawan', 'Metode', 'Admin', 'Catatan', 'Nominal'].map((h, i) => <th key={i} className={`px-2 py-2 text-left ${i === 5 ? 'text-right' : ''}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {rows.map(p => { const n = salName(p.note); return (
+                    <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(p.expense_date, p.created_at)}</td>
+                      <td className="px-2 py-2" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{n.name}</td>
+                      <td className="px-2 py-2 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{p.method}</td>
+                      <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{adminName(p.cashier_id)}</td>
+                      <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{n.extra || '—'}</td>
+                      <td className="px-2 py-2 text-right font-bold whitespace-nowrap" style={{ color: '#d97706', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</td>
+                    </tr>
+                  )})}
+                </tbody>
+              </table>
+            </div>
+          )}
+    </Modal>
+  )
+}
 // Input uang: hanya angka + titik ribuan.
 // Kosong → tampil KOSONG (placeholder "0" yang redup), BUKAN value 0 tersimpan.
 // Mengetik "5" → "5" (tanpa leading zero). Hapus semua → kembali kosong.
@@ -247,6 +313,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [arusKasOpen, setArusKasOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [saldoDetailOpen, setSaldoDetailOpen] = useState(false)
+  const [salaryDetailOpen, setSalaryDetailOpen] = useState(false)
   const invoicePreview = useInvoicePreview()
   const [detailSrc, setDetailSrc] = useState('all') // filter sumber pada modal detail
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
@@ -1033,6 +1100,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         <TabButton id="ringkasan" tab={tab} setTab={setTab} />
         <TabButton id="jurnal" tab={tab} setTab={setTab} />
         <TabButton id="pengeluaran" tab={tab} setTab={setTab} />
+        <TabButton id="payroll" tab={tab} setTab={setTab} />
         <TabDropdown label="Hutang" icon={CreditCard} items={NAV_HUTANG} tab={tab} setTab={setTab} />
         <TabButton id="aset" tab={tab} setTab={setTab} />
         <TabDropdown label="More" icon={MoreHorizontal} items={NAV_MORE} tab={tab} setTab={setTab} />
@@ -1046,7 +1114,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             className="w-full appearance-none px-3.5 py-3 rounded-xl text-sm font-bold"
             style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1.5px solid var(--accent)', fontFamily: 'Syne', boxShadow: '0 0 0 3px rgba(139,92,246,0.12)' }}>
             <optgroup label="Utama">
-              {['ringkasan', 'jurnal', 'pengeluaran', 'aset'].map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
+              {['ringkasan', 'jurnal', 'pengeluaran', 'payroll', 'aset'].map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
             </optgroup>
             <optgroup label="Hutang">
               {NAV_HUTANG.map(id => <option key={id} value={id}>{TAB_META[id].label}</option>)}
@@ -1532,7 +1600,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={TrendingDown} label="Uang Keluar" value={fmt(totalCashOut)} color="#ef4444" sub="Termasuk beban sewa (amortisasi)" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
             <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Receipt} label="Beban (Op+Gaji+Bunga)" value={fmt((d.operasional || 0) + (d.gaji || 0) + (d.beban_bunga || 0))} color="#d97706" onClick={() => openDetail('beban', 'Beban (Operasional+Gaji+Bunga)', '#d97706')} />
+            <Card icon={Wallet} label="Total Gaji Karyawan" value={fmt(d.gaji || 0)} color="#d97706" sub="Total gaji yang telah dibayarkan" onClick={() => setSalaryDetailOpen(true)} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" sub="Posisi saat ini (bukan per periode)" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
             <Card icon={HandCoins} label="Piutang Karyawan" value={fmt(d.piutang_karyawan)} color="#22c55e" sub="Total sisa kasbon aktif" onClick={() => setTab('kasbon')} />
             <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual sewa berjalan" onClick={() => setTab('sewa')} />
@@ -1985,6 +2053,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             })}
           </div>
         </div>
+      )}
+
+      {/* ── PAYROLL (Gaji Karyawan) ── */}
+      {tab === 'payroll' && (
+        <PayrollTab acc={acc} admins={admins} currentUser={currentUser} onChanged={() => loadDashboard()} />
       )}
 
       {/* ── KASBON KARYAWAN (Piutang Karyawan / Aset) ── */}
@@ -3091,6 +3164,15 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         d={d}
         loadCashflow={acc.getCashflowDetail}
         onInvoiceClick={(inv) => invoicePreview.openInvoice(inv)}
+      />
+
+      {/* ── DETAIL GAJI KARYAWAN (dari kartu Total Gaji Karyawan) ── */}
+      <SalaryDetail
+        open={salaryDetailOpen}
+        onClose={() => setSalaryDetailOpen(false)}
+        load={acc.listSalaryExpenses}
+        admins={admins}
+        initialRange={(() => { const p = detectPreset ? detectPreset(from, to) : null; return ['today', 'week', 'month', 'year', 'all'].includes(p) ? p : 'month' })()}
       />
 
       {/* ── EDIT PIUTANG CUSTOMER LAMA ── */}

@@ -1220,6 +1220,40 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
+  // ── PAYROLL / GAJI ──
+  // Bayar gaji = INSERT ke expenses kategori 'Gaji Karyawan' (single source of truth).
+  // Tidak ada tabel terpisah → dashboard membaca dari expenses saja (anti double count).
+  // Note format: "Gaji - {nama}[ · catatan]" agar bisa difilter per karyawan.
+  const SALARY_CATEGORIES = ['Gaji', 'Gaji Karyawan', 'Payroll', 'Salary']
+  const payEmployeeSalary = useCallback(async (p, cashierId) => {
+    const amt = Math.round(Number(p.amount) || 0)
+    if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
+    if (amt <= 0) return { ok: false, error: 'Nominal gaji harus > 0' }
+    const note = `Gaji - ${p.employeeName.trim()}${p.note?.trim() ? ' · ' + p.note.trim() : ''}`
+    const { error } = await supabase.from('expenses').insert({
+      expense_date: p.date || todayISO(),
+      category: 'Gaji Karyawan',
+      amount: amt,
+      method: p.method === 'cash' ? 'cash' : 'transfer',
+      note,
+      cashier_id: cashierId || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  // Daftar pembayaran gaji (expenses kategori gaji). filter periode opsional + nama opsional.
+  const listSalaryExpenses = useCallback(async ({ from, to, employeeName } = {}) => {
+    let q = supabase.from('expenses')
+      .select('id,expense_date,created_at,category,amount,method,note,cashier_id')
+      .is('deleted_at', null).in('category', SALARY_CATEGORIES)
+      .order('expense_date', { ascending: false }).order('created_at', { ascending: false })
+    if (from) q = q.gte('expense_date', from)
+    if (to) q = q.lte('expense_date', to)
+    if (employeeName) q = q.ilike('note', `Gaji - ${employeeName}%`)
+    const { data, error } = await q.limit(2000)
+    if (error) return { ok: false, error: error.message, data: [] }
+    return { ok: true, data: data || [] }
+  }, [])
+
   // ── MIGRASI DATA AWAL (migration_details) ──
   // Pemasukan/pengeluaran lama sebelum POS dipakai. Tidak membuat invoice/order,
   // tidak memotong stok. Soft delete → tidak dihitung. acc_dashboard mengurus
@@ -1504,6 +1538,7 @@ export function useAccounting() {
     listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
+    payEmployeeSalary, listSalaryExpenses,
     listMigrationDetails, addMigrationDetail, updateMigrationDetail, deleteMigrationDetail,
     addCapitalEntry, listCapitalEntries,
     bulkAddMigrationDetails, bootstrapMigrationDetails,
