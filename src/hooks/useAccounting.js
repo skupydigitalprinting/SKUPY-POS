@@ -545,9 +545,15 @@ export function useAccounting() {
         const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
         ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
       }
-      // 5) Kasbon Karyawan keluar (advance, bukan saldo awal/opening)
+      // 5) Kasbon Karyawan keluar (advance, bukan saldo awal/opening).
+      //    PENTING: kasbon WAJIB masuk Uang Keluar. Bila select kolom is_opening/status
+      //    gagal (skema lama), JANGAN diam-diam membuang kasbon — ulangi dgn kolom minimal
+      //    agar kasbon tetap terhitung (anti bug "Uang Keluar tidak naik saat kasbon").
       {
-        const { data } = await supabase.from('employee_cash_advances').select('id,advance_date,created_at,amount,payment_method,note,employee_name,is_opening,status').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to)
+        let { data, error } = await supabase.from('employee_cash_advances').select('id,advance_date,created_at,amount,payment_method,note,employee_name,is_opening,status').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to)
+        if (error) {
+          ;({ data } = await supabase.from('employee_cash_advances').select('id,advance_date,created_at,amount,payment_method,note,employee_name').is('deleted_at', null).gte('advance_date', from).lte('advance_date', to))
+        }
         ;(data || []).filter(x => !x.is_opening && !isCancelled(x.status)).forEach(x => add({ id: x.id, kind: 'kasbon', date: x.advance_date, createdAt: x.created_at, source: 'Kasbon Karyawan', category: 'Kasbon Keluar', party: x.employee_name || '', method: x.payment_method, amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 6) Pengeluaran Migrasi Data Lama
