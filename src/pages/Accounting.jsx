@@ -8,7 +8,7 @@ import {
 import { formatRupiah, formatCurrency, parseCurrency, formatDateTimeWIB, calculateAssetBookValue, assetDepreciationSchedule, assetAgeYears, rentAmortization, rentSchedule, rentDurationMonths, rentBebanBulanIni, netProfit, detectPreset, QUICK_PRESETS } from '../utils/helpers'
 import { Button, RangeChips } from '../components/ui'
 import Modal from '../components/Modal'
-import PayrollTab from '../components/PayrollTab'
+import PayrollTab, { PAYROLL_TYPES } from '../components/PayrollTab'
 import ArusKasDetail from '../components/ArusKasDetail'
 import SaldoDetail from '../components/SaldoDetail'
 import AuditArusSaldo from '../components/AuditArusSaldo'
@@ -122,7 +122,12 @@ function salRange(id) {
   if (id === 'year') return { from: ymd(new Date(now.getFullYear(), 0, 1)), to: ymd(now) }
   return { from: ALL_TIME_FROM, to: ymd(now) }
 }
-const salName = (note) => { const m = String(note || '').match(/^Gaji\s*-\s*(.+?)(?:\s*·\s*(.*))?$/i); return m ? { name: (m[1] || '').trim(), extra: (m[2] || '').trim() } : { name: '—', extra: note || '' } }
+const salName = (note) => {
+  const m = String(note || '').match(/^(.+?)\s+-\s+(.+?)(?:\s*·\s*(.*))?$/)
+  if (!m) return { jenis: 'Gaji Bulanan', name: String(note || '—'), extra: '' }
+  let jenis = (m[1] || '').trim(); if (/^gaji$/i.test(jenis)) jenis = 'Gaji Bulanan'
+  return { jenis, name: (m[2] || '').trim(), extra: (m[3] || '').trim() }
+}
 function SalaryDetail({ open, onClose, load, admins = [], initialRange = 'month' }) {
   const [rangeId, setRangeId] = useState(initialRange)
   const [rows, setRows] = useState([])
@@ -136,6 +141,8 @@ function SalaryDetail({ open, onClose, load, admins = [], initialRange = 'month'
     return () => { alive = false }
   }, [open, rangeId, load])
   const total = rows.reduce((s, x) => s + Math.round(x.amount || 0), 0)
+  // Ringkasan per Jenis Payroll (urut sesuai PAYROLL_TYPES; hanya yang > 0).
+  const byJenis = (PAYROLL_TYPES || []).map(t => ({ label: t.label, value: rows.filter(x => salName(x.note).jenis === t.label).reduce((s, x) => s + Math.round(x.amount || 0), 0) })).filter(g => g.value > 0)
   return (
     <Modal open={open} onClose={onClose} title="Detail Gaji Karyawan" subtitle="Sumber: Pengeluaran kategori Gaji Karyawan" size="lg" mobileFull>
       <div className="flex flex-wrap gap-1.5 mb-3">
@@ -145,20 +152,39 @@ function SalaryDetail({ open, onClose, load, admins = [], initialRange = 'month'
         ))}
       </div>
       <div className="rounded-2xl p-3.5 mb-3" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.3)' }}>
-        <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Total Gaji Dibayarkan</div>
+        <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Total Payroll Dibayarkan</div>
         <div className="font-bold" style={{ color: '#d97706', fontFamily: 'Syne', fontSize: 'clamp(18px,5vw,24px)', fontVariantNumeric: 'tabular-nums' }}>{fmt(total)}</div>
       </div>
+      {/* Ringkasan per Jenis Payroll */}
+      {byJenis.length > 0 && (
+        <div className="rounded-2xl p-3 mb-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Ringkasan per Jenis</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {byJenis.map(g => (
+              <div key={g.label} className="rounded-lg px-2.5 py-1.5" style={{ background: 'var(--bg-elevated)' }}>
+                <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{g.label}</div>
+                <div className="text-xs font-bold" style={{ color: '#d97706', fontVariantNumeric: 'tabular-nums' }}>{fmt(g.value)}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-between mt-2 pt-2 font-bold text-xs" style={{ borderTop: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>Total Payroll</span>
+            <span style={{ color: '#d97706', fontVariantNumeric: 'tabular-nums' }}>{fmt(total)}</span>
+          </div>
+        </div>
+      )}
       {loading ? <div className="py-8 text-center text-xs" style={{ color: 'var(--text-muted)' }}>Memuat…</div>
         : rows.length === 0 ? <p className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>Tidak ada pembayaran gaji pada periode ini</p>
           : (
             <div className="overflow-x-auto -mx-1">
               <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 640 }}>
-                <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Nama Karyawan', 'Metode', 'Admin', 'Catatan', 'Nominal'].map((h, i) => <th key={i} className={`px-2 py-2 text-left ${i === 5 ? 'text-right' : ''}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+                <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Tanggal', 'Nama Karyawan', 'Jenis Payroll', 'Metode', 'Admin', 'Catatan', 'Nominal'].map((h, i) => <th key={i} className={`px-2 py-2 text-left ${i === 6 ? 'text-right' : ''}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
                 <tbody>
                   {rows.map(p => { const n = salName(p.note); return (
                     <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(p.expense_date, p.created_at)}</td>
                       <td className="px-2 py-2" style={{ color: 'var(--text-primary)', fontFamily: 'Syne' }}>{n.name}</td>
+                      <td className="px-2 py-2 whitespace-nowrap" style={{ color: '#d97706' }}>{n.jenis}</td>
                       <td className="px-2 py-2 uppercase" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{p.method}</td>
                       <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{adminName(p.cashier_id)}</td>
                       <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{n.extra || '—'}</td>

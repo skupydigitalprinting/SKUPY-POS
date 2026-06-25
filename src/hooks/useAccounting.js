@@ -1229,18 +1229,26 @@ export function useAccounting() {
     const amt = Math.round(Number(p.amount) || 0)
     if (!p.employeeName?.trim()) return { ok: false, error: 'Nama karyawan wajib diisi' }
     if (amt <= 0) return { ok: false, error: 'Nominal gaji harus > 0' }
-    const note = `Gaji - ${p.employeeName.trim()}${p.note?.trim() ? ' · ' + p.note.trim() : ''}`
-    const { error } = await supabase.from('expenses').insert({
+    // Keterangan = "[Jenis Payroll] - [Nama][ · catatan]". Jenis tersimpan di note
+    // (sumber UI) + kolom payroll_type bila tersedia (opsional, tanpa migrasi wajib).
+    const jenis = (p.payrollLabel || 'Gaji Bulanan').trim()
+    const note = `${jenis} - ${p.employeeName.trim()}${p.note?.trim() ? ' · ' + p.note.trim() : ''}`
+    const base = {
       expense_date: p.date || todayISO(),
       category: 'Gaji Karyawan',
       amount: amt,
       method: p.method === 'cash' ? 'cash' : 'transfer',
       note,
       cashier_id: cashierId || null,
-    })
+    }
+    let { error } = await supabase.from('expenses').insert({ ...base, payroll_type: p.payrollType || null })
+    if (error && /payroll_type|column .* does not exist|schema cache/i.test(error.message || '')) {
+      ;({ error } = await supabase.from('expenses').insert(base))
+    }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   // Daftar pembayaran gaji (expenses kategori gaji). filter periode opsional + nama opsional.
+  // Nama difilter via "%- {nama}%" karena note kini diawali Jenis Payroll, bukan "Gaji".
   const listSalaryExpenses = useCallback(async ({ from, to, employeeName } = {}) => {
     let q = supabase.from('expenses')
       .select('id,expense_date,created_at,category,amount,method,note,cashier_id')
@@ -1248,7 +1256,7 @@ export function useAccounting() {
       .order('expense_date', { ascending: false }).order('created_at', { ascending: false })
     if (from) q = q.gte('expense_date', from)
     if (to) q = q.lte('expense_date', to)
-    if (employeeName) q = q.ilike('note', `Gaji - ${employeeName}%`)
+    if (employeeName) q = q.ilike('note', `%- ${employeeName}%`)
     const { data, error } = await q.limit(2000)
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }

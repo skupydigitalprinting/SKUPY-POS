@@ -9,11 +9,31 @@ const FIELD = 'w-full px-3.5 py-3 rounded-xl text-sm'
 const inp = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
-// Ambil nama karyawan dari note "Gaji - {nama}[ · catatan]".
+
+// Jenis Payroll — label = tampil & tersimpan di note; id = nilai payroll_type (opsional di DB).
+export const PAYROLL_TYPES = [
+  { id: 'daily', label: 'Gaji Harian' },
+  { id: 'weekly', label: 'Gaji Mingguan' },
+  { id: 'monthly', label: 'Gaji Bulanan' },
+  { id: 'piecework', label: 'Gaji Borongan' },
+  { id: 'bonus', label: 'Bonus' },
+  { id: 'thr', label: 'THR' },
+  { id: 'yearly', label: 'Gaji Tahunan' },
+  { id: 'overtime', label: 'Lembur' },
+  { id: 'incentive', label: 'Insentif' },
+  { id: 'commission', label: 'Komisi' },
+  { id: 'meal', label: 'Uang Makan' },
+  { id: 'transport', label: 'Uang Transport' },
+  { id: 'other', label: 'Lain-lain' },
+]
+const labelToId = (label) => (PAYROLL_TYPES.find(t => t.label.toLowerCase() === String(label || '').toLowerCase())?.id) || 'other'
+// Note baru: "[Jenis] - {nama}[ · catatan]". Note lama "Gaji - {nama}" → Jenis 'Gaji Bulanan'.
 const parseSalaryNote = (note) => {
-  const m = String(note || '').match(/^Gaji\s*-\s*(.+?)(?:\s*·\s*(.*))?$/i)
-  if (!m) return { name: '—', extra: note || '' }
-  return { name: (m[1] || '').trim(), extra: (m[2] || '').trim() }
+  const m = String(note || '').match(/^(.+?)\s+-\s+(.+?)(?:\s*·\s*(.*))?$/)
+  if (!m) return { jenis: 'Gaji Bulanan', name: String(note || '—'), extra: '' }
+  let jenis = (m[1] || '').trim()
+  if (/^gaji$/i.test(jenis)) jenis = 'Gaji Bulanan' // backward-compat note lama
+  return { jenis, name: (m[2] || '').trim(), extra: (m[3] || '').trim() }
 }
 
 export default function PayrollTab({ acc, admins = [], currentUser, onChanged }) {
@@ -30,6 +50,7 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
   const [hist, setHist] = useState([])             // riwayat gaji karyawan terbuka
   const [payForm, setPayForm] = useState(null)     // form bayar gaji
   const [editPay, setEditPay] = useState(null)     // edit pembayaran gaji
+  const [histFilter, setHistFilter] = useState('Semua') // filter jenis payroll di riwayat
 
   const load = useCallback(async () => {
     const r = await acc.listEmployees(search)
@@ -40,9 +61,11 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
 
   const loadHist = useCallback(async (name) => {
     const r = await acc.listSalaryExpenses({ employeeName: name })
-    setHist(r.ok ? r.data : [])
+    // Filter eksak nama (server pakai LIKE coarse "%- nama%").
+    setHist(r.ok ? (r.data || []).filter(x => parseSalaryNote(x.note).name === name) : [])
   }, [acc])
-  useEffect(() => { if (detailEmp) loadHist(detailEmp.name) }, [detailEmp, loadHist])
+  useEffect(() => { if (detailEmp) { setHistFilter('Semua'); loadHist(detailEmp.name) } }, [detailEmp, loadHist])
+  const histShown = useMemo(() => histFilter === 'Semua' ? hist : hist.filter(x => parseSalaryNote(x.note).jenis === histFilter), [hist, histFilter])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -70,7 +93,7 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
     const amt = parseCurrency(payForm.amount)
     if (!(amt > 0)) return toast.error('Nominal gaji harus > 0')
     setSaving(true)
-    const r = await acc.payEmployeeSalary({ employeeName: detailEmp.name, amount: amt, date: payForm.date, method: payForm.method, note: payForm.note }, currentUser?.id)
+    const r = await acc.payEmployeeSalary({ employeeName: detailEmp.name, amount: amt, date: payForm.date, method: payForm.method, note: payForm.note, payrollLabel: payForm.jenis, payrollType: labelToId(payForm.jenis) }, currentUser?.id)
     setSaving(false)
     if (r.ok) { toast.success('Gaji dibayar & dicatat di Pengeluaran'); setPayForm(null); loadHist(detailEmp.name); onChanged && onChanged() } else toast.error(r.error)
   }
@@ -79,8 +102,9 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
     const amt = parseCurrency(editPay.amount)
     if (!(amt > 0)) return toast.error('Nominal harus > 0')
     setSaving(true)
-    // Pertahankan format note "Gaji - {nama}[ · catatan]" agar tetap tertaut karyawan.
-    const note = `Gaji - ${detailEmp.name}${editPay.note?.trim() ? ' · ' + editPay.note.trim() : ''}`
+    // Pertahankan format note "[Jenis] - {nama}[ · catatan]" agar tetap tertaut karyawan.
+    const jenis = editPay.jenis || 'Gaji Bulanan'
+    const note = `${jenis} - ${detailEmp.name}${editPay.note?.trim() ? ' · ' + editPay.note.trim() : ''}`
     const r = await acc.updateExpense(editPay.id, { date: editPay.date, amount: amt, method: editPay.method, note, category: 'Gaji Karyawan' })
     setSaving(false)
     if (r.ok) { toast.success('Pembayaran gaji diperbarui'); setEditPay(null); loadHist(detailEmp.name); onChanged && onChanged() } else toast.error(r.error)
@@ -108,7 +132,7 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
               <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{detailEmp.position || 'Tanpa divisi'}{detailEmp.notes ? ` · ${detailEmp.notes}` : ''}</div>
             </div>
           </div>
-          <button onClick={() => setPayForm({ amount: '', date: todayISO(), method: 'transfer', note: '' })} className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold btn-press flex-shrink-0" style={{ background: 'linear-gradient(135deg, #d97706, #b45309)', color: '#fff', fontFamily: 'Syne' }}>
+          <button onClick={() => setPayForm({ amount: '', jenis: 'Gaji Bulanan', date: todayISO(), method: 'transfer', note: '' })} className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold btn-press flex-shrink-0" style={{ background: 'linear-gradient(135deg, #d97706, #b45309)', color: '#fff', fontFamily: 'Syne' }}>
             <Wallet size={14} /> Bayar Gaji
           </button>
         </div>
@@ -116,23 +140,31 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
         <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
           <div className="flex items-center justify-between mb-3">
             <div className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Riwayat Pembayaran Gaji</div>
-            <div className="text-sm font-bold" style={{ color: '#d97706', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>Total {fmt(total)}</div>
+            <div className="text-sm font-bold" style={{ color: '#d97706', fontFamily: 'Syne', fontVariantNumeric: 'tabular-nums' }}>Total {fmt(histShown.reduce((s, x) => s + Math.round(x.amount || 0), 0))}</div>
           </div>
-          {hist.length === 0 ? (
-            <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran gaji</p>
+          {/* Filter Jenis Payroll */}
+          <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+            {['Semua', ...PAYROLL_TYPES.map(t => t.label)].map(lbl => (
+              <button key={lbl} onClick={() => setHistFilter(lbl)} className="flex-shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap"
+                style={{ background: histFilter === lbl ? 'linear-gradient(135deg, var(--accent), #6366f1)' : 'var(--bg-elevated)', color: histFilter === lbl ? '#fff' : 'var(--text-secondary)', border: `1px solid ${histFilter === lbl ? 'transparent' : 'var(--border)'}`, fontFamily: 'Syne' }}>{lbl}</button>
+            ))}
+          </div>
+          {histShown.length === 0 ? (
+            <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>{hist.length === 0 ? 'Belum ada pembayaran gaji' : 'Tidak ada pada jenis ini'}</p>
           ) : (
             <div className="space-y-1.5">
-              {hist.map(p => {
-                const { extra } = parseSalaryNote(p.note)
+              {histShown.map(p => {
+                const { jenis, extra } = parseSalaryNote(p.note)
                 return (
                   <div key={p.id} className="flex items-center gap-2 text-[11px] py-1" style={{ borderBottom: '1px solid var(--border)' }}>
                     <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{formatDateTimeWIB(p.expense_date, p.created_at)}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap" style={{ background: 'rgba(217,119,6,0.12)', color: '#d97706', fontFamily: 'Syne' }}>{jenis}</span>
                     <span className="font-bold" style={{ color: '#d97706', fontVariantNumeric: 'tabular-nums' }}>{fmt(p.amount)}</span>
                     <span className="uppercase text-[9px]" style={{ color: 'var(--text-muted)' }}>{p.method}</span>
                     {extra && <span className="truncate" style={{ color: 'var(--text-muted)' }}>· {extra}</span>}
                     <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>· {adminName(p.cashier_id)}</span>
                     <div className="ml-auto flex items-center gap-1 flex-shrink-0">
-                      <button onClick={() => setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.method === 'cash' ? 'cash' : 'transfer', date: String(p.expense_date).slice(0, 10), note: parseSalaryNote(p.note).extra })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={10} /></button>
+                      <button onClick={() => setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), jenis, method: p.method === 'cash' ? 'cash' : 'transfer', date: String(p.expense_date).slice(0, 10), note: extra })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }} title="Edit"><Pencil size={10} /></button>
                       <button onClick={() => delPay(p)} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Soft delete"><Trash2 size={10} /></button>
                     </div>
                   </div>
@@ -148,6 +180,8 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
             <div className="space-y-3">
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Nominal Gaji</label>
                 <input inputMode="numeric" value={payForm.amount ? formatCurrency(parseCurrency(payForm.amount)) : ''} onChange={e => setPayForm(p => ({ ...p, amount: e.target.value.replace(/[^\d]/g, '') }))} placeholder="0" className={FIELD} style={inp} /></div>
+              <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Jenis Payroll <span style={{ color: '#ef4444' }}>*</span></label>
+                <select value={payForm.jenis} onChange={e => setPayForm(p => ({ ...p, jenis: e.target.value }))} className={FIELD} style={inp}>{PAYROLL_TYPES.map(t => <option key={t.id} value={t.label}>{t.label}</option>)}</select></div>
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Tanggal Pembayaran</label>
                 <input type="date" value={payForm.date} onChange={e => setPayForm(p => ({ ...p, date: e.target.value }))} className={FIELD} style={{ ...inp, colorScheme: 'dark' }} /></div>
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Metode Pembayaran</label>
@@ -165,6 +199,8 @@ export default function PayrollTab({ acc, admins = [], currentUser, onChanged })
             <div className="space-y-3">
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Nominal Gaji</label>
                 <input inputMode="numeric" value={editPay.amount ? formatCurrency(parseCurrency(editPay.amount)) : ''} onChange={e => setEditPay(p => ({ ...p, amount: e.target.value.replace(/[^\d]/g, '') }))} className={FIELD} style={inp} /></div>
+              <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Jenis Payroll <span style={{ color: '#ef4444' }}>*</span></label>
+                <select value={editPay.jenis} onChange={e => setEditPay(p => ({ ...p, jenis: e.target.value }))} className={FIELD} style={inp}>{PAYROLL_TYPES.map(t => <option key={t.id} value={t.label}>{t.label}</option>)}</select></div>
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Tanggal Pembayaran</label>
                 <input type="date" value={editPay.date} onChange={e => setEditPay(p => ({ ...p, date: e.target.value }))} className={FIELD} style={{ ...inp, colorScheme: 'dark' }} /></div>
               <div><label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Metode Pembayaran</label>
