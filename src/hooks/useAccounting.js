@@ -512,6 +512,11 @@ export function useAccounting() {
   // ============================================================
   const getOutflowTransactions = useCallback(async (from, to) => {
     const toEnd = (to || from) + 'T23:59:59'
+    // Batas hari dalam zona WIB (Asia/Jakarta = UTC+7). Untuk kolom timestamptz
+    // (paid_at) WAJIB pakai offset +07:00 — kalau pakai bare date (UTC midnight),
+    // pembayaran dini hari WIB tergeser ke tanggal UTC sebelumnya → hilang di "Hari Ini".
+    const tzFrom = `${from}T00:00:00+07:00`
+    const tzTo = `${to || from}T23:59:59+07:00`
     const rows = []
     const seen = new Set() // guard refKey: tak pernah push baris yang sama dua kali
     const isCancelled = (s) => ['cancelled', 'canceled', 'dibatalkan', 'batal', 'deleted', 'void'].includes(String(s || '').toLowerCase())
@@ -534,7 +539,7 @@ export function useAccounting() {
       }
       // 3) Pembayaran Hutang Supplier (sumber resmi = supplier_debt_payments)
       {
-        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,created_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,created_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         const ids = [...new Set((data || []).map(x => x.supplier_debt_id).filter(Boolean))]
         const dmap = {}
         if (ids.length) { const { data: dd } = await supabase.from('supplier_debts').select('id,supplier,item').in('id', ids); (dd || []).forEach(d => { dmap[d.id] = d }) }
@@ -542,8 +547,13 @@ export function useAccounting() {
       }
       // 4) Pembayaran Hutang Bank (sumber resmi = bank_loan_payments, BUKAN expenses)
       {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+        // AUDIT SEMENTARA — cek pembayaran hutang bank vs filter Hari Ini (WIB).
+        try {
+          const wibDate = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+          ;(data || []).forEach(x => console.log('[AUDIT Bayar Hutang Bank]', { paid_at: x.paid_at, tanggal_WIB: wibDate(x.paid_at), filter: `${from} → ${to}`, lolos_filter: true, nominal_uang_keluar: Math.round(x.amount || 0) }))
+        } catch (e) { /* noop */ }
       }
       // 5) Kasbon Karyawan keluar (advance, bukan saldo awal/opening).
       //    PENTING: kasbon WAJIB masuk Uang Keluar. Bila select kolom is_opening/status
@@ -593,6 +603,9 @@ export function useAccounting() {
   //   Keluar = getOutflowTransactions + pembayaran sewa dibayar dimuka (full).
   const getCashflowDetail = useCallback(async (from, to) => {
     const toEnd = (to || from) + 'T23:59:59'
+    // Batas hari WIB untuk kolom timestamptz (created_at transaksi, paid_at cicilan).
+    const tzFrom = `${from}T00:00:00+07:00`
+    const tzTo = `${to || from}T23:59:59+07:00`
     const masuk = [], keluar = [], pending = []
     const CB_LABEL = { omzet: 'Credibook · Omset', refund: 'Credibook · Refund', capital: 'Credibook · Modal Tambahan', other: 'Credibook · Lainnya' }
     try {
@@ -606,7 +619,7 @@ export function useAccounting() {
       //    Sisa yang BELUM diterima (pending/hutang) → daftar `pending` saja
       //    (tampil di tabel, TIDAK masuk Total Masuk).
       {
-        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,paid,remaining,status,cashier_id').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,paid,remaining,status,cashier_id').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', tzFrom).lte('created_at', tzTo)
         ;(data || []).forEach(x => {
           const initPaid = Math.max(0, Math.round(x.paid || 0) - (cicByInv[x.invoice_no] || 0))
           if (initPaid > 0) masuk.push({ id: x.id, type: 'masuk', date: x.created_at, createdAt: x.created_at, source: 'Penjualan', ref: x.invoice_no, category: 'Penjualan Kasir', method: x.payment_method, status: x.status, amount: initPaid, invoiceNo: x.invoice_no, cashierId: x.cashier_id })
@@ -616,7 +629,7 @@ export function useAccounting() {
       }
       // 2) Cicilan piutang
       {
-        const { data } = await supabase.from('debt_payments').select('id,paid_at,created_at,invoice_no,amount,payment_method,note,cashier_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('debt_payments').select('id,paid_at,created_at,invoice_no,amount,payment_method,note,cashier_id').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note, invoiceNo: x.invoice_no, cashierId: x.cashier_id }))
       }
       // 3) Credibook (semua jenis = kas masuk)
@@ -755,6 +768,9 @@ export function useAccounting() {
 
   const getCardDetail = useCallback(async (kind, from, to) => {
     const toEnd = (to || from) + 'T23:59:59'
+    // Batas hari WIB untuk kolom timestamptz (paid_at).
+    const tzFrom = `${from}T00:00:00+07:00`
+    const tzTo = `${to || from}T23:59:59+07:00`
     const rows = []
     try {
       const pushExpenses = async (filterCat) => {
@@ -767,19 +783,19 @@ export function useAccounting() {
         ;(data || []).filter(x => !onlyPaid || !x.is_credit).forEach(x => rows.push({ id: x.id, kind: 'purchase', date: x.purchase_date, source: 'Pembelian', ref: x.item, party: x.supplier, method: x.is_credit ? 'kredit' : x.method, amount: Math.round(x.amount || 0), status: x.is_credit ? 'kredit' : 'lunas', note: x.note }))
       }
       const pushSupPay = async () => {
-        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         const ids = [...new Set((data || []).map(x => x.supplier_debt_id).filter(Boolean))]
         const dmap = {}
         if (ids.length) { const { data: dd } = await supabase.from('supplier_debts').select('id,supplier,item').in('id', ids); (dd || []).forEach(d => { dmap[d.id] = d }) }
         ;(data || []).forEach(x => { const d = dmap[x.supplier_debt_id] || {}; rows.push({ id: x.id, kind: 'supplier_payment', date: x.paid_at, source: 'Pembayaran Hutang Supplier', ref: d.item || '', party: d.supplier || '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }) })
       }
       const pushBankPay = async () => {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Cicilan Bank', ref: '', party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
       // BEBAN: hanya bagian BUNGA dari cicilan bank (pokok bukan beban).
       const pushBankBunga = async () => {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,bunga,method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,bunga,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         ;(data || []).filter(x => Math.round(x.bunga || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Bunga Bank', ref: '', party: '', method: x.method, amount: Math.round(x.bunga || 0), status: 'valid', note: x.note }))
       }
       const pushTransactions = async () => {
@@ -787,7 +803,7 @@ export function useAccounting() {
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'transaction', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.total || 0), status: x.status, note: '' }))
       }
       const pushDebtPay = async () => {
-        const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', from).lte('paid_at', toEnd)
+        const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'debt_payment', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
       // MIGRASI DATA LAMA — pemasukan ('old_income') / pengeluaran ('old_expense')
