@@ -553,20 +553,54 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const totalCashOut = useMemo(() => Math.round(ukBasis + rentAgg.bebanPeriod), [ukBasis, rentAgg])
   const netCashFlow = useMemo(() => totalCashIn - totalCashOut, [totalCashIn, totalCashOut])
 
-  // LOG AUDIT SEMENTARA — lacak sumber selisih Arus Saldo Bersih.
+  // LOG AUDIT SEMENTARA — rincian sumber Uang Masuk / Uang Keluar / Kasbon + selisih.
+  // Tujuan: pastikan kasbon baru masuk Uang Keluar & pembayaran kasbon masuk Uang Masuk.
   useEffect(() => {
-    if (!d) return
-    console.log('[AUDIT Arus Saldo Bersih]', {
-      totalCashIn,
-      totalCashOut,
-      netCashFlow,
-      uang_masuk_total: Math.round(d.uang_masuk_total || 0),
-      ukBasis,
-      beban_sewa: Math.round(rentAgg.bebanPeriod),
-      cash_sewa: Math.round(rentAgg.cashOutPeriod),
-      pengeluaran_total_rpc: Math.round(d.pengeluaran_total || 0),
-    })
-  }, [d, totalCashIn, totalCashOut, netCashFlow, ukBasis, rentAgg])
+    if (!d || tab !== 'ringkasan') return
+    let alive = true
+    ;(async () => {
+      const cf = await acc.getCashflowDetail(from, to)
+      if (!alive) return
+      const r = Math.round
+      // Rincian Uang Masuk per sumber (dari getCashflowDetail.masuk[]).
+      const masukBySource = {}
+      ;(cf.masuk || []).forEach(x => { const k = x.source || 'Lain'; masukBySource[k] = (masukBySource[k] || 0) + r(x.amount || 0) })
+      const keluarBySource = {}
+      ;(cf.keluar || []).forEach(x => { const k = x.source || 'Lain'; keluarBySource[k] = (keluarBySource[k] || 0) + r(x.amount || 0) })
+      const masukRPC = {
+        penjualan_lunas_init_paid: r((d.uang_masuk_total || 0) - (d.cicilan || 0) - (d.kasbon_masuk || 0) - (d.pemasukan_manual || 0) - (d.penjualan_aset || 0) - (d.omset_migrasi || 0)),
+        cicilan_piutang: r(d.cicilan || 0),
+        pembayaran_kasbon: r(d.kasbon_masuk || 0),
+        pemasukan_manual_credibook: r(d.pemasukan_manual || 0),
+        penjualan_aset: r(d.penjualan_aset || 0),
+        pemasukan_migrasi: r(d.omset_migrasi || 0),
+      }
+      const keluarRPC = {
+        operasional: r(d.operasional || 0),
+        gaji: r(d.gaji || 0),
+        pembelian_bahan: r(d.pembelian_bahan || 0),
+        kasbon_baru: r(d.kasbon_keluar || 0),
+        pengeluaran_migrasi: r(d.pengeluaran_migrasi || 0),
+        // hutang supplier/bank & purchases termasuk di pengeluaran_total (lihat ukBasis)
+      }
+      console.group('%c[AUDIT Uang Masuk / Keluar / Kasbon]', 'color:#10d98a;font-weight:bold')
+      console.log('Periode:', from, '→', to)
+      console.log('UANG MASUK total (kartu):', r(totalCashIn), '| RPC uang_masuk_total:', r(d.uang_masuk_total || 0))
+      console.table(masukRPC)
+      console.log('Uang Masuk per sumber (cashflow detail):', masukBySource, '→ Σ', r((cf.masuk || []).reduce((s, x) => s + (x.amount || 0), 0)))
+      console.log('UANG KELUAR total (kartu):', r(totalCashOut), '| RPC pengeluaran_total + beban sewa:', r((d.pengeluaran_total || 0) + rentAgg.bebanPeriod))
+      console.table(keluarRPC)
+      console.log('Uang Keluar per sumber (cashflow detail):', keluarBySource, '→ Σ', r((cf.keluar || []).reduce((s, x) => s + (x.amount || 0), 0)))
+      console.log('KASBON baru (uang keluar):', r(d.kasbon_keluar || 0))
+      console.log('KASBON pembayaran (uang masuk):', r(d.kasbon_masuk || 0))
+      console.log('ARUS SALDO BERSIH = Masuk − Keluar =', r(totalCashIn), '−', r(totalCashOut), '=', r(netCashFlow))
+      const selisih = r(totalCashIn - totalCashOut - netCashFlow)
+      console.log('Selisih kontrol (harus 0):', selisih)
+      console.groupEnd()
+    })()
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, from, to, tab, totalCashIn, totalCashOut, netCashFlow])
 
   const doSync = async () => {
     if (syncing) return; setSyncing(true)
