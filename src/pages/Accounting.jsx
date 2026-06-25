@@ -232,6 +232,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const confirm = useConfirm()
   const acc = useAccounting()
   const isOwner = currentUser?.role === 'owner'
+  // Soft delete kasbon: Owner & Staff Admin boleh; Kasir tidak. (Hak akses sama
+  // untuk pengelolaan kasbon — perbaikan ketidakkonsistenan Owner vs Admin SKUPY.)
+  const canManageKasbon = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [tab, setTab] = useState('ringkasan')
 
   // Deep-link: pindah tab saat diminta dari luar (mis. Credibook → Pengeluaran).
@@ -2457,7 +2460,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                                 <div className="ml-auto flex items-center gap-1 flex-shrink-0">
                                   <button onClick={() => setPayDetail({ ...p, employeeName: detailEmp.name })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.12)', color: '#38BDF8' }} title="Detail pembayaran"><Eye size={10} /></button>
                                   <button onClick={() => setEditPay({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.payment_method === 'transfer' ? 'transfer' : 'cash', date: String(p.payment_date).slice(0, 10), note: p.notes || '' })} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)' }} title="Edit pembayaran"><Pencil size={10} /></button>
-                                  {isOwner && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus pembayaran kasbon ini?', message: 'Pembayaran dibatalkan (soft delete). Sisa kasbon naik kembali; uang masuk, arus kas, piutang karyawan & dashboard menyesuaikan.' }))) return; const r = await acc.deleteAdvancePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus pembayaran"><Trash2 size={10} /></button>}
+                                  {canManageKasbon && <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus pembayaran ini?', message: 'Data tidak akan dihapus permanen dan masih dapat dipulihkan. Sisa kasbon naik kembali; uang masuk, arus kas, piutang karyawan & dashboard menyesuaikan otomatis.', confirmLabel: 'Ya, Soft Delete', cancelLabel: 'Batal' }))) return; const r = await acc.deleteAdvancePayment(p.id, currentUser?.id); if (r.ok) { toast.success('Pembayaran dihapus (soft delete)'); refreshDetailEmp(detailEmp.key) } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Soft delete pembayaran"><Trash2 size={10} /></button>}
                                 </div>
                               </div>
                             ))}

@@ -1459,8 +1459,17 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
-  const deleteAdvancePayment = useCallback(async (id) => {
-    const { error } = await supabase.from('employee_cash_advance_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+  // Soft delete pembayaran kasbon. Set deleted_at (+ deleted_by untuk audit bila
+  // kolomnya ada). Trigger DB menghitung ulang paid induk (exclude deleted) →
+  // sisa kasbon, status, uang masuk, arus kas & dashboard menyesuaikan.
+  const deleteAdvancePayment = useCallback(async (id, deletedBy) => {
+    const now = new Date().toISOString()
+    let { error } = await supabase.from('employee_cash_advance_payments')
+      .update({ deleted_at: now, deleted_by: deletedBy || null }).eq('id', id)
+    // Fallback bila kolom deleted_by belum ada di skema.
+    if (error && /deleted_by/i.test(error.message || '')) {
+      ;({ error } = await supabase.from('employee_cash_advance_payments').update({ deleted_at: now }).eq('id', id))
+    }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
