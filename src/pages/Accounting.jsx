@@ -544,12 +544,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
 
   // === HELPER TUNGGAL ARUS SALDO BERSIH ===
-  // netCashFlow = totalCashIn − totalCashOut, memakai SUMBER PERSIS SAMA dgn kartu:
-  //   totalCashIn  = kartu "Uang Masuk"  = d.uang_masuk_total
+  // netCashFlow = totalCashIn − totalCashOut.
+  //   totalCashIn  = kartu "Uang Masuk" = uang_masuk_total − pembayaran kasbon (kasbon_masuk).
+  //     Pembayaran/pelunasan kasbon karyawan BUKAN pemasukan operasional → DIKELUARKAN
+  //     dari Uang Masuk. (Saldo Kas & Bank tetap menghitungnya via bd di RPC — uang
+  //     fisik memang masuk. Omset & Piutang Karyawan tidak diubah.)
   //   totalCashOut = kartu "Uang Keluar" = ukBasis + rentAgg.bebanPeriod
   // Dipakai oleh: kartu Arus Saldo Bersih, Detail Arus Saldo (Audit), popup Detail Arus Kas.
-  // Catatan: TIDAK mengubah rumus Uang Masuk / Uang Keluar — hanya menyatukan sumbernya.
-  const totalCashIn = useMemo(() => d ? Math.round(d.uang_masuk_total || 0) : 0, [d])
+  const totalCashIn = useMemo(() => d ? Math.round((d.uang_masuk_total || 0) - (d.kasbon_masuk || 0)) : 0, [d])
   const totalCashOut = useMemo(() => Math.round(ukBasis + rentAgg.bebanPeriod), [ukBasis, rentAgg])
   const netCashFlow = useMemo(() => totalCashIn - totalCashOut, [totalCashIn, totalCashOut])
 
@@ -570,10 +572,10 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       const masukRPC = {
         penjualan_lunas_init_paid: r((d.uang_masuk_total || 0) - (d.cicilan || 0) - (d.kasbon_masuk || 0) - (d.pemasukan_manual || 0) - (d.penjualan_aset || 0) - (d.omset_migrasi || 0)),
         cicilan_piutang: r(d.cicilan || 0),
-        pembayaran_kasbon: r(d.kasbon_masuk || 0),
         pemasukan_manual_credibook: r(d.pemasukan_manual || 0),
         penjualan_aset: r(d.penjualan_aset || 0),
         pemasukan_migrasi: r(d.omset_migrasi || 0),
+        '— pembayaran_kasbon (DIKECUALIKAN dari Uang Masuk)': r(d.kasbon_masuk || 0),
       }
       const keluarRPC = {
         operasional: r(d.operasional || 0),

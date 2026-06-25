@@ -56,8 +56,14 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
       loadSummary ? loadSummary(range.from, range.to) : Promise.resolve(null),
     ]).then(([r, s]) => {
       if (!alive) return
+      // Uang Masuk operasional TIDAK termasuk pembayaran kasbon karyawan → buang dari masuk.
+      if (r?.ok) {
+        const masukOps = (r.masuk || []).filter(x => x.source !== 'Pembayaran Kasbon')
+        r = { ...r, masuk: masukOps, totalMasuk: masukOps.reduce((sum, x) => sum + Math.round(x.amount || 0), 0) }
+      }
       setData(r?.ok ? r : { masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
-      setRpcMasuk((s && s.ok && s.data) ? Math.round(s.data.uang_masuk_total || 0) : null)
+      // RPC uang_masuk_total dikurangi pembayaran kasbon (kasbon_masuk) agar konsisten dgn kartu.
+      setRpcMasuk((s && s.ok && s.data) ? Math.round((s.data.uang_masuk_total || 0) - (s.data.kasbon_masuk || 0)) : null)
       setLoading(false)
     })
     return () => { alive = false }

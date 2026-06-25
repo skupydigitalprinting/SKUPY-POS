@@ -99,8 +99,13 @@ export default function AuditArusSaldo({ open, onClose, loadCashflow, loadSummar
     Promise.all([loadCashflow(range.from, range.to), loadSummary ? loadSummary(range.from, range.to) : Promise.resolve(null)])
       .then(([r, s]) => {
         if (!alive) return
+        // Pembayaran kasbon karyawan BUKAN Uang Masuk operasional → buang dari masuk.
+        if (r?.ok) {
+          const masukOps = (r.masuk || []).filter(x => x.source !== 'Pembayaran Kasbon')
+          r = { ...r, masuk: masukOps, totalMasuk: masukOps.reduce((sum, x) => sum + Math.round(x.amount || 0), 0) }
+        }
         setData(r?.ok ? r : { masuk: [], keluar: [], totalMasuk: 0, totalKeluar: 0 })
-        setRpcMasuk((s && s.ok && s.data) ? Math.round(s.data.uang_masuk_total || 0) : null)
+        setRpcMasuk((s && s.ok && s.data) ? Math.round((s.data.uang_masuk_total || 0) - (s.data.kasbon_masuk || 0)) : null)
         setLoading(false)
       })
     return () => { alive = false }
