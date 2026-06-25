@@ -347,7 +347,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   // di modal Rincian, supaya kartu Uang Keluar = jumlah baris rincian.
   const [pengOut, setPengOut] = useState(null)   // periode aktif
   const [pengOutAll, setPengOutAll] = useState(null) // semua waktu
-  const [from, setFrom] = useState(acc.monthStartISO())
+  // Default filter saat Accounting pertama dibuka = HARI INI (from = to = hari ini).
+  // (Tab default tetap 'ringkasan'.) Jika user pilih preset lain, state mengikuti.
+  const [from, setFrom] = useState(acc.todayISO())
   const [to, setTo] = useState(acc.todayISO())
   const [loading, setLoading] = useState(false)
   const [setupNeeded, setSetupNeeded] = useState(false)
