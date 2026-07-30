@@ -30,13 +30,20 @@ const labaPresetRange = (preset) => {
   if (preset === 'today') return { from: today, to: today }
   if (preset === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: _ymd(d), to: today } } // Senin
   if (preset === 'month') { const d = new Date(now.getFullYear(), now.getMonth(), 1); return { from: _ymd(d), to: today } }
+  // Bulan Lalu = seluruh bulan kalender sebelumnya (hari 0 = hari terakhir bulan
+  // sebelumnya) — aman terhadap ganti tahun, Februari & tahun kabisat.
+  if (preset === 'lastmonth') {
+    const s = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const e = new Date(now.getFullYear(), now.getMonth(), 0)
+    return { from: _ymd(s), to: _ymd(e) }
+  }
   if (preset === 'year') { const d = new Date(now.getFullYear(), 0, 1); return { from: _ymd(d), to: today } }
   if (preset === 'all') return { from: '2000-01-01', to: today }
   return { from: today, to: today }
 }
 const dmy = (s) => { if (!s) return '…'; const [y, m, d] = String(s).split('-'); return `${d}/${m}/${y}` }
-const LABA_PRESETS = [['today', 'Hari Ini'], ['week', 'Minggu Ini'], ['month', 'Bulan Ini'], ['year', 'Tahun Ini'], ['all', 'All Time']]
-const LABA_SCOPE_LABEL = { today: 'Hari Ini', week: 'Minggu Ini', month: 'Bulan Ini', year: 'Tahun Ini', all: 'Semua Waktu', custom: 'Periode Custom' }
+const LABA_PRESETS = [['today', 'Hari Ini'], ['week', 'Minggu Ini'], ['month', 'Bulan Ini'], ['lastmonth', 'Bulan Lalu'], ['year', 'Tahun Ini'], ['all', 'All Time']]
+const LABA_SCOPE_LABEL = { today: 'Hari Ini', week: 'Minggu Ini', month: 'Bulan Ini', lastmonth: 'Bulan Lalu', year: 'Tahun Ini', all: 'Semua Waktu', custom: 'Periode Custom' }
 
 function StatCard({ icon: Icon, label, value, sub, color = 'accent', trend, delay = 0, onClick }) {
   const colors = {

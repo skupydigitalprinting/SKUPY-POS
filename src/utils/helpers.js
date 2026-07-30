@@ -580,6 +580,7 @@ export const QUICK_PRESETS = [
   ['today', 'Hari Ini'],
   ['week', 'Minggu Ini'],
   ['month', 'Bulan Ini'],
+  ['lastmonth', 'Bulan Lalu'],
   ['year', 'Tahun Ini'],
   ['all', 'Semua Waktu'],
 ]
@@ -588,6 +589,14 @@ export function quickRange(preset) {
   if (preset === 'today') return { from: today, to: today }
   if (preset === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymdLocal(d), to: today } }
   if (preset === 'month') { const d = new Date(now.getFullYear(), now.getMonth(), 1); return { from: ymdLocal(d), to: today } }
+  // Bulan Lalu = seluruh bulan kalender sebelumnya. Aman terhadap ganti tahun,
+  // Februari & kabisat karena pakai konstruktor Date lokal (hari 0 = hari terakhir
+  // bulan sebelumnya). Contoh: 30 Jul 2026 → 2026-06-01 s/d 2026-06-30.
+  if (preset === 'lastmonth') {
+    const s = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const e = new Date(now.getFullYear(), now.getMonth(), 0)
+    return { from: ymdLocal(s), to: ymdLocal(e) }
+  }
   if (preset === 'year') { const d = new Date(now.getFullYear(), 0, 1); return { from: ymdLocal(d), to: today } }
   if (preset === 'all') return { from: '2000-01-01', to: today }
   return { from: today, to: today }

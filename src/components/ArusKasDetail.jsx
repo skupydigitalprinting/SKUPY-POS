@@ -7,15 +7,20 @@ const RANGES = [
   { id: 'today', label: 'Hari Ini' },
   { id: 'week', label: 'Minggu Ini' },
   { id: 'month', label: 'Bulan Ini' },
+  { id: 'lastmonth', label: 'Bulan Lalu' },
   { id: 'year', label: 'Tahun Ini' },
   { id: 'all', label: 'All Time' },
 ]
-const ymd = (d) => d.toISOString().slice(0, 10)
+// Format tanggal LOKAL (WIB-accurate, bukan UTC) untuk SEMUA preset — mencegah
+// pergeseran sehari pada batas hari/bulan akibat konversi UTC.
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 function computeRange(id) {
   const now = new Date()
   if (id === 'today') return { from: ymd(now), to: ymd(now) }
   if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymd(d), to: ymd(now) } }
   if (id === 'month') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) }
+  // Bulan Lalu = seluruh bulan kalender sebelumnya (aman thd ganti tahun/kabisat).
+  if (id === 'lastmonth') return { from: ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: ymd(new Date(now.getFullYear(), now.getMonth(), 0)) }
   if (id === 'year') return { from: ymd(new Date(now.getFullYear(), 0, 1)), to: ymd(now) }
   return { from: '2000-01-01', to: ymd(now) }
 }

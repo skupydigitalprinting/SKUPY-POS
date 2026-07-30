@@ -1,0 +1,29 @@
+# Dependencies (hasil npm install) — JANGAN di-commit
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Cache Vite
+.vite/
+node_modules/.vite/
+
+# Environment / rahasia
+.env
+.env.local
+.env.*.local
+
+# Log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.local
+
+# Arsip
+*.zip

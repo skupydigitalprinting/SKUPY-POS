@@ -112,13 +112,15 @@ const todayYMD = () => new Date().toLocaleDateString('en-CA') // YYYY-MM-DD (lok
 // ── DETAIL GAJI KARYAWAN ── (data HANYA dari expenses kategori gaji) ──
 const SAL_RANGES = [
   { id: 'today', label: 'Hari Ini' }, { id: 'week', label: 'Minggu Ini' },
-  { id: 'month', label: 'Bulan Ini' }, { id: 'year', label: 'Tahun Ini' }, { id: 'all', label: 'Semua Waktu' },
+  { id: 'month', label: 'Bulan Ini' }, { id: 'lastmonth', label: 'Bulan Lalu' },
+  { id: 'year', label: 'Tahun Ini' }, { id: 'all', label: 'Semua Waktu' },
 ]
 function salRange(id) {
   const now = new Date(); const ymd = (d) => d.toLocaleDateString('en-CA')
   if (id === 'today') return { from: ymd(now), to: ymd(now) }
   if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymd(d), to: ymd(now) } }
   if (id === 'month') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) }
+  if (id === 'lastmonth') return { from: ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: ymd(new Date(now.getFullYear(), now.getMonth(), 0)) }
   if (id === 'year') return { from: ymd(new Date(now.getFullYear(), 0, 1)), to: ymd(now) }
   return { from: ALL_TIME_FROM, to: ymd(now) }
 }
@@ -3200,7 +3202,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         onClose={() => setSalaryDetailOpen(false)}
         load={acc.listSalaryExpenses}
         admins={admins}
-        initialRange={(() => { const p = detectPreset ? detectPreset(from, to) : null; return ['today', 'week', 'month', 'year', 'all'].includes(p) ? p : 'month' })()}
+        initialRange={(() => { const p = detectPreset ? detectPreset(from, to) : null; return ['today', 'week', 'month', 'lastmonth', 'year', 'all'].includes(p) ? p : 'month' })()}
       />
 
       {/* ── EDIT PIUTANG CUSTOMER LAMA ── */}

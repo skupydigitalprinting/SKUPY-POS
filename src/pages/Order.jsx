@@ -63,6 +63,7 @@ const DATE_RANGES = [
   { id: 'today', label: 'Hari Ini' },
   { id: 'week', label: 'Minggu Ini' },
   { id: 'month', label: 'Bulan Ini' },
+  { id: 'lastmonth', label: 'Bulan Lalu' },
   { id: 'year', label: 'Tahun Ini' },
   { id: 'all', label: 'Semua Waktu' },
   { id: 'custom', label: 'Custom' },
@@ -74,6 +75,8 @@ function dateBounds(id, customFrom, customTo) {
   if (id === 'today') return [new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0), endToday]
   if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); d.setHours(0, 0, 0, 0); return [d, endToday] }
   if (id === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), endToday]
+  // Bulan Lalu = 1 s/d hari terakhir bulan sebelumnya (aman thd ganti tahun/kabisat).
+  if (id === 'lastmonth') return [new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0), new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999)]
   if (id === 'year') return [new Date(now.getFullYear(), 0, 1), endToday]
   if (id === 'custom') {
     const s = customFrom ? new Date(customFrom + 'T00:00:00') : null

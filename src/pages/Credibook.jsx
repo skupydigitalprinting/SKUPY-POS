@@ -21,13 +21,15 @@ const ITYPE_COLOR = { omzet: '#10d98a', refund: '#3b82f6', capital: '#a78bfa', o
 const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 const todayISO = () => new Date().toISOString().slice(0, 10)
-const ymd = (d) => d.toISOString().slice(0, 10)
+// Format tanggal LOKAL (WIB-accurate, bukan UTC) untuk SEMUA preset.
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
 // Rentang waktu cepat
 const RANGES = [
   { id: 'today', label: 'Hari Ini' },
   { id: 'week', label: 'Minggu Ini' },
   { id: 'month', label: 'Bulan Ini' },
+  { id: 'lastmonth', label: 'Bulan Lalu' },
   { id: 'year', label: 'Tahun Ini' },
   { id: 'all', label: 'Semua Waktu' },
 ]
@@ -36,6 +38,7 @@ function computeRange(id) {
   if (id === 'today') return { from: ymd(now), to: ymd(now) }
   if (id === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return { from: ymd(d), to: ymd(now) } }
   if (id === 'month') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) }
+  if (id === 'lastmonth') return { from: ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: ymd(new Date(now.getFullYear(), now.getMonth(), 0)) }
   if (id === 'year') return { from: ymd(new Date(now.getFullYear(), 0, 1)), to: ymd(now) }
   return { from: '2000-01-01', to: ymd(now) }
 }

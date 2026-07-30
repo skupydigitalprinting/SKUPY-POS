@@ -275,7 +275,12 @@ export function useStore() {
   // Supabase free/pro tier yang punya statement_timeout ~8 detik.
   // Solusi: batasi ke 500 transaksi terakhir + 500 debt terakhir untuk
   // initial paint dashboard. Detail tetap bisa diambil via fetch lazy.
-  const TRX_LIMIT = 500
+  // HEMAT EGRESS: batasi load awal transaksi (kolom items JSONB berat). Dashboard
+  // "Total Omzet (semua waktu)" & Produk Terlaris dihitung dari array ini — untuk
+  // angka all-time yang akurat gunakan tab Accounting (berbasis RPC). 200 transaksi
+  // terakhir cukup untuk operasional harian. DEBT_LIMIT tetap 500 (baris kecil +
+  // Piutang harus lengkap).
+  const TRX_LIMIT = 200
   const DEBT_LIMIT = 500
   // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
   // Tidak menyertakan is_favorite di sini supaya load awal TIDAK gagal bila
@@ -560,18 +565,6 @@ export function useStore() {
       if (tables.includes('customers'))     refreshCustomers()
       if (tables.includes('debt_payments')) refreshDebtPayments()
       if (tables.includes('credibook_income')) refreshCredibook()
-      if (tables.includes('products')) {
-        // Kolom ringan dulu (anti-timeout), lalu hydrate gambar di belakang.
-        supabase.from('products').select(PRODUCT_LIGHT_COLS)
-          .order('created_at', { ascending: false }).limit(500)
-          .then(({ data }) => {
-            if (mounted.current && data) {
-              setProducts(data.map(productFromDB))
-              mergeFavorites()
-              hydrateProductImages()
-            }
-          })
-      }
     }
     const schedule = (...names) => {
       names.forEach(n => queue.add(n))
@@ -579,11 +572,14 @@ export function useStore() {
       timer = setTimeout(flush, 500)  // 500ms debounce window
     }
 
-    // Realtime untuk data kasir/order/piutang + master ringan (customers, products)
-    // supaya konsisten antar perangkat (owner + kasir paralel). Debounce 500ms
-    // menjaga egress tetap kecil. Tabel accounting (expenses/hutang/kasbon)
-    // disegarkan oleh poll 45s di halaman Accounting (lihat M4 audit).
-    const channel = supabase.channel('skupy-pos-realtime')
+    // Realtime data kasir/order/piutang. HEMAT EGRESS:
+    //  • Tabel `products` DIKELUARKAN dari realtime (jarang berubah; disegarkan saat
+    //    edit produk / refresh manual) → mengurangi broadcast.
+    //  • Channel DIPUTUS saat tab disembunyikan (background) & disambung lagi saat
+    //    tab aktif, dengan satu refresh susulan agar perubahan tak terlewat.
+    //  • Tabel accounting disegarkan oleh poll/subscription di halaman Accounting.
+    let channel = null
+    const buildChannel = () => supabase.channel('skupy-pos-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' },
         () => schedule('transactions'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' },
@@ -594,13 +590,23 @@ export function useStore() {
         () => schedule('credibook_income'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' },
         () => schedule('customers'))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' },
-        () => schedule('products'))
       .subscribe()
+    const start = (catchUp) => {
+      if (channel) return
+      channel = buildChannel()
+      // Saat kembali aktif, tarik sekali agar sinkron dengan perubahan selama background.
+      if (catchUp) schedule('transactions', 'debts', 'debt_payments', 'customers', 'credibook_income')
+    }
+    const stop = () => { if (channel) { supabase.removeChannel(channel); channel = null } }
+    const onVis = () => { if (document.visibilityState === 'visible') start(true); else stop() }
+
+    if (document.visibilityState === 'visible') start(false)
+    document.addEventListener('visibilitychange', onVis)
 
     return () => {
       if (timer) clearTimeout(timer)
-      supabase.removeChannel(channel)
+      document.removeEventListener('visibilitychange', onVis)
+      stop()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

@@ -107,8 +107,9 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
     setUploadingImg(true)
     setSubmitError('')
     try {
-      // 1. Compress + resize → WebP (maks 1200px, ~75%) target < 200KB
-      const blob = await compressImageToBlob(file, { maxSize: 1200, quality: 0.75, type: 'image/webp' })
+      // 1. Compress + resize → WebP kecil (maks 700px, ~65%) — HEMAT EGRESS Storage.
+      //    Cukup tajam untuk grid kasir & thumbnail; ukuran file jauh lebih kecil.
+      const blob = await compressImageToBlob(file, { maxSize: 700, quality: 0.65, type: 'image/webp' })
       // 2. Upload ke Supabase Storage → dapat public URL
       const url = await uploadProductImage(blob, form.name || 'produk')
       // 3. Simpan URL + preview
