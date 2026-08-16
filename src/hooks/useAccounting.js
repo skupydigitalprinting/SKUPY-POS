@@ -458,15 +458,29 @@ export function useAccounting() {
     const { error } = await supabase.from('bank_loans').update({ deleted_at: now, status: 'cancelled' }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
-  // Seluruh nominal bayar mengurangi POKOK (tanpa pemisahan bunga).
-  const payBankLoan = useCallback(async (loanId, { amount, method, note, cashierId, paymentNumber } = {}) => {
-    const amt = Math.round(Number(amount) || 0)
+  // Cicilan dipisah menjadi pokok, bunga, dan biaya. Hanya pokok mengurangi hutang.
+  const payBankLoan = useCallback(async (loanId, { amount, pokok, bunga, adminFee, method, note, date, cashierId, paymentNumber, paymentType } = {}) => {
+    const principal = Math.round(Number(pokok ?? amount) || 0)
+    const interest = Math.round(Number(bunga) || 0)
+    const fee = Math.round(Number(adminFee) || 0)
+    const amt = Math.round(Number(amount) || (principal + interest + fee))
     if (amt <= 0) return { ok: false, error: 'Nominal harus > 0' }
-    const { error } = await supabase.from('bank_loan_payments').insert({
-      loan_id: loanId, amount: amt, pokok: amt, bunga: 0,
+    if (principal < 0 || interest < 0 || fee < 0 || principal + interest + fee !== amt)
+      return { ok: false, error: 'Total bayar harus sama dengan pokok + bunga + biaya' }
+    let { error } = await supabase.from('bank_loan_payments').insert({
+      loan_id: loanId, amount: amt, pokok: principal, bunga: interest, admin_fee: fee,
       method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
-      payment_number: paymentNumber || null,
+      payment_number: paymentNumber || null, payment_type: paymentType || 'installment',
+      ...(date ? { paid_at: `${date}T12:00:00+07:00` } : {}),
     })
+    // Skema lama tetap dapat menerima cicilan pokok murni sebelum migrasi baru dijalankan.
+    if (error && /admin_fee|payment_type|schema cache|column .* does not exist/i.test(error.message || '') && interest === 0 && fee === 0) {
+      ;({ error } = await supabase.from('bank_loan_payments').insert({
+        loan_id: loanId, amount: amt, pokok: principal, bunga: 0,
+        method: method || 'transfer', note: note || '', cashier_id: cashierId || null,
+        payment_number: paymentNumber || null, ...(date ? { paid_at: `${date}T12:00:00+07:00` } : {}),
+      }))
+    }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
@@ -477,11 +491,19 @@ export function useAccounting() {
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
-  const editBankPayment = useCallback(async (id, { amount, method, note, paidAt }) => {
-    const amt = Math.round(Number(amount) || 0)
-    const patch = { amount: amt, pokok: amt, bunga: 0, method: method || 'transfer', note: note || '', updated_at: new Date().toISOString() }
+  const editBankPayment = useCallback(async (id, { amount, pokok, bunga, adminFee, method, note, paidAt }) => {
+    const principal = Math.round(Number(pokok ?? amount) || 0)
+    const interest = Math.round(Number(bunga) || 0)
+    const fee = Math.round(Number(adminFee) || 0)
+    const amt = Math.round(Number(amount) || (principal + interest + fee))
+    if (principal + interest + fee !== amt) return { ok: false, error: 'Total bayar harus sama dengan pokok + bunga + biaya' }
+    const patch = { amount: amt, pokok: principal, bunga: interest, admin_fee: fee, method: method || 'transfer', note: note || '', updated_at: new Date().toISOString() }
     if (paidAt) patch.paid_at = paidAt
-    const { error } = await supabase.from('bank_loan_payments').update(patch).eq('id', id)
+    let { error } = await supabase.from('bank_loan_payments').update(patch).eq('id', id)
+    if (error && /admin_fee|schema cache|column .* does not exist/i.test(error.message || '') && interest === 0 && fee === 0) {
+      delete patch.admin_fee
+      ;({ error } = await supabase.from('bank_loan_payments').update(patch).eq('id', id))
+    }
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const deleteBankPayment = useCallback(async (id) => {
@@ -547,8 +569,19 @@ export function useAccounting() {
       }
       // 4) Pembayaran Hutang Bank (sumber resmi = bank_loan_payments, BUKAN expenses)
       {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
-        ;(data || []).forEach(x => add({ id: x.id, kind: 'bank_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Hutang Bank', category: 'Cicilan Bank', method: x.method, amount: Math.round(x.amount || 0), note: x.note }))
+        let { data, error } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,pokok,bunga,admin_fee,payment_type,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
+        if (error) ({ data } = await supabase.from('bank_loan_payments').select('id,paid_at,created_at,amount,pokok,bunga,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo))
+        ;(data || []).forEach(x => {
+          const amount = Math.round(x.amount || 0)
+          if (x.payment_type === 'down_payment') {
+            add({ id: `${x.id}:dp`, kind: 'asset_dp', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembelian Aset', category: 'DP Aset', method: x.method, amount, note: x.note })
+            return
+          }
+          const principal = Math.round(x.pokok == null ? amount : x.pokok || 0)
+          const financeCost = Math.round((x.bunga || 0) + (x.admin_fee || 0))
+          if (principal > 0) add({ id: `${x.id}:principal`, kind: 'bank_payment', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Pembiayaan', category: 'Pokok Cicilan', method: x.method, amount: principal, note: x.note })
+          if (financeCost > 0) add({ id: `${x.id}:cost`, kind: 'bank_interest', date: x.paid_at, createdAt: x.created_at || x.paid_at, source: 'Beban Pembiayaan', category: 'Bunga & Biaya', method: x.method, amount: financeCost, note: x.note })
+        })
         // AUDIT SEMENTARA — cek pembayaran hutang bank vs filter Hari Ini (WIB).
         try {
           const wibDate = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
@@ -901,6 +934,30 @@ export function useAccounting() {
     })
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
+
+  // Pembelian aset atomik melalui RPC: aset, pembiayaan, DP, dan jurnal dibuat
+  // dalam satu transaksi database sehingga tidak mungkin tersimpan separuh.
+  const addAssetPurchase = useCallback(async (p) => {
+    const asset = {
+      name: p.name || '', category_id: p.categoryId || '', category_name: p.categoryName || '',
+      purchase_date: p.purchaseDate || todayISO(), purchase_price: Math.round(Number(p.purchasePrice) || 0),
+      available_for_use_date: p.availableForUseDate || p.purchaseDate || todayISO(),
+      residual_value: Math.round(Number(p.residualValue) || 0), depreciation_method: p.method || 'percentage',
+      depreciation_rate: Number(p.rate) || 0, useful_life_years: p.life ? Number(p.life) : '',
+      photo_url: p.photoUrl || '', notes: p.notes || '', created_by: p.createdBy || '',
+    }
+    const financing = {
+      scheme: p.paymentScheme || 'cash', supplier_name: p.supplierName || '', financier_name: p.financierName || '',
+      contract_no: p.contractNo || '', down_payment: Math.round(Number(p.downPayment) || 0),
+      financed_principal: Math.round(Number(p.financedPrincipal) || 0), total_interest: Math.round(Number(p.totalInterest) || 0),
+      installment_count: p.installmentCount ? Number(p.installmentCount) : '', installment_amount: Math.round(Number(p.installmentAmount) || 0),
+      first_due_date: p.firstDueDate || '', end_date: p.endDate || '', payment_method: p.paymentMethod || 'transfer',
+      existing_loan_id: p.existingLoanId || '',
+    }
+    const { data, error } = await supabase.rpc('acc_create_asset_purchase', { p_asset: asset, p_financing: financing })
+    if (error) return { ok: false, error: /could not find the function|schema cache/i.test(error.message || '') ? 'Database belum mendukung Pembelian Aset. Jalankan migrasi 2026_08_asset_purchase_financing.sql.' : error.message }
+    return { ok: true, data }
+  }, [])
   const updateAsset = useCallback(async (id, p) => {
     const patch = { updated_at: new Date().toISOString() }
     if (p.name !== undefined) patch.name = p.name
@@ -919,6 +976,8 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const deleteAsset = useCallback(async (id) => {
+    const { data: financing } = await supabase.from('bank_loans').select('id,sisa_pokok').eq('asset_id', id).eq('is_asset_financing', true).is('deleted_at', null).maybeSingle()
+    if (Math.round(financing?.sisa_pokok || 0) > 0) return { ok: false, error: 'Aset masih memiliki sisa cicilan. Lunasi atau batalkan pembiayaan terlebih dahulu.' }
     const { error } = await supabase.from('assets').update({ deleted_at: new Date().toISOString(), status: 'deleted' }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
@@ -1555,7 +1614,7 @@ export function useAccounting() {
     listBankPayments, editBankPayment, deleteBankPayment,
     getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut, listExpensesByRange,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
-    listAssets, addAsset, updateAsset, deleteAsset, sellAsset, listAssetSales,
+    listAssets, addAsset, addAssetPurchase, updateAsset, deleteAsset, sellAsset, listAssetSales,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
     listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange, sumOmsetByBook, sumPiutangByBook,
