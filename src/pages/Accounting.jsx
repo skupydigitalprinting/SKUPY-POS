@@ -348,6 +348,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   // Total pengeluaran (non-sewa) dari getOutflowTransactions — SAMA dengan total
   // di modal Rincian, supaya kartu Uang Keluar = jumlah baris rincian.
   const [pengOut, setPengOut] = useState(null)   // periode aktif
+  const [profitOut, setProfitOut] = useState(null) // hanya beban laba-rugi; tanpa DP/pokok/kasbon
   const [pengOutAll, setPengOutAll] = useState(null) // semua waktu
   // Default filter saat Accounting pertama dibuka = HARI INI (from = to = hari ini).
   // (Tab default tetap 'ringkasan'.) Jika user pilih preset lain, state mengikuti.
@@ -435,15 +436,22 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [expCats])
   const [supErr, setSupErr] = useState({}); const [sdErr, setSdErr] = useState({}); const [loanErr, setLoanErr] = useState({})
-  const [bpay, setBpay] = useState(null) // {loanId, amount, pokok, bunga, method}
+  const [bpay, setBpay] = useState(null) // {loanId, pokok, bunga, adminFee, method}
   const [expandLoan, setExpandLoan] = useState(null) // loan id yang di-expand
   const [expRows, setExpRows] = useState([]); const [expLoading, setExpLoading] = useState(false)
   const [hbEdit, setHbEdit] = useState(null) // pembayaran bank yang diedit inline
   // ── ASET ──
-  const blankAsset = { name: '', categoryName: '', purchaseDate: acc.todayISO(), purchasePrice: '', residualValue: '', method: 'percentage', rate: '', life: '', notes: '', photoUrl: '' }
+  const blankAsset = {
+    name: '', categoryName: '', purchaseDate: acc.todayISO(), availableForUseDate: acc.todayISO(), purchasePrice: '',
+    paymentScheme: 'installment', supplierName: '', financierName: '', contractNo: '', downPayment: '',
+    totalInterest: '', installmentCount: '', installmentAmount: '', firstDueDate: '', endDate: '', paymentMethod: 'transfer', existingLoanId: '',
+    residualValue: '', method: 'percentage', rate: '', life: '', notes: '', photoUrl: '',
+  }
   const [assets, setAssets] = useState([]); const [assetCats, setAssetCats] = useState([])
   const [assetForm, setAssetForm] = useState(blankAsset); const [assetErr, setAssetErr] = useState({})
   const [editAsset, setEditAsset] = useState(null); const [detailAsset, setDetailAsset] = useState(null)
+  const [assetPay, setAssetPay] = useState(null)
+  const [assetPayRows, setAssetPayRows] = useState([])
   const [sellState, setSellState] = useState(null); const [photoBusy, setPhotoBusy] = useState(false)
   // Muat riwayat penjualan aset saat modal detail aset dibuka (setelah state siap → tanpa TDZ).
   useEffect(() => {
@@ -514,6 +522,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       // jumlah baris di modal Rincian. Fallback ke pengeluaran_total bila gagal.
       const out = await acc.getOutflowTransactions(from, to)
       setPengOut(out.ok ? out.total : Math.round(res.data.pengeluaran_total || 0))
+      if (out.ok) setProfitOut(out.rows.filter(r => !['bank_payment', 'asset_dp', 'kasbon'].includes(r.kind)).reduce((s, r) => s + Math.round(r.amount || 0), 0))
+      else setProfitOut(Math.max(0, Math.round(res.data.pengeluaran_total || 0) - Math.round(res.data.cicilan_bank || 0) + Math.round(res.data.beban_bunga || 0)))
       // BUG-5 self-check: kartu Uang Keluar (Σ baris rincian) vs RPC pengeluaran_total.
       // Jika menyimpang > Rp 1 → warning agar divergensi tidak diam-diam.
       if (out.ok && Math.abs((out.total || 0) - Math.round(res.data.pengeluaran_total || 0)) > 1)
@@ -601,7 +611,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
       else if (tab === 'hbank') await loadBankLoans()
       else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
-      else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
+      else if (tab === 'aset') { await loadAssets(); await loadAssetCats(); await loadBankLoans() }
       else if (tab === 'sewa') await loadRents()
       else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats(); await loadCap() }
       else if (tab === 'pengaturan') await loadExpCats()
@@ -637,7 +647,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   // Basis pengeluaran (non-sewa) = total daftar rincian bila tersedia, jika belum
   // termuat pakai pengeluaran_total RPC. Dipakai agar kartu = jumlah baris rincian.
   const ukBasis = useMemo(() => pengOut != null ? pengOut : (d ? Math.round(d.pengeluaran_total || 0) : 0), [pengOut, d])
-  const laba = useMemo(() => d ? netProfit(d.penjualan, ukBasis, rentAgg.bebanPeriod) : 0, [d, rentAgg, ukBasis])
+  const labaExpenseBasis = useMemo(() => profitOut != null ? profitOut : ukBasis, [profitOut, ukBasis])
+  const laba = useMemo(() => d ? netProfit(d.penjualan, labaExpenseBasis, rentAgg.bebanPeriod) : 0, [d, rentAgg, labaExpenseBasis])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
 
   // === HELPER TUNGGAL ARUS SALDO BERSIH ===
@@ -964,6 +975,17 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     if (!f.categoryName.trim()) e.categoryName = 'Kategori wajib dipilih'
     if (!f.purchaseDate) e.purchaseDate = 'Tanggal beli wajib diisi'
     if (!(parseCurrency(f.purchasePrice) > 0)) e.purchasePrice = 'Harga beli harus lebih dari 0'
+    if (!f.availableForUseDate) e.availableForUseDate = 'Tanggal siap digunakan wajib diisi'
+    if (!f.supplierName.trim()) e.supplierName = 'Supplier wajib diisi'
+    if (f.paymentScheme === 'installment') {
+      const price = parseCurrency(f.purchasePrice); const dp = parseCurrency(f.downPayment)
+      if (dp < 0 || dp >= price) e.downPayment = 'DP harus lebih kecil dari harga perolehan'
+      if (!f.financierName.trim()) e.financierName = 'Perusahaan pembiayaan wajib diisi'
+      if (!(Number(f.installmentCount) > 0)) e.installmentCount = 'Tenor wajib diisi'
+      if (!(parseCurrency(f.installmentAmount) > 0)) e.installmentAmount = 'Angsuran wajib diisi'
+      if (!f.firstDueDate) e.firstDueDate = 'Jatuh tempo pertama wajib diisi'
+    }
+    if (f.paymentScheme === 'existing' && !f.existingLoanId) e.existingLoanId = 'Pilih cicilan yang akan dihubungkan'
     if (!f.method) e.method = 'Metode penyusutan wajib dipilih'
     if (f.method === 'percentage') { const r = Number(f.rate) || 0; if (!(r > 0 && r <= 100)) e.rate = 'Persentase harus 0–100%' }
     if (f.method === 'straight') { if (!(Number(f.life) > 0)) e.life = 'Umur manfaat harus lebih dari 0' }
@@ -972,10 +994,36 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const catIdByName = (name) => assetCats.find(c => c.name.toLowerCase() === (name || '').toLowerCase())?.id || null
   const submitAsset = async () => {
     const e = validateAsset(assetForm); setAssetErr(e); if (Object.keys(e).length) return
+    const price = parseCurrency(assetForm.purchasePrice)
+    let downPayment = assetForm.paymentScheme === 'cash' ? price : parseCurrency(assetForm.downPayment)
+    let financedPrincipal = Math.max(0, price - downPayment)
+    if (assetForm.paymentScheme === 'existing') {
+      const existing = bankLoans.find(x => x.id === assetForm.existingLoanId)
+      financedPrincipal = Math.round(existing?.pokok_awal || existing?.plafon_pinjaman || 0)
+      downPayment = price - financedPrincipal
+      if (downPayment < 0) return toast.error('Harga aset lebih kecil dari pokok awal cicilan yang dipilih')
+    }
     setSaving(true)
-    const r = await acc.addAsset({ ...assetForm, categoryId: catIdByName(assetForm.categoryName), purchasePrice: parseCurrency(assetForm.purchasePrice), residualValue: parseCurrency(assetForm.residualValue), createdBy: currentUser?.id })
+    const r = await acc.addAssetPurchase({
+      ...assetForm, categoryId: catIdByName(assetForm.categoryName), purchasePrice: price,
+      residualValue: parseCurrency(assetForm.residualValue), downPayment,
+      financedPrincipal, totalInterest: parseCurrency(assetForm.totalInterest), installmentAmount: parseCurrency(assetForm.installmentAmount),
+      createdBy: currentUser?.id,
+    })
     setSaving(false)
-    if (r.ok) { toast.success('Aset ditambahkan'); setAssetForm(blankAsset); setAssetErr({}); loadAssets() } else toast.error(r.error)
+    if (r.ok) { toast.success('Aset, DP, dan pembiayaan berhasil dicatat'); setAssetForm(blankAsset); setAssetErr({}); loadAssets(); loadBankLoans(); loadDashboard() } else toast.error(r.error)
+  }
+
+  const openAssetPayment = async (asset, loan) => {
+    const history = await acc.listBankPayments(loan.id)
+    const rows = history.ok ? history.data : []
+    const paidCount = rows.filter(x => x.payment_type !== 'down_payment').length
+    const count = Math.max(1, Number(loan.installment_count) || 1)
+    const suggestedInterest = Math.round((loan.total_interest || 0) / count)
+    const installment = Math.round(loan.cicilan_bulanan || 0)
+    const suggestedPrincipal = Math.min(Math.round(loan.sisa_pokok || 0), Math.max(0, installment - suggestedInterest))
+    setAssetPayRows(rows)
+    setAssetPay({ asset, loan, paymentNumber: paidCount + 1, date: acc.todayISO(), pokok: String(suggestedPrincipal), bunga: String(suggestedInterest), adminFee: '', method: 'transfer', note: '' })
   }
   const saveEditAsset = async () => {
     const e = validateAsset(editAsset); if (Object.keys(e).length) return toast.error(Object.values(e)[0])
@@ -1599,7 +1647,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
               <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Uang Keluar {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Beban {fmt(labaExpenseBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (pokok cicilan, DP aset, dan kasbon bukan beban laba-rugi)</span></div>
             </div>
           )}
 
@@ -1967,8 +2015,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             </div>
             <Button variant="primary" className="w-full" onClick={submitLoan} disabled={saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Tambah Pinjaman</Button>
           </FormCard>
-          <div className="space-y-2">{bankLoans.length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada hutang bank</p>}
-            {bankLoans.map(x => {
+          <div className="space-y-2">{bankLoans.filter(x => !x.is_asset_financing).length === 0 && <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>Belum ada hutang bank</p>}
+            {bankLoans.filter(x => !x.is_asset_financing).map(x => {
               const overdue7 = x.tanggal_jatuh_tempo && (new Date(x.tanggal_jatuh_tempo) - new Date()) / 86400000 <= 7 && (new Date(x.tanggal_jatuh_tempo) - new Date()) >= 0 && x.status === 'aktif'
               return (
                 <div key={x.id} className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${overdue7 ? 'rgba(245,158,11,0.5)' : 'var(--border)'}` }}>
@@ -1986,7 +2034,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                       if (bpay?.loanId === x.id) { setBpay(null); return }
                       const h = await acc.listBankPayments(x.id)
                       const n = (h.ok ? h.data.length : 0) + 1
-                      setBpay({ loanId: x.id, amount: String(Math.round(x.cicilan_bulanan || 0)), method: 'transfer', note: '', paymentNumber: n, sisa: Math.round(x.sisa_pokok || 0) })
+                      setBpay({ loanId: x.id, pokok: String(Math.min(Math.round(x.cicilan_bulanan || 0), Math.round(x.sisa_pokok || 0))), bunga: '', adminFee: '', date: acc.todayISO(), method: 'transfer', note: '', paymentNumber: n, sisa: Math.round(x.sisa_pokok || 0) })
                     }} className="px-2.5 h-8 rounded-lg text-xs font-semibold" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}>Bayar</button>}
                     <button onClick={() => toggleLoan(x.id)} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }} title="Riwayat Pembayaran"><BookOpen size={11} /></button>
                     <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteBankLoan(x.id); if (r.ok) { toast.success('Dihapus'); loadBankLoans(); loadDashboard() } else toast.error(r.error) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button>
@@ -2014,13 +2062,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                                   <tr key={p.id} style={{ background: 'rgba(139,92,246,0.05)', borderBottom: '1px solid var(--border)' }}>
                                     <td className="px-2 py-2 font-bold" style={{ color: 'var(--accent-light)' }}>#{numMap[p.id]}</td>
                                     <td className="px-2 py-2"><input type="date" value={hbEdit.date} onChange={e => setHbEdit(s => ({ ...s, date: e.target.value }))} className="px-2 py-1 rounded text-xs" style={{ ...inp, colorScheme: 'dark' }} /></td>
-                                    <td className="px-2 py-2"><MoneyInput value={hbEdit.amount} onChange={v => setHbEdit(s => ({ ...s, amount: v }))} placeholder="Nominal" className="px-2 py-1 rounded text-xs w-28" style={inp} /></td>
+                                    <td className="px-2 py-2"><div className="flex gap-1 min-w-[270px]"><MoneyInput value={hbEdit.pokok} onChange={v => setHbEdit(s => ({ ...s, pokok: v }))} placeholder="Pokok" className="px-2 py-1 rounded text-xs w-24" style={inp} /><MoneyInput value={hbEdit.bunga} onChange={v => setHbEdit(s => ({ ...s, bunga: v }))} placeholder="Bunga" className="px-2 py-1 rounded text-xs w-20" style={inp} /><MoneyInput value={hbEdit.adminFee} onChange={v => setHbEdit(s => ({ ...s, adminFee: v }))} placeholder="Biaya" className="px-2 py-1 rounded text-xs w-20" style={inp} /></div></td>
                                     <td className="px-2 py-2"><select value={hbEdit.method} onChange={e => setHbEdit(s => ({ ...s, method: e.target.value }))} className="px-2 py-1 rounded text-xs" style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></td>
                                     <td className="px-2 py-2" colSpan={2}><input value={hbEdit.note} onChange={e => setHbEdit(s => ({ ...s, note: e.target.value }))} placeholder="Catatan" className="px-2 py-1 rounded text-xs w-full" style={inp} /></td>
                                     <td className="px-2 py-2 text-right whitespace-nowrap">
                                       <button onClick={async () => {
-                                        const amt = parseCurrency(hbEdit.amount); if (!(amt > 0)) return toast.error('Nominal > 0')
-                                        const r = await acc.editBankPayment(p.id, { amount: amt, method: hbEdit.method, note: hbEdit.note, paidAt: hbEdit.date })
+                                        const pokok = parseCurrency(hbEdit.pokok); const bunga = parseCurrency(hbEdit.bunga); const adminFee = parseCurrency(hbEdit.adminFee); const amt = pokok + bunga + adminFee
+                                        if (!(amt > 0)) return toast.error('Nominal > 0')
+                                        const r = await acc.editBankPayment(p.id, { amount: amt, pokok, bunga, adminFee, method: hbEdit.method, note: hbEdit.note, paidAt: hbEdit.date })
                                         if (r.ok) { toast.success('Diperbarui'); setHbEdit(null); reloadExp() } else toast.error(r.error)
                                       }} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a' }}><Check size={11} /></button>
                                       <button onClick={() => setHbEdit(null)} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}><X size={11} /></button>
@@ -2035,7 +2084,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                                     <td className="px-2 py-2 truncate" style={{ color: 'var(--text-muted)', maxWidth: 140 }}>{p.note}</td>
                                     <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{adminName(p.cashier_id)}</td>
                                     <td className="px-2 py-2 text-right whitespace-nowrap">
-                                      <button onClick={() => setHbEdit({ id: p.id, amount: String(Math.round(p.amount || 0)), method: p.method || 'transfer', note: p.note || '', date: (p.paid_at || '').slice(0, 10) })} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={11} /></button>
+                                      <button onClick={() => setHbEdit({ id: p.id, pokok: String(Math.round(p.pokok == null ? p.amount || 0 : p.pokok)), bunga: String(Math.round(p.bunga || 0)), adminFee: String(Math.round(p.admin_fee || 0)), method: p.method || 'transfer', note: p.note || '', date: (p.paid_at || '').slice(0, 10) })} className="w-6 h-6 rounded inline-flex items-center justify-center mr-1" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)' }}><Pencil size={11} /></button>
                                       <button onClick={async () => { if (!(await confirm())) return; const r = await acc.deleteBankPayment(p.id); if (r.ok) { toast.success('Dihapus · sisa pokok diperbarui'); reloadExp() } else toast.error(r.error) }} className="w-6 h-6 rounded inline-flex items-center justify-center" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={11} /></button>
                                     </td>
                                   </tr>
@@ -2048,17 +2097,24 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                     </div>
                   )}
                   {bpay?.loanId === x.id && (() => {
-                    const amt = parseCurrency(bpay.amount)
-                    const over = amt > (bpay.sisa || 0)
+                    const principal = parseCurrency(bpay.pokok)
+                    const interest = parseCurrency(bpay.bunga)
+                    const fee = parseCurrency(bpay.adminFee)
+                    const amt = principal + interest + fee
+                    const over = principal > (bpay.sisa || 0)
                     return (
                     <div className="mt-3 pt-3 space-y-3" style={{ borderTop: '1px dashed var(--border)' }}>
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold px-2.5 py-1 rounded-lg" style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Pembayaran ke-{bpay.paymentNumber}</span>
                         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Sisa pokok: <b style={{ color: '#ef4444' }}>{fmt(bpay.sisa)}</b></span>
                       </div>
-                      <Field icon={Wallet} label="Total Bayar" required error={over ? 'Nominal pembayaran melebihi sisa pokok' : ''} hint="Otomatis dari cicilan/bln, bisa diubah">
-                        <MoneyInput value={bpay.amount} onChange={v => setBpay(p => ({ ...p, amount: v }))} placeholder="0" className={FIELD_CLS} style={inpErr(over)} />
-                      </Field>
+                      <Field icon={Receipt} label="Tanggal Pembayaran" required><input type="date" value={bpay.date} onChange={e => setBpay(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <Field icon={CreditCard} label="Pokok" required error={over ? 'Melebihi sisa pokok' : ''}><MoneyInput value={bpay.pokok} onChange={v => setBpay(p => ({ ...p, pokok: v }))} className={FIELD_CLS} style={inpErr(over)} /></Field>
+                        <Field icon={Receipt} label="Bunga"><MoneyInput value={bpay.bunga} onChange={v => setBpay(p => ({ ...p, bunga: v }))} className={FIELD_CLS} style={inp} /></Field>
+                        <Field icon={Receipt} label="Biaya Admin"><MoneyInput value={bpay.adminFee} onChange={v => setBpay(p => ({ ...p, adminFee: v }))} className={FIELD_CLS} style={inp} /></Field>
+                      </div>
+                      <div className="rounded-lg px-3 py-2 flex justify-between text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}><span>Total Kas Keluar</span><b style={{ color: '#10d98a' }}>{fmt(amt)}</b></div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <Field icon={Wallet} label="Metode Pembayaran" required>
                           <select value={bpay.method} onChange={e => setBpay(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -2068,13 +2124,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                         </Field>
                       </div>
                       <Button variant="success" className="w-full" onClick={async () => {
-                        const amount = parseCurrency(bpay.amount)
-                        if (!(amount > 0)) return toast.error('Nominal harus > 0')
-                        if (amount > (bpay.sisa || 0)) return toast.error('Nominal pembayaran melebihi sisa pokok')
-                        const r = await acc.payBankLoan(x.id, { amount, method: bpay.method, note: bpay.note, cashierId: currentUser?.id, paymentNumber: bpay.paymentNumber })
+                        if (!(principal > 0)) return toast.error('Pokok cicilan harus > 0')
+                        if (principal > (bpay.sisa || 0)) return toast.error('Pokok pembayaran melebihi sisa hutang')
+                        const r = await acc.payBankLoan(x.id, { amount: amt, pokok: principal, bunga: interest, adminFee: fee, date: bpay.date, method: bpay.method, note: bpay.note, cashierId: currentUser?.id, paymentNumber: bpay.paymentNumber })
                         if (r.ok) { toast.success('Pembayaran ke-' + bpay.paymentNumber + ' tersimpan'); setBpay(null); loadBankLoans(); loadDashboard() } else toast.error(r.error)
                       }}><Check size={14} /> Konfirmasi Pembayaran</Button>
-                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Seluruh nominal mengurangi sisa pokok. Sisa pokok 0 → status LUNAS.</p>
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Hanya bagian pokok yang mengurangi hutang. Bunga dan biaya masuk beban pembiayaan.</p>
                     </div>
                     )
                   })()}
@@ -2269,6 +2324,55 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <MoneyInput value={assetForm.purchasePrice} onChange={v => setAssetForm(p => ({ ...p, purchasePrice: v }))} className={FIELD_CLS} style={inpErr(assetErr.purchasePrice)} />
               </Field>
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field icon={Receipt} label="Siap Digunakan" required error={assetErr.availableForUseDate}>
+                <input type="date" value={assetForm.availableForUseDate} onChange={e => setAssetForm(p => ({ ...p, availableForUseDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(assetErr.availableForUseDate), colorScheme: 'dark' }} />
+              </Field>
+              <Field icon={Truck} label="Supplier" required error={assetErr.supplierName}>
+                <input value={assetForm.supplierName} onChange={e => setAssetForm(p => ({ ...p, supplierName: e.target.value }))} placeholder="Nama penjual mesin" className={FIELD_CLS} style={inpErr(assetErr.supplierName)} />
+              </Field>
+            </div>
+
+            <Field icon={CreditCard} label="Skema Pembayaran" required>
+              <select value={assetForm.paymentScheme} onChange={e => setAssetForm(p => ({ ...p, paymentScheme: e.target.value }))} className={FIELD_CLS} style={inp}>
+                <option value="installment">DP + Cicilan / Leasing Baru</option>
+                <option value="cash">Tunai</option>
+                <option value="existing">Hubungkan Cicilan yang Sudah Ada</option>
+              </select>
+            </Field>
+
+            {assetForm.paymentScheme === 'existing' && (
+              <Field icon={Building2} label="Data Cicilan Lama" required error={assetErr.existingLoanId}>
+                <select value={assetForm.existingLoanId} onChange={e => setAssetForm(p => ({ ...p, existingLoanId: e.target.value }))} className={FIELD_CLS} style={inpErr(assetErr.existingLoanId)}>
+                  <option value="">Pilih hutang/leasing</option>
+                  {bankLoans.filter(x => !x.asset_id && !x.is_asset_financing).map(x => <option key={x.id} value={x.id}>{x.nama_bank} · {x.jenis_pinjaman} · sisa {fmt(x.sisa_pokok)}</option>)}
+                </select>
+              </Field>
+            )}
+
+            {assetForm.paymentScheme === 'installment' && (() => {
+              const price = parseCurrency(assetForm.purchasePrice); const dp = parseCurrency(assetForm.downPayment)
+              const principal = Math.max(0, price - dp); const totalInterest = parseCurrency(assetForm.totalInterest)
+              return <div className="space-y-3 rounded-xl p-3" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field icon={Building2} label="Perusahaan Pembiayaan" required error={assetErr.financierName}><input value={assetForm.financierName} onChange={e => setAssetForm(p => ({ ...p, financierName: e.target.value }))} placeholder="Leasing / bank / vendor" className={FIELD_CLS} style={inpErr(assetErr.financierName)} /></Field>
+                  <Field icon={Receipt} label="Nomor Kontrak"><input value={assetForm.contractNo} onChange={e => setAssetForm(p => ({ ...p, contractNo: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+                  <Field icon={Wallet} label="DP" error={assetErr.downPayment}><MoneyInput value={assetForm.downPayment} onChange={v => setAssetForm(p => ({ ...p, downPayment: v }))} className={FIELD_CLS} style={inpErr(assetErr.downPayment)} /></Field>
+                  <Field icon={CreditCard} label="Pokok Dibiayai"><input value={formatCurrency(principal)} readOnly className={FIELD_CLS} style={{ ...inp, opacity: 0.8 }} /></Field>
+                  <Field icon={Receipt} label="Total Bunga Kontrak"><MoneyInput value={assetForm.totalInterest} onChange={v => setAssetForm(p => ({ ...p, totalInterest: v }))} className={FIELD_CLS} style={inp} /></Field>
+                  <Field icon={Receipt} label="Tenor (bulan)" required error={assetErr.installmentCount}><input inputMode="numeric" value={assetForm.installmentCount} onChange={e => setAssetForm(p => ({ ...p, installmentCount: e.target.value.replace(/\D/g, '') }))} placeholder="12" className={FIELD_CLS} style={inpErr(assetErr.installmentCount)} /></Field>
+                  <Field icon={Wallet} label="Angsuran / Bulan" required error={assetErr.installmentAmount}><MoneyInput value={assetForm.installmentAmount} onChange={v => setAssetForm(p => ({ ...p, installmentAmount: v }))} className={FIELD_CLS} style={inpErr(assetErr.installmentAmount)} /></Field>
+                  <Field icon={Receipt} label="Jatuh Tempo Pertama" required error={assetErr.firstDueDate}><input type="date" value={assetForm.firstDueDate} onChange={e => setAssetForm(p => ({ ...p, firstDueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inpErr(assetErr.firstDueDate), colorScheme: 'dark' }} /></Field>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  {[['Harga Aset', price], ['DP', dp], ['Total Kontrak', principal + totalInterest + dp]].map(([label, value]) => <div key={label} className="rounded-lg p-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{label}</div><div className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>{fmt(value)}</div></div>)}
+                </div>
+              </div>
+            })()}
+
+            {assetForm.paymentScheme !== 'existing' && <Field icon={Wallet} label={assetForm.paymentScheme === 'cash' ? 'Metode Pembayaran' : 'Metode Pembayaran DP'} required>
+              <select value={assetForm.paymentMethod} onChange={e => setAssetForm(p => ({ ...p, paymentMethod: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+            </Field>}
             <Field icon={BookOpen} label="Metode Penyusutan" required error={assetErr.method}>
               <select value={assetForm.method} onChange={e => setAssetForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(assetErr.method)}>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
             </Field>
@@ -2318,6 +2422,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 {list.map(a => {
                   const bv = calculateAssetBookValue(a)
                   const st = ASSET_STATUS[a.status] || ASSET_STATUS.active
+                  const financing = bankLoans.find(x => x.id === a.financing_loan_id || x.asset_id === a.id)
                   return (
                     <div key={a.id} className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                       <div className="flex items-start gap-3 min-w-0">
@@ -2328,6 +2433,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                             <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${st.color}22`, color: st.color }}>{st.label}</span>
                           </div>
                           <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{a.category_name || '—'} · beli {dt(a.purchase_date)} · umur {bv.age} th</div>
+                          {financing && <div className="text-[10px] mt-0.5 truncate" style={{ color: financing.sisa_pokok > 0 ? '#f59e0b' : '#10d98a' }}>{a.supplier_name || financing.supplier_name || financing.nama_bank} · {financing.sisa_pokok > 0 ? `sisa cicilan ${fmt(financing.sisa_pokok)}` : 'pembiayaan lunas'}</div>}
                           <div className="grid grid-cols-3 gap-1.5 mt-2">
                             <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Harga Beli</div><div className="text-[11px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(a.purchase_price)}</div></div>
                             <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Peny./Thn</div><div className="text-[11px] font-bold truncate" style={{ color: '#f59e0b' }}>{fmt(bv.perYear)}</div></div>
@@ -2337,6 +2443,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                       </div>
                       <div className="flex gap-1.5 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--border)' }}>
                         <button onClick={() => setDetailAsset(a)} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', fontFamily: 'Syne' }}>Detail</button>
+                        {financing?.sisa_pokok > 0 && <button onClick={() => openAssetPayment(a, financing)} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center justify-center gap-1" style={{ background: 'rgba(16,217,138,0.12)', color: '#10d98a', fontFamily: 'Syne' }}><CreditCard size={11} /> Cicilan</button>}
                         {a.status !== 'sold' && <button onClick={() => setEditAsset({ id: a.id, name: a.name, categoryName: a.category_name || '', purchaseDate: a.purchase_date, purchasePrice: String(Math.round(a.purchase_price || 0)), residualValue: String(Math.round(a.residual_value || 0)), method: a.depreciation_method || 'percentage', rate: String(a.depreciation_rate || ''), life: String(a.useful_life_years || ''), notes: a.notes || '', photoUrl: a.photo_url || '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>}
                         {a.status !== 'sold' && <button onClick={() => setSellState({ id: a.id, name: a.name, book: bv.bookValue, soldDate: acc.todayISO(), soldPrice: '', method: 'transfer', note: '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', fontFamily: 'Syne' }}>Jual</button>}
                         <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus aset ini?' }))) return; const r = await acc.deleteAsset(a.id); if (r.ok) { toast.success('Aset dihapus'); loadAssets() } else toast.error(r.error) }} className="px-3 py-1.5 rounded-lg" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
@@ -2744,6 +2851,45 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
               )}
             </div>
           )
+        })()}
+      </Modal>
+
+      {/* ── BAYAR CICILAN ASET ── */}
+      <Modal open={!!assetPay} onClose={() => setAssetPay(null)} title={assetPay ? `Bayar Cicilan — ${assetPay.asset.name}` : ''} size="md">
+        {assetPay && (() => {
+          const principal = parseCurrency(assetPay.pokok)
+          const interest = parseCurrency(assetPay.bunga)
+          const fee = parseCurrency(assetPay.adminFee)
+          const total = principal + interest + fee
+          const over = principal > Math.round(assetPay.loan.sisa_pokok || 0)
+          return <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg p-2.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Pokok</div><div className="text-sm font-bold" style={{ color: '#ef4444' }}>{fmt(assetPay.loan.sisa_pokok)}</div></div>
+              <div className="rounded-lg p-2.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Pembayaran Ke-</div><div className="text-sm font-bold" style={{ color: 'var(--accent-light)' }}>#{assetPay.paymentNumber}</div></div>
+            </div>
+            <Field icon={Receipt} label="Tanggal Pembayaran" required><input type="date" value={assetPay.date} onChange={e => setAssetPay(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <Field icon={CreditCard} label="Pokok" required error={over ? 'Melebihi sisa pokok' : ''}><MoneyInput value={assetPay.pokok} onChange={v => setAssetPay(p => ({ ...p, pokok: v }))} className={FIELD_CLS} style={inpErr(over)} /></Field>
+              <Field icon={Receipt} label="Bunga"><MoneyInput value={assetPay.bunga} onChange={v => setAssetPay(p => ({ ...p, bunga: v }))} className={FIELD_CLS} style={inp} /></Field>
+              <Field icon={Receipt} label="Biaya Admin"><MoneyInput value={assetPay.adminFee} onChange={v => setAssetPay(p => ({ ...p, adminFee: v }))} className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            <div className="rounded-lg px-3 py-2.5 flex justify-between items-center" style={{ background: 'rgba(16,217,138,0.08)', border: '1px solid rgba(16,217,138,0.25)' }}><span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Total Kas Keluar</span><span className="text-sm font-bold" style={{ color: '#10d98a' }}>{fmt(total)}</span></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Field icon={Wallet} label="Metode" required><select value={assetPay.method} onChange={e => setAssetPay(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+              <Field icon={Pencil} label="Catatan"><input value={assetPay.note} onChange={e => setAssetPay(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            </div>
+            <Button variant="success" className="w-full" disabled={saving || over || total <= 0} onClick={async () => {
+              if (principal <= 0) return toast.error('Pokok cicilan harus lebih dari 0')
+              setSaving(true)
+              const r = await acc.payBankLoan(assetPay.loan.id, { amount: total, pokok: principal, bunga: interest, adminFee: fee, date: assetPay.date, method: assetPay.method, note: assetPay.note, cashierId: currentUser?.id, paymentNumber: assetPay.paymentNumber })
+              setSaving(false)
+              if (r.ok) { toast.success('Cicilan aset tersimpan'); setAssetPay(null); loadAssets(); loadBankLoans(); loadDashboard() } else toast.error(r.error)
+            }}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Simpan Pembayaran</Button>
+            {assetPayRows.length > 0 && <div>
+              <div className="text-[10px] uppercase font-bold mb-1" style={{ color: 'var(--text-muted)' }}>Riwayat Terakhir</div>
+              {assetPayRows.slice(0, 4).map(p => <div key={p.id} className="flex justify-between py-1.5 text-[11px]" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}><span>{p.payment_type === 'down_payment' ? 'DP' : `Cicilan #${p.payment_number || '—'}`} · {dt(p.paid_at)}</span><span>{fmt(p.amount)}</span></div>)}
+            </div>}
+          </div>
         })()}
       </Modal>
 
