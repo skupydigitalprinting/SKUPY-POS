@@ -354,12 +354,16 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [from, setFrom] = useState(acc.todayISO())
   const [to, setTo] = useState(acc.todayISO())
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [reloadToken, setReloadToken] = useState(0)
   const [setupNeeded, setSetupNeeded] = useState(false)
   const [setupError, setSetupError] = useState('')
   const [d, setD] = useState(null)
+  const [cashflowSummary, setCashflowSummary] = useState(null)
+  const [employeeAdvanceBalance, setEmployeeAdvanceBalance] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const adminName = (id) => admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || '—'
+  const adminName = (id) => id ? (admins.find(a => a.id === id)?.name || admins.find(a => a.id === id)?.username || 'Admin tidak ditemukan') : 'Tanpa Admin / Data Manual'
 
   // data per tab
   const [entries, setEntries] = useState([]); const [entPage, setEntPage] = useState(0); const [entCount, setEntCount] = useState(0)
@@ -440,10 +444,12 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [expRows, setExpRows] = useState([]); const [expLoading, setExpLoading] = useState(false)
   const [hbEdit, setHbEdit] = useState(null) // pembayaran bank yang diedit inline
   // ── ASET ──
-  const blankAsset = { name: '', categoryName: '', purchaseDate: acc.todayISO(), purchasePrice: '', residualValue: '', method: 'percentage', rate: '', life: '', notes: '', photoUrl: '' }
+  const blankAsset = { name: '', categoryName: '', supplierName: '', purchaseDate: acc.todayISO(), purchasePrice: '', initialPayment: '', paymentMethod: 'transfer', paymentDueDate: '', residualValue: '', method: 'percentage', rate: '', life: '', notes: '', photoUrl: '' }
   const [assets, setAssets] = useState([]); const [assetCats, setAssetCats] = useState([])
   const [assetForm, setAssetForm] = useState(blankAsset); const [assetErr, setAssetErr] = useState({})
   const [editAsset, setEditAsset] = useState(null); const [detailAsset, setDetailAsset] = useState(null)
+  const [assetPay, setAssetPay] = useState(null)
+  const [assetPaymentTotals, setAssetPaymentTotals] = useState({ total: 0, cash: 0, bank: 0 })
   const [sellState, setSellState] = useState(null); const [photoBusy, setPhotoBusy] = useState(false)
   // Muat riwayat penjualan aset saat modal detail aset dibuka (setelah state siap → tanpa TDZ).
   useEffect(() => {
@@ -507,6 +513,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     if (!res.ok) { if (/function|relation|does not exist|schema cache|acc_dashboard/i.test(res.error || '')) { setSetupNeeded(true); setSetupError(res.error || '') } else toast.error(res.error || 'Gagal') }
     else {
       setD(res.data); setSetupNeeded(false); setSetupError('')
+      const advanceBalance = await acc.getEmployeeAdvanceBalance()
+      if (advanceBalance.ok) setEmployeeAdvanceBalance(advanceBalance.value)
+      else console.warn('[Accounting] Gagal memuat saldo kasbon terpusat:', advanceBalance.error)
+      const assetPaid = await acc.getAssetPaymentTotals(to)
+      if (assetPaid.ok) setAssetPaymentTotals(assetPaid)
       const chk = await acc.getPiutangAktif()
       if (chk.ok && Math.abs((chk.value || 0) - Math.round(res.data.piutang_aktif || 0)) > 1)
         console.warn('[Accounting] Piutang tidak sinkron — RPC:', res.data.piutang_aktif, 'debts:', chk.value)
@@ -544,8 +555,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const loadSuppliers = async () => { const r = await acc.listSuppliers(supSearch); if (r.ok) setSuppliers(r.data) }
   const loadSupDebts = async () => { const r = await acc.listSupplierDebts(); if (r.ok) setSupDebts(r.data) }
   const loadBankLoans = async () => { const r = await acc.listBankLoans(); if (r.ok) setBankLoans(r.data) }
-  const loadAssets = async () => { const r = await acc.listAssets(); if (r.ok) setAssets(r.data) }
-  const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data) }
+  const loadAssets = async () => { const r = await acc.listAssets(); if (r.ok) setAssets(r.data); return r }
+  const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data); return r }
   const loadRents = async () => { const r = await acc.listRents(); if (r.ok) setRents(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
   const [kasbonNeedsMigration, setKasbonNeedsMigration] = useState(false)
@@ -591,25 +602,37 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   }
 
   useEffect(() => {
+    let active = true
     setLoading(true)
+    setLoadError('')
     const run = async () => {
-      if (tab === 'ringkasan') { await loadDashboard(); await loadRecap(); await loadAssets(); await loadRents() }
-      else if (tab === 'jurnal') await loadEntries(0)
-      else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
-      else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
-      else if (tab === 'supplier') await loadSuppliers()
-      else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
-      else if (tab === 'hbank') await loadBankLoans()
-      else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
-      else if (tab === 'aset') { await loadAssets(); await loadAssetCats() }
-      else if (tab === 'sewa') await loadRents()
-      else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats(); await loadCap() }
-      else if (tab === 'pengaturan') await loadExpCats()
-      setLoading(false)
+      try {
+        if (tab === 'ringkasan') { await loadDashboard(); await loadRecap(); await loadAssets(); await loadRents() }
+        else if (tab === 'jurnal') await loadEntries(0)
+        else if (tab === 'pengeluaran') { await loadExpenses(); await loadExpCats() }
+        else if (tab === 'pembelian') { await loadPurchases(); await loadSuppliers() }
+        else if (tab === 'supplier') await loadSuppliers()
+        else if (tab === 'hsupplier') { await loadSupDebts(); await loadSuppliers() }
+        else if (tab === 'hbank') await loadBankLoans()
+        else if (tab === 'kasbon') { await loadAdvances(); await loadEmployees() }
+        else if (tab === 'aset') {
+          const [assetResult, categoryResult] = await Promise.all([loadAssets(), loadAssetCats()])
+          const failed = [assetResult, categoryResult].find(result => result && !result.ok)
+          if (failed) throw new Error(failed.error || 'Gagal memuat data aset')
+        }
+        else if (tab === 'sewa') await loadRents()
+        else if (tab === 'migrasi') { await loadDashboard(); await loadMig(); await loadExpCats(); await loadCap() }
+        else if (tab === 'pengaturan') await loadExpCats()
+      } catch (error) {
+        if (active) setLoadError(error?.message || 'Gagal memuat data Accounting')
+      } finally {
+        if (active) setLoading(false)
+      }
     }
     run()
+    return () => { active = false }
     /* eslint-disable-next-line */
-  }, [tab, from, to])
+  }, [tab, from, to, reloadToken])
 
   // BUG-1 FIX: dashboard kini REALTIME. Subscription Supabase (debounce 800ms)
   // memicu loadDashboard saat tabel sumber berubah. Polling 45 detik DIPERTAHANKAN
@@ -638,19 +661,16 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   // termuat pakai pengeluaran_total RPC. Dipakai agar kartu = jumlah baris rincian.
   const ukBasis = useMemo(() => pengOut != null ? pengOut : (d ? Math.round(d.pengeluaran_total || 0) : 0), [pengOut, d])
   const laba = useMemo(() => d ? netProfit(d.penjualan, ukBasis, rentAgg.bebanPeriod) : 0, [d, rentAgg, ukBasis])
-  const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0)) : 0, [d])
+  const hutangAset = useMemo(() => assets.reduce((sum, asset) => sum + (asset.payment_tracking ? Math.round(asset.purchase_outstanding || 0) : 0), 0), [assets])
+  const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0) + hutangAset) : 0, [d, hutangAset])
 
-  // === HELPER TUNGGAL ARUS SALDO BERSIH ===
-  // netCashFlow = totalCashIn − totalCashOut.
-  //   totalCashIn  = kartu "Uang Masuk" = uang_masuk_total − pembayaran kasbon (kasbon_masuk).
-  //     Pembayaran/pelunasan kasbon karyawan BUKAN pemasukan operasional → DIKELUARKAN
-  //     dari Uang Masuk. (Saldo Kas & Bank tetap menghitungnya via bd di RPC — uang
-  //     fisik memang masuk. Omset & Piutang Karyawan tidak diubah.)
-  //   totalCashOut = kartu "Uang Keluar" = ukBasis + rentAgg.bebanPeriod
-  // Dipakai oleh: kartu Arus Saldo Bersih, Detail Arus Saldo (Audit), popup Detail Arus Kas.
-  const totalCashIn = useMemo(() => d ? Math.round((d.uang_masuk_total || 0) - (d.kasbon_masuk || 0)) : 0, [d])
-  const totalCashOut = useMemo(() => Math.round(ukBasis + rentAgg.bebanPeriod), [ukBasis, rentAgg])
+  // Arus kas memakai mutasi kas aktual. Amortisasi sewa tetap menjadi beban
+  // laba-rugi, tetapi tidak dianggap kas keluar pada bulan amortisasinya.
+  const totalCashIn = useMemo(() => cashflowSummary?.totalMasuk ?? (d ? Math.round(d.uang_masuk_total || 0) : 0), [cashflowSummary, d])
+  const totalCashOut = useMemo(() => cashflowSummary?.totalKeluar ?? Math.round(ukBasis), [cashflowSummary, ukBasis])
   const netCashFlow = useMemo(() => totalCashIn - totalCashOut, [totalCashIn, totalCashOut])
+  const periodText = `${dt(from)} – ${dt(to)}`
+  const currentPositionText = `Posisi saat ini · ${dt(todayYMD())}`
 
   // LOG AUDIT SEMENTARA — rincian sumber Uang Masuk / Uang Keluar / Kasbon + selisih.
   // Tujuan: pastikan kasbon baru masuk Uang Keluar & pembayaran kasbon masuk Uang Masuk.
@@ -660,6 +680,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     ;(async () => {
       const cf = await acc.getCashflowDetail(from, to)
       if (!alive) return
+      if (cf.ok) setCashflowSummary(cf)
       const r = Math.round
       // Rincian Uang Masuk per sumber (dari getCashflowDetail.masuk[]).
       const masukBySource = {}
@@ -964,6 +985,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     if (!f.categoryName.trim()) e.categoryName = 'Kategori wajib dipilih'
     if (!f.purchaseDate) e.purchaseDate = 'Tanggal beli wajib diisi'
     if (!(parseCurrency(f.purchasePrice) > 0)) e.purchasePrice = 'Harga beli harus lebih dari 0'
+    if (parseCurrency(f.initialPayment) > parseCurrency(f.purchasePrice)) e.initialPayment = 'Pembayaran awal tidak boleh melebihi harga beli'
     if (!f.method) e.method = 'Metode penyusutan wajib dipilih'
     if (f.method === 'percentage') { const r = Number(f.rate) || 0; if (!(r > 0 && r <= 100)) e.rate = 'Persentase harus 0–100%' }
     if (f.method === 'straight') { if (!(Number(f.life) > 0)) e.life = 'Umur manfaat harus lebih dari 0' }
@@ -973,9 +995,16 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const submitAsset = async () => {
     const e = validateAsset(assetForm); setAssetErr(e); if (Object.keys(e).length) return
     setSaving(true)
-    const r = await acc.addAsset({ ...assetForm, categoryId: catIdByName(assetForm.categoryName), purchasePrice: parseCurrency(assetForm.purchasePrice), residualValue: parseCurrency(assetForm.residualValue), createdBy: currentUser?.id })
+    const r = await acc.addAsset({ ...assetForm, categoryId: catIdByName(assetForm.categoryName), purchasePrice: parseCurrency(assetForm.purchasePrice), initialPayment: parseCurrency(assetForm.initialPayment), residualValue: parseCurrency(assetForm.residualValue), createdBy: currentUser?.id })
     setSaving(false)
-    if (r.ok) { toast.success('Aset ditambahkan'); setAssetForm(blankAsset); setAssetErr({}); loadAssets() } else toast.error(r.error)
+    if (r.ok) { toast.success('Aset dan pembayaran awal berhasil dicatat'); setAssetForm(blankAsset); setAssetErr({}); loadAssets(); loadDashboard() } else toast.error(r.error)
+  }
+  const refreshAssetRecords = async (focusId) => {
+    const r = await acc.listAssets()
+    if (!r.ok) return r
+    setAssets(r.data)
+    if (focusId) setDetailAsset(r.data.find(a => a.id === focusId) || null)
+    return r
   }
   const saveEditAsset = async () => {
     const e = validateAsset(editAsset); if (Object.keys(e).length) return toast.error(Object.values(e)[0])
@@ -992,7 +1021,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       const mod = await import('xlsx'); const XLSX = mod.default || mod
       const rows = assets.filter(a => a.status !== 'sold' && a.status !== 'deleted').map(a => {
         const bv = calculateAssetBookValue(a)
-        return { 'Nama Aset': a.name, Kategori: a.category_name || '', 'Tanggal Beli': a.purchase_date, 'Harga Beli': Math.round(a.purchase_price || 0), 'Metode': a.depreciation_method, 'Penyusutan/Tahun': bv.perYear, 'Total Penyusutan': bv.totalDep, 'Nilai Buku': bv.bookValue, Status: a.status, Catatan: a.notes || '' }
+        return { 'Nama Aset': a.name, Kategori: a.category_name || '', Pemasok: a.supplier_name || '', 'Tanggal Beli': a.purchase_date, 'Harga Perolehan': Math.round(a.purchase_price || 0), 'Sudah Dibayar': a.payment_tracking ? Math.round(a.purchase_paid || 0) : '', 'Sisa Utang Aset': a.payment_tracking ? Math.round(a.purchase_outstanding || 0) : '', 'Jatuh Tempo': a.payment_due_date || '', 'Metode Penyusutan': a.depreciation_method, 'Penyusutan/Tahun': bv.perYear, 'Total Penyusutan': bv.totalDep, 'Nilai Buku': bv.bookValue, Status: a.status, Catatan: a.notes || '' }
       })
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Aset')
       XLSX.writeFile(wb, `aset-${acc.todayISO()}.xlsx`)
@@ -1005,11 +1034,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   //              dipakai di Card, Neraca, dan Export agar tidak divergen.
   // Persediaan SENGAJA tidak ikut dijumlahkan (disembunyikan dari UI/Neraca);
   // data persediaan tetap ada di DB. PENTING: dideklarasikan SETELAH asetTetap & rentAgg (TDZ).
+  const piutangKaryawan = employeeAdvanceBalance ?? Math.round(d?.piutang_karyawan || 0)
+  const saldoKas = useMemo(() => Math.round((d?.saldo_kas || 0) - assetPaymentTotals.cash), [d, assetPaymentTotals])
+  const saldoRekening = useMemo(() => Math.round((d?.saldo_rekening || 0) - assetPaymentTotals.bank), [d, assetPaymentTotals])
   const asetTotal = useMemo(() => d
-    ? Math.round((d.saldo_kas || 0) + (d.saldo_rekening || 0) + (d.piutang_aktif || 0) + (d.piutang_karyawan || 0) + asetTetap + rentAgg.dibayarDimuka)
-    : 0, [d, asetTetap, rentAgg])
+    ? Math.round(saldoKas + saldoRekening + (d.piutang_aktif || 0) + piutangKaryawan + asetTetap + rentAgg.dibayarDimuka)
+    : 0, [d, saldoKas, saldoRekening, piutangKaryawan, asetTetap, rentAgg])
   const kekayaanBersih = useMemo(() => asetTotal - totalHutang, [asetTotal, totalHutang])
-  const saldoKasBank = useMemo(() => Math.round((d?.saldo_kas || 0) + (d?.saldo_rekening || 0)), [d])
+  const saldoKasBank = useMemo(() => saldoKas + saldoRekening, [saldoKas, saldoRekening])
   // Neraca: Aset HARUS = Kewajiban + Ekuitas. selisih>0 → tidak seimbang.
   const neracaBalance = useMemo(() => {
     const kewajibanEkuitas = totalHutang + kekayaanBersih
@@ -1040,6 +1072,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           ['Uang Keluar — Cash', d.keluar_cash || 0, true],
           ['Uang Keluar — Transfer', d.keluar_transfer || 0, true],
           ['Uang Keluar — QRIS', d.keluar_qris || 0, true],
+          ['Pembayaran Aset — Cash', assetPaymentTotals.cash, true],
+          ['Pembayaran Aset — Bank/QRIS', assetPaymentTotals.bank, true],
         ],
         total: ['Saldo Akhir (Kas & Bank)', saldoKasBank],
         note: 'Saldo bisa minus bila uang keluar lebih besar dari saldo awal + uang masuk. Sewa dibayar dimuka mengurangi saldo penuh saat dibayar; amortisasi bulanan TIDAK mengurangi saldo lagi.',
@@ -1050,7 +1084,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         rows: [
           ['Saldo (Kas & Bank)', saldoKasBank],
           ['Piutang Usaha', d.piutang_aktif || 0],
-          ['Piutang Karyawan', d.piutang_karyawan || 0],
+          ['Piutang Karyawan', piutangKaryawan],
           ['Aset Tetap (Nilai Buku)', asetTetap],
           ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka],
         ],
@@ -1064,6 +1098,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           ['Total Aset', asetTotal],
           ['Hutang Supplier', d.hutang_supplier || 0, true],
           ['Hutang Bank', d.hutang_bank || 0, true],
+          ['Utang Pembelian Aset', hutangAset, true],
         ],
         total: ['Kekayaan Bersih', kekayaanBersih],
         note: 'Kekayaan Bersih = Total Aset − Total Hutang (bukan dari laba/omset).',
@@ -1157,7 +1192,18 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         </div>
       </div>
 
-      {loading && <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>}
+      {loading && (
+        <div className="flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
+          <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
+          <span className="text-xs">Memuat {TAB_META[tab]?.label || 'Accounting'}...</span>
+        </div>
+      )}
+      {!loading && loadError && (
+        <div className="rounded-xl p-4 text-center" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
+          <p className="text-xs" style={{ color: '#fca5a5' }}>{loadError}</p>
+          <button onClick={() => setReloadToken(value => value + 1)} className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}><RefreshCw size={11} /> Coba lagi</button>
+        </div>
+      )}
 
       {/* ── MIGRASI DATA AWAL (pemasukan/pengeluaran lama) ── */}
       {tab === 'migrasi' && !loading && (() => {
@@ -1599,7 +1645,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
               <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Penjualan {fmt(d.penjualan)} − Uang Keluar {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Periode {periodText} · Penjualan {fmt(d.penjualan)} − Beban {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
             </div>
           )}
 
@@ -1619,37 +1665,38 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
 
           {/* BARIS 1 — Aktivitas Kas: Penjualan(biru) · Arus Kas(tosca) · Sudah Bayar(hijau muda) · Uang Masuk(hijau) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub="Total invoice valid" onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
-            <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub="Semua waktu" onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Arus Saldo Bersih" value={fmt(netCashFlow)} color="#14b8a6" sub="Uang Masuk − Uang Keluar · Klik → audit" onClick={() => setAuditOpen(true)} />
-            <Card icon={TrendingUp} label="Sudah Bayar (Piutang)" value={fmt(d.sudah_bayar)} color="#4ade80" sub="DP + cicilan diterima" onClick={() => openDetail('sudah_bayar', 'Sudah Bayar (Piutang)', '#4ade80')} />
-            <Card icon={TrendingUp} label="Uang Masuk" value={fmt(totalCashIn)} color="#10d98a" sub="Yang benar-benar diterima" onClick={() => setArusKasOpen(true)} />
+            <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub={`Periode ${periodText}`} onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
+            <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub={`Semua waktu s/d ${dt(todayYMD())}`} onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
+            <Card icon={Scale} label="Perubahan Kas Bersih" value={fmt(netCashFlow)} color="#14b8a6" sub={`Periode ${periodText} · Operasi/Investasi/Pendanaan`} onClick={() => setArusKasOpen(true)} />
+            <Card icon={TrendingUp} label="Piutang Sudah Dibayar" value={fmt(d.sudah_bayar)} color="#4ade80" sub="Akumulasi pada seluruh data piutang aktif" onClick={() => openDetail('sudah_bayar', 'Piutang Sudah Dibayar', '#4ade80')} />
+            <Card icon={TrendingUp} label="Kas Masuk" value={fmt(totalCashIn)} color="#10d98a" sub={`Kas aktual · periode ${periodText}`} onClick={() => setArusKasOpen(true)} />
           </div>
 
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingDown} label="Uang Keluar" value={fmt(totalCashOut)} color="#ef4444" sub="Termasuk beban sewa (amortisasi)" onClick={() => openDetail('uang_keluar', 'Uang Keluar', '#ef4444')} />
-            <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub="Semua waktu" onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Wallet} label="Total Gaji Karyawan" value={fmt(d.gaji || 0)} color="#d97706" sub="Total gaji yang telah dibayarkan" onClick={() => setSalaryDetailOpen(true)} />
-            <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" sub="Posisi saat ini (bukan per periode)" onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
-            <Card icon={HandCoins} label="Piutang Karyawan" value={fmt(d.piutang_karyawan)} color="#22c55e" sub="Total sisa kasbon aktif" onClick={() => setTab('kasbon')} />
-            <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual sewa berjalan" onClick={() => setTab('sewa')} />
+            <Card icon={TrendingDown} label="Kas Keluar" value={fmt(totalCashOut)} color="#ef4444" sub={`Kas aktual · periode ${periodText}`} onClick={() => setArusKasOpen(true)} />
+            <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub={`Semua waktu s/d ${dt(todayYMD())}`} onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
+            <Card icon={Wallet} label="Total Gaji Karyawan" value={fmt(d.gaji || 0)} color="#d97706" sub={`Dibayar pada periode ${periodText}`} onClick={() => setSalaryDetailOpen(true)} />
+            <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" sub={currentPositionText} onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />
+            <Card icon={HandCoins} label="Piutang Karyawan" value={fmt(piutangKaryawan)} color="#22c55e" sub={currentPositionText} onClick={() => setTab('kasbon')} />
+            <Card icon={Home} label="Beban Sewa Bulan Ini" value={fmt(rentAgg.bebanBulanIni)} color="#d97706" sub="Akrual bulan kalender berjalan" onClick={() => setTab('sewa')} />
           </div>
 
           {/* BARIS 3 — Aset & Kewajiban: Piutang Usaha(emas) · Hutang Bank(merah tua, terakhir) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" sub="Posisi saat ini (bukan per periode)" onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
-            <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${d.pinjaman_aktif || 0} pinjaman aktif · cicilan ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
+            <Card icon={TrendingUp} label="Piutang Usaha" value={fmt(d.piutang_aktif)} color="#f59e0b" sub={currentPositionText} onClick={() => openDetail('piutang', 'Piutang Usaha (Aktif)', '#f59e0b')} />
+            <Card icon={Building2} label="Hutang Bank" value={fmt(d.hutang_bank)} color="#b91c1c" sub={`${currentPositionText} · cicilan periode ${fmt(d.cicilan_bank)}`} onClick={() => openDetail('hutang_bank', 'Hutang Bank', '#b91c1c')} />
+            <Card icon={Landmark} label="Utang Pembelian Aset" value={fmt(hutangAset)} color="#c2410c" sub={currentPositionText} onClick={() => setTab('aset')} />
           </div>
 
           {/* BARIS 4 — Saldo, Aset & Kekayaan Bersih — OWNER ONLY (sensitif) */}
           {isOwner && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={Wallet} label="Saldo (Kas & Bank)" value={fmt(saldoKasBank)} color={saldoKasBank >= 0 ? '#14b8a6' : '#ef4444'} sub="Klik → rincian saldo" onClick={() => setSaldoDetailOpen(true)} />
-            <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub="Klik → kelola aset" onClick={() => setTab('aset')} />
-            <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub="Sisa sewa belum jadi beban" onClick={() => setTab('sewa')} />
-            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub="Saldo+Piutang+Karyawan+Aset+Sewa" onClick={() => openInfo('totalaset')} />
-            <Card icon={Scale} label="Kekayaan Bersih" value={fmt(kekayaanBersih)} color="#10d98a" sub="Total Aset − Total Hutang" onClick={() => openInfo('kekayaan')} />
+            <Card icon={Wallet} label="Saldo (Kas & Bank)" value={fmt(saldoKasBank)} color={saldoKasBank >= 0 ? '#14b8a6' : '#ef4444'} sub={currentPositionText} onClick={() => setSaldoDetailOpen(true)} />
+            <Card icon={Landmark} label="Aset Tetap (Nilai Buku)" value={fmt(asetTetap)} color="#a78bfa" sub={currentPositionText} onClick={() => setTab('aset')} />
+            <Card icon={Home} label="Sewa Dibayar Dimuka" value={fmt(rentAgg.dibayarDimuka)} color="#a78bfa" sub={currentPositionText} onClick={() => setTab('sewa')} />
+            <Card icon={Wallet} label="Total Aset" value={fmt(asetTotal)} color="#3b82f6" sub={currentPositionText} onClick={() => openInfo('totalaset')} />
+            <Card icon={Scale} label="Kekayaan Bersih" value={fmt(kekayaanBersih)} color="#10d98a" sub={currentPositionText} onClick={() => openInfo('kekayaan')} />
           </div>
           )}
 
@@ -1660,13 +1707,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Aset</div>
-                {[['Saldo (Kas & Bank)', saldoKasBank], ['Piutang Usaha', d.piutang_aktif], ['Piutang Karyawan', d.piutang_karyawan], ['Aset Tetap', asetTetap], ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
+                {[['Saldo (Kas & Bank)', saldoKasBank], ['Piutang Usaha', d.piutang_aktif], ['Piutang Karyawan', piutangKaryawan], ['Aset Tetap', asetTetap], ['Sewa Dibayar Dimuka', rentAgg.dibayarDimuka]].map(([k, v]) => <div key={k} className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>{k}</span><span style={{ color: 'var(--text-primary)' }}>{fmt(v)}</span></div>)}
                 <div className="flex justify-between py-1 mt-1 font-bold" style={{ borderTop: '1px solid var(--border)', color: 'var(--text-primary)' }}><span>Total Aset</span><span>{fmt(asetTotal)}</span></div>
               </div>
               <div>
                 <div className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>Kewajiban & Ekuitas</div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Supplier</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_supplier)}</span></div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Hutang Bank</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.hutang_bank)}</span></div>
+                <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Utang Pembelian Aset</span><span style={{ color: 'var(--text-primary)' }}>{fmt(hutangAset)}</span></div>
                 <div className="flex justify-between py-0.5 font-semibold" style={{ color: 'var(--text-muted)' }}><span>Total Hutang</span><span style={{ color: '#ef4444' }}>{fmt(totalHutang)}</span></div>
                 <div className="flex justify-between py-0.5 mt-1" style={{ color: 'var(--text-muted)' }}><span>Modal Disetor</span><span style={{ color: 'var(--text-primary)' }}>{fmt(d.modal_disetor || 0)}</span></div>
                 <div className="flex justify-between py-0.5" style={{ color: 'var(--text-muted)' }}><span>Laba Ditahan</span><span style={{ color: 'var(--text-primary)' }}>{fmt(kekayaanBersih - (d.modal_disetor || 0))}</span></div>
@@ -1692,7 +1740,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
 
           {recap.length > 0 && (
             <div className="rounded-2xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-              <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Rekap per Admin</div>
+              <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>Rekap Omzet per Admin</div>
+              <div className="text-[10px] mb-2" style={{ color: 'var(--text-muted)' }}>Periode {periodText} · omzet termasuk data manual/migrasi; penerimaan termasuk pembayaran piutang</div>
               <table className="w-full text-xs"><thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Admin', 'Penjualan', 'Penerimaan'].map((h, i) => <th key={i} className={`px-2 py-1.5 ${i === 0 ? 'text-left' : 'text-right'}`} style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10 }}>{h}</th>)}</tr></thead>
                 <tbody>{recap.map((r, i) => <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}><td className="px-2 py-2" style={{ color: 'var(--text-primary)' }}>{adminName(r.cashier_id)}</td><td className="px-2 py-2 text-right">{fmt(r.revenue)}</td><td className="px-2 py-2 text-right" style={{ color: '#10d98a' }}>{fmt(r.cash_in)}</td></tr>)}</tbody>
               </table>
@@ -2252,7 +2301,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       })()}
 
       {/* ── ASET TETAP + PENYUSUTAN ── */}
-      {tab === 'aset' && !loading && (
+      {tab === 'aset' && !loading && !loadError && (
         <div className="space-y-4">
           <FormCard icon={Landmark} title="Tambah Aset Baru" subtitle="Catat aset usaha; nilai buku & penyusutan dihitung otomatis tiap tahun.">
             <Field icon={Landmark} label="Nama Aset" required error={assetErr.name}>
@@ -2260,6 +2309,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             </Field>
             <Field icon={BookOpen} label="Kategori Aset" required error={assetErr.categoryName}>
               <Combo value={assetForm.categoryName} onChange={v => setAssetForm(p => ({ ...p, categoryName: v }))} options={assetCatOptions} error={assetErr.categoryName} placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)} allowCreate onCreate={async (name) => { const r = await acc.addAssetCategory(name); if (r.ok) { toast.success('Kategori aset ditambah'); loadAssetCats() } }} />
+            </Field>
+            <Field icon={Truck} label="Pemasok / Penjual">
+              <input value={assetForm.supplierName} onChange={e => setAssetForm(p => ({ ...p, supplierName: e.target.value }))} placeholder="Nama pemasok mesin" className={FIELD_CLS} style={inp} />
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field icon={Receipt} label="Tanggal Beli" required error={assetErr.purchaseDate}>
@@ -2269,6 +2321,24 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <MoneyInput value={assetForm.purchasePrice} onChange={v => setAssetForm(p => ({ ...p, purchasePrice: v }))} className={FIELD_CLS} style={inpErr(assetErr.purchasePrice)} />
               </Field>
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field icon={Wallet} label="Pembayaran Awal / DP" error={assetErr.initialPayment}>
+                <MoneyInput value={assetForm.initialPayment} onChange={v => setAssetForm(p => ({ ...p, initialPayment: v }))} className={FIELD_CLS} style={inpErr(assetErr.initialPayment)} />
+              </Field>
+              <Field icon={CreditCard} label="Metode Pembayaran">
+                <select value={assetForm.paymentMethod} onChange={e => setAssetForm(p => ({ ...p, paymentMethod: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
+              </Field>
+              <Field icon={Receipt} label="Jatuh Tempo Sisa Utang">
+                <input type="date" value={assetForm.paymentDueDate} onChange={e => setAssetForm(p => ({ ...p, paymentDueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} />
+              </Field>
+            </div>
+            {parseCurrency(assetForm.purchasePrice) > 0 && (
+              <div className="rounded-xl px-3 py-2.5 grid grid-cols-3 gap-2 text-xs" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <div><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Harga Aset</div><b>{fmt(parseCurrency(assetForm.purchasePrice))}</b></div>
+                <div><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Dibayar</div><b style={{ color: '#10d98a' }}>{fmt(Math.min(parseCurrency(assetForm.initialPayment), parseCurrency(assetForm.purchasePrice)))}</b></div>
+                <div><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Utang Aset</div><b style={{ color: '#f97316' }}>{fmt(Math.max(0, parseCurrency(assetForm.purchasePrice) - parseCurrency(assetForm.initialPayment)))}</b></div>
+              </div>
+            )}
             <Field icon={BookOpen} label="Metode Penyusutan" required error={assetErr.method}>
               <select value={assetForm.method} onChange={e => setAssetForm(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inpErr(assetErr.method)}>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
             </Field>
@@ -2327,9 +2397,11 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                             <span className="text-xs font-bold truncate" style={{ color: 'var(--text-primary)' }}>{a.name}</span>
                             <span className="text-[9px] px-1.5 py-0.5 rounded font-bold" style={{ background: `${st.color}22`, color: st.color }}>{st.label}</span>
                           </div>
-                          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{a.category_name || '—'} · beli {dt(a.purchase_date)} · umur {bv.age} th</div>
-                          <div className="grid grid-cols-3 gap-1.5 mt-2">
+                          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{a.category_name || '—'} · {a.supplier_name || 'Pemasok tidak dicatat'} · beli {dt(a.purchase_date)}</div>
+                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 mt-2">
                             <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Harga Beli</div><div className="text-[11px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(a.purchase_price)}</div></div>
+                            <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Dibayar</div><div className="text-[11px] font-bold truncate" style={{ color: '#10d98a' }}>{a.payment_tracking ? fmt(a.purchase_paid) : 'Data lama'}</div></div>
+                            <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Utang</div><div className="text-[11px] font-bold truncate" style={{ color: (a.purchase_outstanding || 0) > 0 ? '#f97316' : '#10d98a' }}>{a.payment_tracking ? fmt(a.purchase_outstanding) : '—'}</div></div>
                             <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Peny./Thn</div><div className="text-[11px] font-bold truncate" style={{ color: '#f59e0b' }}>{fmt(bv.perYear)}</div></div>
                             <div className="min-w-0"><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Nilai Buku</div><div className="text-[11px] font-bold truncate" style={{ color: '#10d98a' }}>{fmt(bv.bookValue)}</div></div>
                           </div>
@@ -2337,7 +2409,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                       </div>
                       <div className="flex gap-1.5 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--border)' }}>
                         <button onClick={() => setDetailAsset(a)} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(56,189,248,0.1)', color: '#38BDF8', fontFamily: 'Syne' }}>Detail</button>
-                        {a.status !== 'sold' && <button onClick={() => setEditAsset({ id: a.id, name: a.name, categoryName: a.category_name || '', purchaseDate: a.purchase_date, purchasePrice: String(Math.round(a.purchase_price || 0)), residualValue: String(Math.round(a.residual_value || 0)), method: a.depreciation_method || 'percentage', rate: String(a.depreciation_rate || ''), life: String(a.useful_life_years || ''), notes: a.notes || '', photoUrl: a.photo_url || '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>}
+                        {a.payment_tracking && a.purchase_outstanding > 0 && <button onClick={() => setAssetPay({ asset: a, amount: '', method: 'transfer', date: acc.todayISO(), note: '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(249,115,22,0.1)', color: '#fb923c', fontFamily: 'Syne' }}>Bayar</button>}
+                        {a.status !== 'sold' && <button onClick={() => setEditAsset({ id: a.id, name: a.name, categoryName: a.category_name || '', supplierName: a.supplier_name || '', paymentDueDate: a.payment_due_date || '', purchaseDate: a.purchase_date, purchasePrice: String(Math.round(a.purchase_price || 0)), residualValue: String(Math.round(a.residual_value || 0)), method: a.depreciation_method || 'percentage', rate: String(a.depreciation_rate || ''), life: String(a.useful_life_years || ''), notes: a.notes || '', photoUrl: a.photo_url || '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', fontFamily: 'Syne' }}>Edit</button>}
                         {a.status !== 'sold' && <button onClick={() => setSellState({ id: a.id, name: a.name, book: bv.bookValue, soldDate: acc.todayISO(), soldPrice: '', method: 'transfer', note: '' })} className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: 'rgba(16,217,138,0.1)', color: '#10d98a', fontFamily: 'Syne' }}>Jual</button>}
                         <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus aset ini?' }))) return; const r = await acc.deleteAsset(a.id); if (r.ok) { toast.success('Aset dihapus'); loadAssets() } else toast.error(r.error) }} className="px-3 py-1.5 rounded-lg" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
                       </div>
@@ -2704,7 +2777,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           const bv = calculateAssetBookValue(detailAsset)
           const sched = assetDepreciationSchedule(detailAsset)
           const methodLabel = DEP_METHODS.find(m => m.id === detailAsset.depreciation_method)?.label || detailAsset.depreciation_method
-          const rows = [['Kategori', detailAsset.category_name || '—'], ['Tanggal Beli', dt(detailAsset.purchase_date)], ['Harga Beli', fmt(detailAsset.purchase_price)], ['Nilai Residu', fmt(detailAsset.residual_value)], ['Metode', methodLabel], ['Persentase', detailAsset.depreciation_method === 'percentage' ? `${detailAsset.depreciation_rate || 0}%` : '—'], ['Umur Manfaat', detailAsset.useful_life_years ? `${detailAsset.useful_life_years} th` : '—'], ['Umur Aset', `${bv.age} th`], ['Penyusutan/Tahun', fmt(bv.perYear)], ['Total Penyusutan', fmt(bv.totalDep)], ['Nilai Buku', fmt(bv.bookValue)]]
+          const rows = [['Kategori', detailAsset.category_name || '—'], ['Pemasok', detailAsset.supplier_name || '—'], ['Tanggal Beli', dt(detailAsset.purchase_date)], ['Harga Perolehan', fmt(detailAsset.purchase_price)], ['Sudah Dibayar', detailAsset.payment_tracking ? fmt(detailAsset.purchase_paid) : 'Data lama'], ['Sisa Utang Aset', detailAsset.payment_tracking ? fmt(detailAsset.purchase_outstanding) : '—'], ['Jatuh Tempo', dt(detailAsset.payment_due_date)], ['Nilai Residu', fmt(detailAsset.residual_value)], ['Metode', methodLabel], ['Persentase', detailAsset.depreciation_method === 'percentage' ? `${detailAsset.depreciation_rate || 0}%` : '—'], ['Umur Manfaat', detailAsset.useful_life_years ? `${detailAsset.useful_life_years} th` : '—'], ['Umur Aset', `${bv.age} th`], ['Penyusutan/Tahun', fmt(bv.perYear)], ['Total Penyusutan', fmt(bv.totalDep)], ['Nilai Buku', fmt(bv.bookValue)]]
           return (
             <div className="space-y-3">
               {detailAsset.photo_url && <img src={detailAsset.photo_url} alt="" style={{ width: '100%', maxHeight: 180, borderRadius: 12, objectFit: 'cover' }} />}
@@ -2712,6 +2785,20 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 {rows.map(([k, v]) => <div key={k} className="rounded-lg p-2" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>{k}</div><div className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>{v}</div></div>)}
               </div>
               {detailAsset.notes && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Catatan: {detailAsset.notes}</p>}
+              {detailAsset.payment_tracking && (
+                <div className="rounded-xl p-3" style={{ background: 'rgba(249,115,22,0.05)', border: '1px solid rgba(249,115,22,0.25)' }}>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="text-[10px] font-bold uppercase" style={{ color: '#fb923c', fontFamily: 'Syne' }}>Riwayat Pembayaran Aset</div>
+                    {detailAsset.purchase_outstanding > 0 && <Button variant="secondary" size="sm" onClick={() => setAssetPay({ asset: detailAsset, amount: '', method: 'transfer', date: acc.todayISO(), note: '' })}><Plus size={12} /> Bayar Cicilan</Button>}
+                  </div>
+                  {(detailAsset.payments || []).length === 0 ? <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran. Seluruh harga perolehan masih menjadi utang aset.</div> : (detailAsset.payments || []).map(p => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
+                      <div className="min-w-0"><div style={{ color: 'var(--text-primary)' }}>{dt(p.payment_date)} · <b className="uppercase">{p.payment_method}</b></div><div className="truncate" style={{ color: 'var(--text-muted)' }}>{p.payment_type === 'dp' ? 'DP pembelian' : p.payment_type === 'full' ? 'Pelunasan' : 'Cicilan'}{p.note ? ` · ${p.note}` : ''}</div></div>
+                      <div className="flex items-center gap-2"><b style={{ color: '#10d98a' }}>{fmt(p.amount)}</b><button title="Hapus pembayaran" onClick={async () => { if (!(await confirm({ title: 'Hapus pembayaran aset ini?', message: 'Sisa utang aset dan saldo kas akan dihitung ulang.' }))) return; const r = await acc.deleteAssetPurchasePayment(p.id); if (r.ok) { toast.success('Pembayaran dihapus'); await refreshAssetRecords(detailAsset.id); loadDashboard() } else toast.error(r.error) }} className="w-7 h-7 rounded-lg inline-flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.08)', color: '#ef4444' }}><Trash2 size={11} /></button></div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {assetSaleHist.length > 0 && (
                 <div className="rounded-xl p-3" style={{ background: 'rgba(16,217,138,0.06)', border: '1px solid rgba(16,217,138,0.25)' }}>
                   <div className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: '#10d98a', fontFamily: 'Syne' }}>Riwayat Penjualan Aset</div>
@@ -2747,16 +2834,45 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         })()}
       </Modal>
 
+      {/* ── BAYAR DP / CICILAN ASET ── */}
+      <Modal open={!!assetPay} onClose={() => setAssetPay(null)} title={assetPay ? `Bayar Aset — ${assetPay.asset.name}` : ''} subtitle="Pembayaran masuk arus kas investasi, bukan beban laba-rugi." size="sm">
+        {assetPay && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg p-2.5" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Harga Perolehan</div><b>{fmt(assetPay.asset.purchase_price)}</b></div>
+              <div className="rounded-lg p-2.5" style={{ background: 'var(--bg-elevated)' }}><div className="text-[9px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa Utang</div><b style={{ color: '#f97316' }}>{fmt(assetPay.asset.purchase_outstanding)}</b></div>
+            </div>
+            <Field icon={Wallet} label="Nominal Pembayaran" required><MoneyInput value={assetPay.amount} onChange={v => setAssetPay(p => ({ ...p, amount: v }))} className={FIELD_CLS} style={inp} /></Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field icon={CreditCard} label="Metode"><select value={assetPay.method} onChange={e => setAssetPay(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
+              <Field icon={Receipt} label="Tanggal"><input type="date" value={assetPay.date} onChange={e => setAssetPay(p => ({ ...p, date: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
+            </div>
+            <Field icon={Pencil} label="Catatan"><input value={assetPay.note} onChange={e => setAssetPay(p => ({ ...p, note: e.target.value }))} placeholder="Opsional" className={FIELD_CLS} style={inp} /></Field>
+            <Button variant="primary" className="w-full" disabled={saving} onClick={async () => {
+              const amount = parseCurrency(assetPay.amount)
+              if (!(amount > 0)) return toast.error('Nominal pembayaran harus lebih dari 0')
+              if (amount > assetPay.asset.purchase_outstanding) return toast.error('Pembayaran melebihi sisa utang aset')
+              setSaving(true)
+              const r = await acc.payAssetPurchase(assetPay.asset, { amount, method: assetPay.method, date: assetPay.date, note: assetPay.note }, currentUser?.id)
+              setSaving(false)
+              if (r.ok) { const assetId = assetPay.asset.id; toast.success(amount === assetPay.asset.purchase_outstanding ? 'Aset berhasil dilunasi' : 'Cicilan aset berhasil dicatat'); setAssetPay(null); await refreshAssetRecords(detailAsset?.id === assetId ? assetId : null); loadDashboard() } else toast.error(r.error)
+            }}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Simpan Pembayaran</Button>
+          </div>
+        )}
+      </Modal>
+
       {/* ── EDIT ASET ── */}
       <Modal open={!!editAsset} onClose={() => setEditAsset(null)} title="Edit Aset" size="sm">
         {editAsset && (
           <div className="space-y-3">
             <Field icon={Landmark} label="Nama Aset" required><input value={editAsset.name} onChange={e => setEditAsset(p => ({ ...p, name: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
             <Field icon={BookOpen} label="Kategori" required><Combo value={editAsset.categoryName} onChange={v => setEditAsset(p => ({ ...p, categoryName: v }))} options={assetCatOptions} placeholder="Pilih / cari kategori" baseStyle={inp} errStyle={inpErr(true)} allowCreate onCreate={async (name) => { const r = await acc.addAssetCategory(name); if (r.ok) loadAssetCats() }} /></Field>
+            <Field icon={Truck} label="Pemasok"><input value={editAsset.supplierName} onChange={e => setEditAsset(p => ({ ...p, supplierName: e.target.value }))} className={FIELD_CLS} style={inp} /></Field>
             <div className="grid grid-cols-2 gap-2">
               <Field icon={Receipt} label="Tanggal Beli" required><input type="date" value={editAsset.purchaseDate} onChange={e => setEditAsset(p => ({ ...p, purchaseDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
               <Field icon={Wallet} label="Harga Beli" required><MoneyInput value={editAsset.purchasePrice} onChange={v => setEditAsset(p => ({ ...p, purchasePrice: v }))} className={FIELD_CLS} style={inp} /></Field>
             </div>
+            <Field icon={Receipt} label="Jatuh Tempo Sisa Utang"><input type="date" value={editAsset.paymentDueDate} onChange={e => setEditAsset(p => ({ ...p, paymentDueDate: e.target.value }))} className={FIELD_CLS} style={{ ...inp, colorScheme: 'dark' }} /></Field>
             <Field icon={BookOpen} label="Metode Penyusutan" required><select value={editAsset.method} onChange={e => setEditAsset(p => ({ ...p, method: e.target.value }))} className={FIELD_CLS} style={inp}>{DEP_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-2">
               <Field icon={TrendingDown} label="Nilai Residu"><MoneyInput value={editAsset.residualValue} onChange={v => setEditAsset(p => ({ ...p, residualValue: v }))} className={FIELD_CLS} style={inp} /></Field>

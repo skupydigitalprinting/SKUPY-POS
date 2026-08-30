@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────
 import { useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { assetPaymentState, normalizeAssetPayment } from '../utils/assetAccounting'
 
 const PAGE_SIZE = 50
 // Tanggal LOKAL (YYYY-MM-DD) — JANGAN pakai toISOString() karena mengonversi ke
@@ -396,11 +397,32 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
 
-  // Rekap per admin (RPC agregat)
+  // Rekap per admin. RPC hanya berisi transaksi POS; omzet Credibook dan
+  // migrasi lama ditambahkan di sini agar total rekap = omzet dashboard.
   const getRecapAdmin = useCallback(async (from, to) => {
     const { data, error } = await supabase.rpc('acc_recap_admin', { p_from: from, p_to: to })
     if (error) return { ok: false, error: error.message, data: [] }
-    return { ok: true, data: data || [] }
+    const grouped = new Map()
+    const add = (cashierId, revenue, cashIn, source = 'pos') => {
+      const key = cashierId || '__unassigned__'
+      const row = grouped.get(key) || { cashier_id: cashierId || null, revenue: 0, cash_in: 0, sources: [] }
+      row.revenue += Math.round(Number(revenue) || 0)
+      row.cash_in += Math.round(Number(cashIn) || 0)
+      if (!row.sources.includes(source)) row.sources.push(source)
+      grouped.set(key, row)
+    }
+    ;(data || []).forEach(r => add(r.cashier_id, r.revenue, r.cash_in, 'pos'))
+
+    const [manual, migration, debtPayments] = await Promise.all([
+      supabase.from('credibook_income').select('amount,income_type,created_by').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to),
+      supabase.from('migration_details').select('amount,cashier_id').is('deleted_at', null).eq('type', 'old_income').gte('trx_date', from).lte('trx_date', to),
+      supabase.from('debt_payments').select('amount,cashier_id').is('deleted_at', null).gte('paid_at', `${from}T00:00:00+07:00`).lte('paid_at', `${to}T23:59:59+07:00`),
+    ])
+    if (!manual.error) (manual.data || []).forEach(r => add(r.created_by, r.income_type === 'omzet' ? r.amount : 0, r.amount, 'credibook'))
+    if (!migration.error) (migration.data || []).forEach(r => add(r.cashier_id, r.amount, r.amount, 'migration'))
+    if (!debtPayments.error) (debtPayments.data || []).forEach(r => add(r.cashier_id, 0, r.amount, 'debt_payment'))
+
+    return { ok: true, data: [...grouped.values()].sort((a, b) => b.revenue - a.revenue) }
   }, [])
 
   // ── SUPPLIER MASTER ──
@@ -635,7 +657,7 @@ export function useAccounting() {
       // 3) Credibook (semua jenis = kas masuk)
       {
         const { data, error } = await supabase.from('credibook_income').select('id,transaction_date,created_at,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
-        if (!error) (data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.transaction_date, createdAt: x.created_at, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, category: 'Pemasukkan Manual', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+        if (!error) (data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', activity: x.income_type === 'capital' ? 'financing' : 'operating', date: x.transaction_date, createdAt: x.created_at, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, category: 'Pemasukkan Manual', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 4) Migrasi pemasukan lama
       {
@@ -650,7 +672,7 @@ export function useAccounting() {
         const advIds = [...new Set((data || []).map(x => x.advance_id).filter(Boolean))]
         const empMap = {}
         if (advIds.length) { const { data: aa } = await supabase.from('employee_cash_advances').select('id,employee_name').in('id', advIds); (aa || []).forEach(a => { empMap[a.id] = a.employee_name }) }
-        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.payment_date, createdAt: x.created_at, source: 'Pembayaran Kasbon', ref: empMap[x.advance_id] || 'Karyawan', category: 'Pembayaran Kasbon Karyawan', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
+        ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', activity: 'investing', date: x.payment_date, createdAt: x.created_at, source: 'Pembayaran Kasbon', ref: empMap[x.advance_id] || 'Karyawan', category: 'Pembayaran Kasbon Karyawan', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }))
       }
       // 6) Penjualan aset = kas masuk (harga jual). Bukan omset.
       {
@@ -659,27 +681,45 @@ export function useAccounting() {
           const ids = [...new Set((data || []).map(x => x.asset_id).filter(Boolean))]
           const nameMap = {}
           if (ids.length) { const { data: aa } = await supabase.from('assets').select('id,name').in('id', ids); (aa || []).forEach(a => { nameMap[a.id] = a.name }) }
-          ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.sale_date, createdAt: x.created_at, source: 'Penjualan Aset', ref: nameMap[x.asset_id] || '', category: Math.round(x.gain_loss || 0) >= 0 ? 'Untung Jual Aset' : 'Rugi Jual Aset', method: x.payment_method, status: 'valid', amount: Math.round(x.sale_price || 0), note: x.note }))
+          ;(data || []).forEach(x => masuk.push({ id: x.id, type: 'masuk', activity: 'investing', date: x.sale_date, createdAt: x.created_at, source: 'Penjualan Aset', ref: nameMap[x.asset_id] || '', category: Math.round(x.gain_loss || 0) >= 0 ? 'Untung Jual Aset' : 'Rugi Jual Aset', method: x.payment_method, status: 'valid', amount: Math.round(x.sale_price || 0), note: x.note }))
         }
       }
       // KELUAR — pengeluaran aktual (single source of truth)
       const out = await getOutflowTransactions(from, to)
-      ;(out.rows || []).forEach(r => keluar.push({ ...r, type: 'keluar' }))
+      ;(out.rows || []).forEach(r => keluar.push({ ...r, type: 'keluar', activity: r.kind === 'bank_payment' ? 'financing' : r.kind === 'kasbon' ? 'investing' : 'operating' }))
       // + Pembayaran sewa dibayar dimuka (FULL, saat dibayar)
       {
         const { data } = await supabase.from('prepaid_rents').select('id,payment_date,name,total_amount,payment_method,status,note').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
-        ;(data || []).filter(x => String(x.status || '').toLowerCase() !== 'cancelled').forEach(x => keluar.push({ id: x.id, type: 'keluar', date: x.payment_date, source: 'Sewa Dibayar Dimuka', ref: x.name || '', category: 'Pembayaran Sewa', method: x.payment_method, status: 'valid', amount: Math.round(x.total_amount || 0), note: x.note }))
+        ;(data || []).filter(x => String(x.status || '').toLowerCase() !== 'cancelled').forEach(x => keluar.push({ id: x.id, type: 'keluar', activity: 'operating', date: x.payment_date, source: 'Sewa Dibayar Dimuka', ref: x.name || '', category: 'Pembayaran Sewa', method: x.payment_method, status: 'valid', amount: Math.round(x.total_amount || 0), note: x.note }))
+      }
+      // + DP/cicilan pembelian aset. Ini arus kas INVESTASI, bukan beban.
+      {
+        const { data, error } = await supabase.from('asset_purchase_payments').select('id,asset_id,payment_date,created_at,amount,payment_method,payment_type,note').is('deleted_at', null).gte('payment_date', from).lte('payment_date', to)
+        if (!error) {
+          const assetIds = [...new Set((data || []).map(x => x.asset_id).filter(Boolean))]
+          const assetMap = {}
+          if (assetIds.length) { const { data: aa } = await supabase.from('assets').select('id,name,supplier_name').in('id', assetIds); (aa || []).forEach(a => { assetMap[a.id] = a }) }
+          ;(data || []).forEach(x => { const asset = assetMap[x.asset_id] || {}; keluar.push({ id: x.id, type: 'keluar', activity: 'investing', date: x.payment_date, createdAt: x.created_at, source: 'Pembelian Aset', ref: asset.name || '', party: asset.supplier_name || '', category: x.payment_type === 'dp' ? 'DP Aset' : 'Cicilan Aset', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.note }) })
+        }
       }
     } catch (e) {
       return { ok: false, error: e?.message || String(e), masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 }
     }
+    masuk.forEach(r => { if (!r.activity) r.activity = 'operating' })
+    keluar.forEach(r => { if (!r.activity) r.activity = 'operating' })
     masuk.sort((a, b) => new Date(b.date) - new Date(a.date))
     keluar.sort((a, b) => new Date(b.date) - new Date(a.date))
     pending.sort((a, b) => new Date(b.date) - new Date(a.date))
     // Total HANYA dari uang yang benar diterima/dikeluarkan. `pending` TIDAK dihitung.
     const totalMasuk = masuk.reduce((s, r) => s + (r.amount || 0), 0)
     const totalKeluar = keluar.reduce((s, r) => s + (r.amount || 0), 0)
-    return { ok: true, masuk, keluar, pending, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
+    const activities = ['operating', 'investing', 'financing'].reduce((result, activity) => {
+      const cashIn = masuk.filter(r => r.activity === activity).reduce((s, r) => s + (r.amount || 0), 0)
+      const cashOut = keluar.filter(r => r.activity === activity).reduce((s, r) => s + (r.amount || 0), 0)
+      result[activity] = { cashIn, cashOut, net: cashIn - cashOut }
+      return result
+    }, {})
+    return { ok: true, masuk, keluar, pending, activities, totalMasuk, totalKeluar, net: totalMasuk - totalKeluar }
   }, [getOutflowTransactions])
 
   // ── AUDIT KEUANGAN (console) ──────────────────────────────────────────────
@@ -889,17 +929,47 @@ export function useAccounting() {
   const listAssets = useCallback(async () => {
     const { data, error } = await supabase.from('assets').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)
     if (error) return { ok: false, error: error.message, data: [] }
-    return { ok: true, data: data || [] }
+    const assets = data || []
+    const ids = assets.map(a => a.id)
+    let payments = []
+    if (ids.length) {
+      const paymentResult = await supabase.from('asset_purchase_payments').select('*').in('asset_id', ids).is('deleted_at', null).order('payment_date', { ascending: true })
+      if (!paymentResult.error) payments = paymentResult.data || []
+    }
+    return { ok: true, data: assets.map(asset => {
+      const assetPayments = payments.filter(payment => payment.asset_id === asset.id)
+      const payment = assetPaymentState(asset.purchase_price, assetPayments)
+      return { ...asset, payments: assetPayments, purchase_paid: asset.payment_tracking ? payment.paid : null, purchase_outstanding: asset.payment_tracking ? payment.outstanding : null, purchase_payment_status: asset.payment_tracking ? payment.status : 'legacy' }
+    }) }
   }, [])
   const addAsset = useCallback(async (p) => {
-    const { error } = await supabase.from('assets').insert({
+    const purchasePrice = Math.round(Number(p.purchasePrice) || 0)
+    const initialPayment = Math.min(purchasePrice, Math.round(Number(p.initialPayment) || 0))
+    const { data, error } = await supabase.from('assets').insert({
       name: p.name || '', category_id: p.categoryId || null, category_name: p.categoryName || '',
-      purchase_date: p.purchaseDate || null, purchase_price: Math.round(Number(p.purchasePrice) || 0),
+      purchase_date: p.purchaseDate || null, purchase_price: purchasePrice,
       residual_value: Math.round(Number(p.residualValue) || 0), depreciation_method: p.method || 'percentage',
       depreciation_rate: Number(p.rate) || 0, useful_life_years: p.life ? Number(p.life) : null,
       photo_url: p.photoUrl || null, notes: p.notes || '', status: 'active', created_by: p.createdBy || null,
-    })
-    return error ? { ok: false, error: error.message } : { ok: true }
+      supplier_name: p.supplierName || '', payment_due_date: p.paymentDueDate || null, payment_tracking: true,
+    }).select('id').single()
+    if (error) {
+      const needsMigration = /(supplier_name|payment_due_date|payment_tracking|schema cache)/i.test(error.message || '')
+      return { ok: false, error: needsMigration ? 'Database pembayaran aset belum dipasang. Jalankan migrasi 2026_08_asset_purchase_payments.sql.' : error.message }
+    }
+    if (initialPayment > 0) {
+      const normalized = normalizeAssetPayment({ amount: initialPayment, method: p.paymentMethod })
+      const payment = await supabase.from('asset_purchase_payments').insert({
+        asset_id: data.id, payment_date: p.purchaseDate || todayISO(), amount: normalized.amount,
+        payment_method: normalized.method, payment_type: initialPayment >= purchasePrice ? 'full' : 'dp',
+        note: initialPayment >= purchasePrice ? 'Pembayaran lunas saat pembelian' : 'DP pembelian aset', created_by: p.createdBy || null,
+      })
+      if (payment.error) {
+        await supabase.from('assets').update({ deleted_at: new Date().toISOString(), status: 'deleted' }).eq('id', data.id)
+        return { ok: false, error: payment.error.message }
+      }
+    }
+    return { ok: true, id: data.id }
   }, [])
   const updateAsset = useCallback(async (id, p) => {
     const patch = { updated_at: new Date().toISOString() }
@@ -908,6 +978,8 @@ export function useAccounting() {
     if (p.categoryName !== undefined) patch.category_name = p.categoryName
     if (p.purchaseDate !== undefined) patch.purchase_date = p.purchaseDate
     if (p.purchasePrice !== undefined) patch.purchase_price = Math.round(Number(p.purchasePrice) || 0)
+    if (p.supplierName !== undefined) patch.supplier_name = p.supplierName || ''
+    if (p.paymentDueDate !== undefined) patch.payment_due_date = p.paymentDueDate || null
     if (p.residualValue !== undefined) patch.residual_value = Math.round(Number(p.residualValue) || 0)
     if (p.method !== undefined) patch.depreciation_method = p.method
     if (p.rate !== undefined) patch.depreciation_rate = Number(p.rate) || 0
@@ -921,6 +993,37 @@ export function useAccounting() {
   const deleteAsset = useCallback(async (id) => {
     const { error } = await supabase.from('assets').update({ deleted_at: new Date().toISOString(), status: 'deleted' }).eq('id', id)
     return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const listAssetPurchasePayments = useCallback(async (assetId) => {
+    const { data, error } = await supabase.from('asset_purchase_payments').select('*').eq('asset_id', assetId).is('deleted_at', null).order('payment_date', { ascending: true })
+    return error ? { ok: false, error: error.message, data: [] } : { ok: true, data: data || [] }
+  }, [])
+  const payAssetPurchase = useCallback(async (asset, p, createdBy) => {
+    if (!asset?.payment_tracking) return { ok: false, error: 'Aset lama belum memakai pelacakan pembayaran' }
+    const current = assetPaymentState(asset.purchase_price, asset.payments || [])
+    const normalized = normalizeAssetPayment(p)
+    if (!(normalized.amount > 0)) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
+    if (normalized.amount > current.outstanding) return { ok: false, error: 'Pembayaran melebihi sisa utang aset' }
+    const { error } = await supabase.from('asset_purchase_payments').insert({
+      asset_id: asset.id, payment_date: p.date || todayISO(), amount: normalized.amount,
+      payment_method: normalized.method, payment_type: normalized.amount >= current.outstanding ? 'full' : 'installment',
+      note: p.note || '', created_by: createdBy || null,
+    })
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const deleteAssetPurchasePayment = useCallback(async (id) => {
+    const { error } = await supabase.from('asset_purchase_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }, [])
+  const getAssetPaymentTotals = useCallback(async (to = todayISO()) => {
+    const { data, error } = await supabase.from('asset_purchase_payments').select('amount,payment_method').is('deleted_at', null).lte('payment_date', to)
+    if (error) return { ok: false, error: error.message, total: 0, cash: 0, bank: 0 }
+    const totals = (data || []).reduce((r, p) => {
+      const amount = Math.round(p.amount || 0); r.total += amount
+      if (p.payment_method === 'cash') r.cash += amount; else r.bank += amount
+      return r
+    }, { total: 0, cash: 0, bank: 0 })
+    return { ok: true, ...totals }
   }, [])
   // Jual aset: catat di asset_sales (harga jual → kas masuk; untung/rugi),
   // lalu update assets (status sold) TANPA payment_method (kolom itu tidak ada).
@@ -1149,6 +1252,33 @@ export function useAccounting() {
       .order('advance_date', { ascending: false }).order('created_at', { ascending: false }).limit(500)
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
+  }, [])
+
+  // Saldo kasbon harus dihitung per karyawan, sama seperti tampilan modul
+  // Kasbon. Data lama dapat memiliki pembayaran berlebih pada satu baris yang
+  // secara bisnis dialokasikan ke kasbon berikutnya milik karyawan yang sama.
+  const getEmployeeAdvanceBalance = useCallback(async () => {
+    const { data, error } = await supabase.from('employee_cash_advances')
+      .select('employee_id,employee_name,amount,paid')
+      .is('deleted_at', null)
+      .limit(5000)
+    if (error) return { ok: false, error: error.message, value: 0 }
+
+    const groups = new Map()
+    ;(data || []).forEach((row) => {
+      const nameKey = (row.employee_name || '').trim().toLowerCase()
+      const key = row.employee_id || `name:${nameKey}`
+      const current = groups.get(key) || { amount: 0, paid: 0 }
+      current.amount += Math.round(Number(row.amount) || 0)
+      current.paid += Math.round(Number(row.paid) || 0)
+      groups.set(key, current)
+    })
+
+    const value = [...groups.values()].reduce(
+      (sum, group) => sum + Math.max(0, group.amount - group.paid),
+      0,
+    )
+    return { ok: true, value }
   }, [])
 
   const addEmployeeAdvance = useCallback(async (p, cashierId) => {
@@ -1556,10 +1686,11 @@ export function useAccounting() {
     getRecapAdmin, fetchEntriesForExport, getCardDetail, getOutflowTransactions, getCashflowDetail, auditAccounting, sumRentsCashOut, listExpensesByRange,
     listExpenseCategories, addExpenseCategory, updateExpenseCategory, deleteExpenseCategory, countExpensesByCategory,
     listAssets, addAsset, updateAsset, deleteAsset, sellAsset, listAssetSales,
+    listAssetPurchasePayments, payAssetPurchase, deleteAssetPurchasePayment, getAssetPaymentTotals,
     listAssetCategories, addAssetCategory, updateAssetCategory, deleteAssetCategory,
     listRents, listRentSchedules, addRent, updateRent, deleteRent,
     listCredibookIncome, addCredibookIncome, updateCredibookIncome, deleteCredibookIncome, sumExpensesRange, sumOmsetByBook, sumPiutangByBook,
-    listEmployeeAdvances, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
+    listEmployeeAdvances, getEmployeeAdvanceBalance, addEmployeeAdvance, editEmployeeAdvance, payEmployeeAdvance, payEmployeeFIFO,
     deleteEmployeeAdvance, listAdvancePayments, editAdvancePayment, deleteAdvancePayment,
     listEmployees, addEmployee, updateEmployee, deleteEmployee,
     payEmployeeSalary, listSalaryExpenses,

@@ -29,7 +29,7 @@ const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
 
 // loadCashflow(from,to) → { ok, masuk[], keluar[], totalMasuk, totalKeluar, net }
 // onInvoiceClick(invoiceNo) opsional → buka preview invoice.
-export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary, onInvoiceClick, initialFrom, initialTo, cardCashIn, cardCashOut, cardNet }) {
+export default function ArusKasDetail({ open, onClose, loadCashflow, onInvoiceClick, initialFrom, initialTo }) {
   const [rangeId, setRangeId] = useState('today')
   const [custom, setCustom] = useState({ from: '', to: '' })
   const range = useMemo(() => {
@@ -37,9 +37,7 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
     return computeRange(rangeId)
   }, [rangeId, custom])
 
-  const [data, setData] = useState({ masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
-  // Total Masuk OTORITATIF = sama dengan kartu "Uang Masuk" dashboard (acc_dashboard.uang_masuk_total).
-  const [rpcMasuk, setRpcMasuk] = useState(null)
+  const [data, setData] = useState({ masuk: [], keluar: [], pending: [], activities: {}, totalMasuk: 0, totalKeluar: 0, net: 0 })
   const [loading, setLoading] = useState(false)
 
   // Saat dibuka dari kartu, ikuti periode halaman (from/to) agar nilainya SAMA
@@ -56,46 +54,24 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
     if (!open) return
     let alive = true
     setLoading(true)
-    Promise.all([
-      loadCashflow(range.from, range.to),
-      loadSummary ? loadSummary(range.from, range.to) : Promise.resolve(null),
-    ]).then(([r, s]) => {
+    loadCashflow(range.from, range.to).then(r => {
       if (!alive) return
-      // Uang Masuk operasional TIDAK termasuk pembayaran kasbon karyawan → buang dari masuk.
-      if (r?.ok) {
-        const masukOps = (r.masuk || []).filter(x => x.source !== 'Pembayaran Kasbon')
-        r = { ...r, masuk: masukOps, totalMasuk: masukOps.reduce((sum, x) => sum + Math.round(x.amount || 0), 0) }
-      }
-      setData(r?.ok ? r : { masuk: [], keluar: [], pending: [], totalMasuk: 0, totalKeluar: 0, net: 0 })
-      // RPC uang_masuk_total dikurangi pembayaran kasbon (kasbon_masuk) agar konsisten dgn kartu.
-      setRpcMasuk((s && s.ok && s.data) ? Math.round((s.data.uang_masuk_total || 0) - (s.data.kasbon_masuk || 0)) : null)
+      setData(r?.ok ? r : { masuk: [], keluar: [], pending: [], activities: {}, totalMasuk: 0, totalKeluar: 0, net: 0 })
       setLoading(false)
     })
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, range.from, range.to])
 
-  // HELPER TUNGGAL dari kartu dashboard. Saat periode popup = periode halaman,
-  // headline memakai angka kartu PERSIS (totalCashIn/Out/net) supaya
-  // Arus Saldo Bersih popup = kartu = Uang Masuk − Uang Keluar.
-  const atPagePeriod = initialFrom && initialTo && range.from === initialFrom && range.to === initialTo
-  const useCard = atPagePeriod && cardNet != null
-  // Total Masuk = angka dashboard (RPC) bila tersedia; fallback ke jumlah rincian.
-  const totalMasuk = useCard ? Math.round(cardCashIn || 0) : (rpcMasuk != null ? rpcMasuk : data.totalMasuk)
-  const totalKeluar = useCard ? Math.round(cardCashOut || 0) : data.totalKeluar
-  const net = useCard ? Math.round(cardNet) : totalMasuk - totalKeluar
-  // Selisih rekonsiliasi: bila jumlah baris masuk < angka dashboard, tampilkan 1
-  // baris penyeimbang agar tabel = Total Masuk (transparan, biasanya 0).
-  const reconDiff = Math.round(totalMasuk - (data.totalMasuk || 0))
+  const totalMasuk = data.totalMasuk
+  const totalKeluar = data.totalKeluar
+  const net = data.net
 
   // Gabung & urutkan terbaru dulu untuk tabel. `pending` ikut TAMPIL tapi
   // TIDAK dihitung ke total (uang belum diterima).
   const rows = useMemo(() => {
-    const extra = reconDiff > 0
-      ? [{ id: 'recon', type: 'masuk', date: range.to, source: 'Penerimaan Lain', ref: 'Penyeimbang ke total dashboard', category: 'Rekonsiliasi', method: '—', status: 'valid', amount: reconDiff }]
-      : []
-    return [...data.masuk, ...extra, ...data.keluar, ...(data.pending || [])].sort((a, b) => new Date(b.date) - new Date(a.date))
-  }, [data, reconDiff, range.to])
+    return [...data.masuk, ...data.keluar, ...(data.pending || [])].sort((a, b) => new Date(b.date) - new Date(a.date))
+  }, [data])
 
   // Breakdown per metode (cash / transfer / qris). 'hutang' (DP invoice hutang) → cash.
   const bd = useMemo(() => {
@@ -104,15 +80,14 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
     const masuk = { ...z }, keluar = { ...z }
     data.masuk.forEach(r => { masuk[bucket(r.method)] += Math.round(r.amount || 0) })
     data.keluar.forEach(r => { keluar[bucket(r.method)] += Math.round(r.amount || 0) })
-    if (reconDiff > 0) masuk.cash += reconDiff // penyeimbang → bucket Kas, agar total cocok
     return { masuk, keluar }
-  }, [data, reconDiff])
+  }, [data])
 
   const inp = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', colorScheme: 'dark' }
 
   return (
-    <Modal open={open} onClose={onClose} title="Detail — Arus Saldo (Kas & Bank)"
-      subtitle="Mutasi saldo aktual: Cash · Transfer · QRIS" size="xl" mobileFull>
+    <Modal open={open} onClose={onClose} title="Laporan Arus Kas"
+      subtitle="Aktivitas operasi · investasi · pendanaan" size="xl" mobileFull>
       {/* Filter waktu */}
       <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
         {RANGES.map(r => (
@@ -144,9 +119,25 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
           <div className="font-bold" style={{ fontFamily: 'Syne', color: '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(totalKeluar)}</div>
         </div>
         <div className="rounded-2xl p-3.5" style={{ background: net >= 0 ? 'rgba(20,184,166,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${net >= 0 ? 'rgba(20,184,166,0.4)' : 'rgba(239,68,68,0.4)'}` }}>
-          <div className="flex items-center gap-1.5 mb-1"><Scale size={13} style={{ color: '#14b8a6' }} /><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Arus Saldo Bersih</span></div>
+          <div className="flex items-center gap-1.5 mb-1"><Scale size={13} style={{ color: '#14b8a6' }} /><span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>Perubahan Kas Bersih</span></div>
           <div className="font-bold" style={{ fontFamily: 'Syne', color: net >= 0 ? '#14b8a6' : '#ef4444', fontSize: 'clamp(15px,4vw,20px)' }}>{fmt(net)}</div>
         </div>
+      </div>
+
+      {/* Klasifikasi laporan arus kas */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+        {[
+          ['Aktivitas Operasi', data.activities?.operating],
+          ['Aktivitas Investasi', data.activities?.investing],
+          ['Aktivitas Pendanaan', data.activities?.financing],
+        ].map(([label, value]) => {
+          const activityNet = value?.net || 0
+          return <div key={label} className="rounded-xl px-3 py-2.5" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>{label}</div>
+            <div className="text-sm font-bold" style={{ color: activityNet >= 0 ? '#10d98a' : '#ef4444', fontFamily: 'Syne' }}>{fmt(activityNet)}</div>
+            <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Masuk {fmt(value?.cashIn || 0)} · Keluar {fmt(value?.cashOut || 0)}</div>
+          </div>
+        })}
       </div>
 
       {/* Breakdown per metode */}
@@ -172,8 +163,8 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
           <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Tanggal', 'Tipe', 'Sumber', 'Kategori / Ref', 'Metode', 'Status', 'Nominal'].map((h, i) => (
-                  <th key={i} className={`px-2 py-2 font-bold uppercase tracking-wider ${i === 6 ? 'text-right' : 'text-left'}`}
+                {['Tanggal', 'Aktivitas', 'Tipe', 'Sumber', 'Kategori / Ref', 'Metode', 'Status', 'Nominal'].map((h, i) => (
+                  <th key={i} className={`px-2 py-2 font-bold uppercase tracking-wider ${i === 7 ? 'text-right' : 'text-left'}`}
                     style={{ color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -188,6 +179,7 @@ export default function ArusKasDetail({ open, onClose, loadCashflow, loadSummary
                 return (
                   <tr key={`${r.type}-${r.id}-${idx}`} style={{ borderBottom: '1px solid var(--border)', opacity: isPending ? 0.7 : 1 }}>
                     <td className="px-2 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{formatDateTimeWIB(r.date, r.createdAt)}</td>
+                    <td className="px-2 py-2.5 uppercase" style={{ color: 'var(--text-muted)', fontSize: 9 }}>{isPending ? '—' : r.activity === 'investing' ? 'Investasi' : r.activity === 'financing' ? 'Pendanaan' : 'Operasi'}</td>
                     <td className="px-2 py-2.5">
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-bold" style={{ fontSize: 9, textTransform: 'uppercase', color, background: `${color}1f` }}>
                         {isPending ? null : masuk ? <ArrowDownCircle size={10} /> : <ArrowUpCircle size={10} />}{isPending ? 'Pending' : masuk ? 'Masuk' : 'Keluar'}
