@@ -1,6 +1,7 @@
 import React from 'react'
-import { Check, Search } from 'lucide-react'
-import { DEFAULT_PRODUCT_IMAGE, formatCurrency, QUICK_PRESETS, quickRange } from '../utils/helpers'
+import { Check, Search, Package } from 'lucide-react'
+import { formatCurrency, QUICK_PRESETS, quickRange } from '../utils/helpers'
+import { resolveProductImage } from '../utils/productImageFallback'
 
 // Chips filter waktu cepat. `active` = key preset aktif ('today'|'week'|'month'
 // |'year'|'all'|'custom'). onPick(key, {from,to}) dipanggil saat chip diklik.
@@ -264,45 +265,52 @@ export function EmptyState({ icon: Icon, title, description, action }) {
   )
 }
 
-/** Falling back to a colored initial-based image if `src` fails */
 export function ProductImage({ src, alt, className = '', fallbackSize = 60 }) {
-  // Fallback aman: image || DEFAULT_PRODUCT_IMAGE (logo Skupy).
-  // onError → ganti ke logo. Kalau logo pun gagal, baru tampilkan inisial
-  // (mencegah broken image & infinite loop).
-  const [failedLogo, setFailedLogo] = React.useState(false)
-  const initial = (alt || 'P')[0].toUpperCase()
-  const realSrc = src || DEFAULT_PRODUCT_IMAGE
+  // Reset failed sources when a product is renamed or receives a new photo.
+  return (
+    <ProductImageContent
+      key={JSON.stringify([src, alt])}
+      src={src} alt={alt} className={className} fallbackSize={fallbackSize}
+    />
+  )
+}
 
-  if (failedLogo) {
-    return (
-      <div className={`flex items-center justify-center ${className}`}
-        style={{
-          background: 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(99,102,241,0.08))',
-          color: 'var(--accent-light)',
-          fontFamily: 'Syne',
-          fontWeight: 700,
-          fontSize: fallbackSize / 2.4,
-        }}>
-        {initial}
-      </div>
-    )
-  }
+function ProductImageContent({ src, alt, className, fallbackSize }) {
+  const [failedSources, setFailedSources] = React.useState([])
+  const image = resolveProductImage(src, alt, failedSources)
+  const isIllustration = image.kind === 'illustration'
+  const label = isIllustration ? `Ilustrasi untuk ${alt || 'produk'}` : alt
 
   return (
-    <img
-      src={realSrc}
-      alt={alt}
-      className={className}
-      onError={(e) => {
-        // Kalau sumber asli gagal → coba logo Skupy. Kalau logo juga gagal → inisial.
-        if (e.currentTarget.src.includes(DEFAULT_PRODUCT_IMAGE)) {
-          setFailedLogo(true)
-        } else {
-          e.currentTarget.src = DEFAULT_PRODUCT_IMAGE
-        }
-      }}
-      loading="lazy"
-      decoding="async"
-    />
+    <div className={`relative overflow-hidden ${className}`}
+      style={{ background: image.kind === 'photo' ? undefined : '#eef0f2' }}
+      title={isIllustration ? label : undefined}>
+      {image.src ? (
+        <img
+          key={image.src}
+          src={image.src}
+          alt={label}
+          className="block w-full h-full"
+          style={{ objectFit: isIllustration ? 'contain' : 'inherit' }}
+          onError={() => setFailedSources(previous => (
+            previous.includes(image.src) ? previous : [...previous, image.src]
+          ))}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : (
+        <div className="flex items-center justify-center w-full h-full"
+          role="img" aria-label={`Foto belum tersedia: ${alt || 'produk'}`}>
+          <Package size={Math.min(fallbackSize * 0.55, 44)} color="#79828d" strokeWidth={1.5} />
+        </div>
+      )}
+      {isIllustration && fallbackSize >= 60 && (
+        <span className="absolute bottom-2 right-2 z-10 pointer-events-none"
+          style={{ background: '#ffffffeb', color: '#424953', fontSize: 10,
+            lineHeight: '16px', padding: '1px 6px', borderRadius: 4 }}>
+          Ilustrasi
+        </span>
+      )}
+    </div>
   )
 }

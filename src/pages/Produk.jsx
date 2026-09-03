@@ -150,8 +150,7 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
         // Stok default 0 saat tambah; editing tetap pakai existing stock
         stock: editId ? (products.find(p => p.id === editId)?.stock || 0) : 0,
         unit: form.unit || 'pcs',
-        // Tanpa foto → simpan kosong; UI otomatis menampilkan logo Skupy
-        // (DEFAULT_PRODUCT_IMAGE) via komponen ProductImage. Tidak ada Unsplash.
+        // Tanpa foto tetap kosong; ProductImage memilih ilustrasi hanya di UI.
         image: form.image || '',
       }
       const res = editId ? await updateProduct(editId, data) : await addProduct(data)
