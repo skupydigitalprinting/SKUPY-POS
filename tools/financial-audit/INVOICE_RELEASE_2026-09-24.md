@@ -2,82 +2,41 @@
 
 ## Implemented Subset
 
-- Canonical rupiah/quantity calculator preserves received payments, recalculates
-  remaining balance and exposes overpayment without silently clamping paid.
-- Standalone invoice editor: saved product snapshots, add/remove lines, quantity,
-  price, nominal discount, customer display name, notes and due date.
-- Standalone delete dialog: cancelled order versus erroneous receipt, reason,
-  and explicit no-real-money confirmation for a paid duplicate.
-- Synthetic local preview has no Supabase/data client. External connections are
-  blocked by CSP. It is not an end-to-end database workflow.
+- Canonical rupiah/quantity calculator preserves payments and exposes overpayment.
+- Standalone editor and delete dialog, with synthetic mobile/desktop preview.
+- Candidate 011 adds authenticated, versioned edit/cancel/incorrect-receipt void/refund operations. Invoice, debt, journal, cash, customer summary, internal audit and operation result commit atomically.
+- Candidate 010 has private extension hooks. Its original behavior remains covered when 011 is absent.
+- Initial receipt and installment postings are reconciled individually by source, amount, tender, timestamp, account and attribution. Ambiguous history is rejected, not silently repaired or reassigned to another actor.
+- Persistent client stores only actor/environment-bound operation identity and request fingerprint. Web Locks prevent concurrent same-tab/origin submission; lost responses reconcile using the same operation ID. No customer note or request body is persisted by this client.
 
-These components are NOT imported by Order or Dashboard yet. No new invoice
-operation RPC, database migration, server journal adjustment, refund workflow,
-report integration, production authentication activation, push or deployment
-was completed by this work. Do not describe this as an active feature.
+SQL is in `supabase/security-stage2/`, outside automatic migrations. These components and the client are NOT connected to Order/Dashboard. No production auth activation, production migration, push or deployment has occurred. This is not an active feature.
 
 ## Verification
 
-- Initial repository suite: 509 passed, zero failed.
-- Calculator: missing-module RED observed, then 25 new tests passed; full suite
-  534 passed.
-- Draft/render tests: missing implementation RED observed, then five tests passed.
-- Rp0 rendering: assertion failed on empty zero label, then passed after fix.
-- Full suite at the UI stage: 539 passed, zero failed.
-- Existing production Vite build completed successfully. Because these UI
-  components are not imported by production routes, this build does not prove
-  their production integration; component SSR and the synthetic Vite preview
-  exercised them separately.
-- Browser checks: 390x844 mobile and 1366x900 desktop. Mobile form fields did
-  not overflow horizontally (document width 390, offending controls zero).
-- Synthetic edit: 12000000 turnover -> 11500000; invoice remains UJI-001,
-  paid remains 200000; deletion -> 10000000 with refund still outstanding.
-- Synthetic decimal addition: 1.25 meter at 20000 adds 25000, resulting turnover
-  12025000 and remaining 1825000. Comma input accepted.
-- Uncertain submit: fields and resubmit disabled, amount retained. This is only
-  an in-dialog guard. Persistent actor-bound operation reconciliation is NOT
-  implemented; reopening/reload must be handled before connecting a real RPC.
-- Paid wrong-input deletion refuses submission until no-real-money checkbox
-  is confirmed. Cancellation does not pretend an actual refund occurred.
-- Independent reviewer found legacy MoneyInput stripped invalid characters and
-  transformed 150000,50 into 15000050. Reproduced in the actual browser form:
-  subtotal incorrectly became 300001000. Replaced that component only in this
-  new editor with unsanitized text input and strict validation. Interactive
-  rerun rejected 150000,50, -150000 and 12abc for both price and discount;
-  valid inputs restore submit availability. Added draft-level regression tests.
-- Independent review explicitly classified backend, persistent operation replay
-  and production integration as outstanding work, not completed features.
+- Root `npm test`: 553 passed, zero failed.
+- `npm run test:security:sql`: 107 passed, zero failed.
+- Candidate backend suites: 74 passed (22 lifecycle, 23 unchanged payment-ledger tests, 29 business-operation tests), zero failed.
+- Client/SQL integration using isolated PGlite: five passed, zero failed. Lost committed response reconciles once; stale edits do not overwrite; active turnover passes 10m -> 12m -> 11.5m -> 10m while real DP remains refundable. Server-confirmed stale retries and invalid-date rollbacks can recover to a corrected request.
+- Production build succeeds (4.24 seconds). Unwired components are not proof of production integration.
+- Existing synthetic browser verification: desktop 1366x900, mobile 390x844, no horizontal overflow; decimal quantities; DP preserved; uncertain submit locked; wrong-receipt confirmation required.
+- Thirteen persistent-client tests cover reload/replay, stale sessions, environment separation, cross-tab locking, malformed receipts, storage failure and rollback/ambiguous responses.
+- Independent SQL review found four defects: nullable creator authorization, aggregate-only historical receipt validation, unverified baseline insertion, and net-only journal verification. Each was reproduced and corrected with regression coverage. Follow-up review confirmed those regressions and found two more issues: legacy status-only cancellation could reactivate, and a known failed stale retry could remain blocked. Both were reproduced and fixed; final suites above passed. Full integrated release review remains outstanding.
+- Direct production-workflow status updates were initially rejected after adoption. A failing regression now passes without permitting raw money/cancellation writes.
+- `git diff --check` succeeds.
 
-## Fresh Access And Release Blockers
+Real PostgreSQL concurrency is NOT verified. The opt-in test `receipt ledger PostgreSQL: simultaneous cash and bank receipts accumulate once` fails before fixture setup because the Docker Unix socket is absent. Starting Docker Desktop waited for Mac administrator authorization; the startup command was cancelled. No old lab was reset and no production database was used as a substitute. Tests skipped by the default opt-in guard are not counted as passing concurrency evidence.
 
-The user says GitHub Desktop and Supabase are signed in. This does not imply the
-terminal or connector shares those credentials:
+## Release Blockers
 
-- Native Git push dry-run: failed because terminal prompts are disabled and no
-  username credential was available.
-- Connected GitHub repository metadata still reports pull=true, push=false.
-- GitHub Desktop UI inspection timed out; a bundle lookup was ambiguous because
-  several installed copies share the same bundle identifier. No credentials
-  were extracted and no Git authentication settings were rewritten.
-- The Supabase project Policies page initially opened. Subsequent read was
-  rejected by automatic browser review because it targeted unrelated
-  auth.openai.com. No alternative surface was used to bypass that denial.
-  User handoff requested for the Supabase project page.
-- Current source resolveAuthMode explicitly blocks secure mode at pos.skupy.id;
-  it only permits the defined loopback or isolated preview setup. Do not remove
-  that guard just to make this feature accessible.
-- A verified complete backup/restore and real Auth/REST integration evidence
-  are still prerequisites, not supplied by synthetic tests or dashboard login.
+- Native Git push dry-run cannot read a username credential. Connected GitHub metadata reports pull=true, push=false. Desktop login does not grant this terminal/connector write access.
+- GitHub Desktop UI inspection timed out; multiple installed copies share its identifier. No credentials were extracted or Git credential configuration changed.
+- Supabase Policies inspection was rejected by browser automatic review after an unrelated auth.openai.com redirect. No alternate route bypassed that denial and no production records/policies were changed.
+- Current `resolveAuthMode` explicitly blocks secure auth on pos.skupy.id. Production still needs a verified identity/account transition; the guard must not simply be removed.
+- The legacy checkout/payment writers are not compatible with activating candidate 010/011. Full Auth/REST/Storage integration, backup including Storage objects, isolated restore, owner recovery and rollback evidence are prerequisites.
+- Explicit refund-payable account mapping remains a production prerequisite. The synthetic 2195 test account is not an approved production chart mapping.
 
-## Next Required Work
+## Remaining Work
 
-Resume Task 2 in the approved implementation plan: authenticated atomic invoice
-operation, immutable payment/event reconciliation, invoice versions, debt and
-journal updates, refunds and real independent-connection tests. Then connect
-Task 3 to that operation with persistent replay/status handling, unify reports
-in Task 4, and pass release gates in Task 5. Review the existing owner-only
-historical-receipt attestation path carefully; no new owner approval should be
-required for legitimate routine cashier edits/deletions.
+Task 2 still requires real concurrent connections, full integration and final review. Task 3 still requires authenticated Order/Dashboard/store wiring, capabilities, reconciliation UI and compatible payment/checkout paths. Task 4 still requires canonical reports, cash/refund visibility, exports and fresh printed snapshots. Task 5 still requires backup/restore, actual write/deploy access, approved release sequencing and production smoke verification.
 
-No real order, invoice, payment, Supabase policy or production record was changed
-to run these tests. No remote feature completion is claimed.
+Do not mark Tasks 2-5 complete or deploy this candidate just because synthetic tests pass. No real invoice, payment, journal or customer data was altered for testing.

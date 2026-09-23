@@ -39,6 +39,20 @@ ALTER TABLE pos_security.payment_write_context ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON pos_security.payment_baselines,pos_security.payment_events,pos_security.payment_write_context
   FROM PUBLIC,anon,authenticated,service_role;
 
+-- Private extension points. Without the explicitly installed lifecycle migration
+-- these preserve the original 010 behavior exactly.
+CREATE FUNCTION pos_security.lifecycle_write_allowed(text,text,jsonb,jsonb) RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$ SELECT false $$;
+CREATE FUNCTION pos_security.lifecycle_has_invoice(uuid) RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$ SELECT false $$;
+CREATE FUNCTION pos_security.lifecycle_payment_total(text,numeric) RETURNS numeric
+LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$ SELECT $2 $$;
+CREATE FUNCTION pos_security.lifecycle_payment_paid(text,numeric) RETURNS numeric
+LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$ SELECT $2 $$;
+REVOKE ALL ON FUNCTION pos_security.lifecycle_write_allowed(text,text,jsonb,jsonb),
+  pos_security.lifecycle_has_invoice(uuid),pos_security.lifecycle_payment_total(text,numeric),
+  pos_security.lifecycle_payment_paid(text,numeric) FROM PUBLIC,anon,authenticated,service_role;
+
 CREATE FUNCTION pos_security.payment_write_lock() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
 BEGIN
@@ -58,6 +72,10 @@ DECLARE b pos_security.payment_baselines; ctx pos_security.payment_write_context
   newj jsonb := CASE WHEN TG_OP<>'DELETE' THEN to_jsonb(NEW) END;
   j jsonb := coalesce(newj,oldj);
 BEGIN
+  IF pos_security.lifecycle_write_allowed(TG_TABLE_NAME,TG_OP,oldj,newj) THEN
+    IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
   SELECT * INTO ctx FROM pos_security.payment_write_context WHERE transaction_id=txid_current();
   IF TG_TABLE_NAME IN ('accounting_entries','cash_movements') THEN
     -- Protect BOTH sides of an UPDATE, including a disguised source/invoice.
@@ -305,7 +323,8 @@ BEGIN
     IF NOT FOUND THEN RAISE EXCEPTION 'baseline insertion failed' USING ERRCODE='23514'; END IF;
   END IF;
   IF b.order_id IS DISTINCT FROM (CASE WHEN has_order THEN t.id END) OR b.debt_id IS DISTINCT FROM d.id
-    OR b.total IS DISTINCT FROM v_total OR paid_before<>b.initial_paid+coalesce((SELECT sum(e.amount) FROM pos_security.payment_events e WHERE e.invoice_no=invoice),0) THEN
+    OR pos_security.lifecycle_payment_total(invoice,b.total) IS DISTINCT FROM v_total
+    OR paid_before<>pos_security.lifecycle_payment_paid(invoice,b.initial_paid+coalesce((SELECT sum(e.amount) FROM pos_security.payment_events e WHERE e.invoice_no=invoice),0)) THEN
     RAISE EXCEPTION 'receipt ledger balance mismatch' USING ERRCODE='23514'; END IF;
   paid_after := paid_before+p_amount; remaining_after := v_total-paid_after;
   received := clock_timestamp(); cash_code := public.acc_cash_code(v_method);
@@ -370,7 +389,8 @@ CREATE OR REPLACE FUNCTION public.acc_fn_post_transaction() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
 DECLARE v_total numeric; v_paid numeric; v_rem numeric; v_cash text; v_date date;
 BEGIN
-  IF EXISTS (SELECT 1 FROM pos_security.payment_baselines b WHERE b.order_id=CASE WHEN TG_OP='DELETE' THEN OLD.id ELSE NEW.id END) THEN
+  IF pos_security.lifecycle_has_invoice(CASE WHEN TG_OP='DELETE' THEN OLD.id ELSE NEW.id END)
+    OR EXISTS (SELECT 1 FROM pos_security.payment_baselines b WHERE b.order_id=CASE WHEN TG_OP='DELETE' THEN OLD.id ELSE NEW.id END) THEN
     IF TG_OP='DELETE' THEN RAISE EXCEPTION 'receipt lifecycle unsupported' USING ERRCODE='55000'; END IF;
     RETURN NEW;
   END IF;
