@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useRef, useState, useEffect } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
 
 const ConfirmContext = createContext(null)
@@ -9,9 +9,20 @@ const ConfirmContext = createContext(null)
 export function ConfirmProvider({ children }) {
   const [state, setState] = useState(null) // { title, message, confirmLabel, cancelLabel, danger }
   const resolver = useRef(null)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      resolver.current?.(false)
+      resolver.current = null
+    }
+  }, [])
 
   const confirm = useCallback((opts = {}) => {
+    if (!mounted.current) return Promise.resolve(false)
     return new Promise((resolve) => {
+      resolver.current?.(false)
       resolver.current = resolve
       setState({
         title: opts.title || 'Yakin ingin menghapus data ini?',
@@ -24,6 +35,7 @@ export function ConfirmProvider({ children }) {
   }, [])
 
   const close = useCallback((result) => {
+    if (!mounted.current) return
     setState(null)
     if (resolver.current) { resolver.current(result); resolver.current = null }
   }, [])

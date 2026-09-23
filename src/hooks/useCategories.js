@@ -8,9 +8,9 @@
 // nonaktifkan kategori → SEMUA komponen (Produk, Kasir, Dashboard, Pengaturan)
 // langsung update tanpa refresh.
 // ─────────────────────────────────────────────────────────────
-import { useSyncExternalStore, useEffect } from 'react'
+import { useSyncExternalStore, useEffect, useRef } from 'react'
 import { PRODUCT_CATEGORIES } from '../data/dummyData'
-import { supabase, isSupabaseConfigured } from '../lib/supabase'
+import { getDataClient, isSupabaseConfigured, isDataSessionActive, onDataSessionReset } from '../lib/supabase'
 
 // Bersihkan cache lama localStorage (kategori tidak lagi disimpan permanen).
 try { localStorage.removeItem('skupy_categories_v1') } catch { /* ignore */ }
@@ -43,15 +43,31 @@ function setCats(next, metaRows) {
 
 // ── DB sebagai sumber utama ──
 let dbLoaded = false
+let generation = 0
+let categoryChannel = null
+let categoryClient = null
+onDataSessionReset(() => {
+  generation++
+  if (categoryChannel) void categoryClient.removeChannel(categoryChannel)
+  categoryChannel = null
+  categoryClient = null
+  realtimeStarted = false
+  dbLoaded = false
+  cats = seed()
+  metaById = Object.fromEntries(cats.map(c => [c.id, { label: c.label, icon: c.icon, color: c.color }]))
+  emit()
+})
 async function loadProductCategories() {
-  if (!isSupabaseConfigured) return
+  if (!isSupabaseConfigured || !isDataSessionActive()) return
+  const issued = generation
+  const supabase = getDataClient()
   try {
     // Ambil SEMUA baris (termasuk nonaktif & terhapus) untuk peta nama/icon,
     // supaya produk lama tetap menampilkan nama kategori terakhir.
     const { data, error } = await supabase
       .from('product_categories').select('*')
       .order('sort_order', { ascending: true }).order('label', { ascending: true })
-    if (error || !Array.isArray(data)) return
+    if (error || !Array.isArray(data) || issued !== generation) return
     mergeMeta(data)
     const active = data
       .filter((c) => !c.deleted_at && c.is_active !== false)
@@ -68,10 +84,11 @@ export { loadProductCategories }
 loadProductCategories()
 let realtimeStarted = false
 function startRealtime() {
-  if (realtimeStarted || !isSupabaseConfigured) return
+  if (realtimeStarted || !isSupabaseConfigured || !isDataSessionActive()) return
   realtimeStarted = true
   try {
-    supabase.channel('product-categories-realtime')
+    categoryClient = getDataClient()
+    categoryChannel = categoryClient.channel('product-categories-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'product_categories' }, () => { loadProductCategories() })
       .subscribe()
   } catch { /* realtime opsional */ }
@@ -87,6 +104,8 @@ function slugify(s) {
 }
 
 export function addCategory({ label, icon, color, thumbnail, active = true }) {
+  if (!isDataSessionActive()) return { ok: false, error: 'Silakan login kembali.' }
+  const supabase = getDataClient()
   const name = (label || '').trim()
   if (!name) return { ok: false, error: 'Nama kategori wajib diisi' }
   if (cats.some((c) => c.label.toLowerCase() === name.toLowerCase())) {
@@ -112,6 +131,8 @@ export function addCategory({ label, icon, color, thumbnail, active = true }) {
 }
 
 export function updateCategory(id, { label, icon, color, thumbnail, active }) {
+  if (!isDataSessionActive()) return { ok: false, error: 'Silakan login kembali.' }
+  const supabase = getDataClient()
   const name = label != null ? String(label).trim() : null
   if (name === '') return { ok: false, error: 'Nama kategori tidak boleh kosong' }
   if (name && cats.some((c) => c.id !== id && c.label.toLowerCase() === name.toLowerCase())) {
@@ -155,6 +176,8 @@ export function setCategoryActive(id, active) {
 }
 
 export function deleteCategory(id) {
+  if (!isDataSessionActive()) return { ok: false, error: 'Silakan login kembali.' }
+  const supabase = getDataClient()
   if (cats.length <= 1) return { ok: false, error: 'Minimal harus ada 1 kategori aktif' }
   setCats(cats.filter((c) => c.id !== id)) // metaById tetap simpan nama → produk lama aman
   if (isSupabaseConfigured) {
@@ -166,12 +189,15 @@ export function deleteCategory(id) {
 
 // Daftar LENGKAP (aktif + nonaktif, non-deleted) untuk halaman manajemen.
 export async function listAllCategories() {
+  if (!isDataSessionActive()) return []
+  const issued = generation
+  const supabase = getDataClient()
   if (!isSupabaseConfigured) return getCategories().map((c) => ({ ...c, active: c.active !== false }))
   try {
     const { data, error } = await supabase
       .from('product_categories').select('*').is('deleted_at', null)
       .order('sort_order', { ascending: true }).order('label', { ascending: true })
-    if (error || !Array.isArray(data)) return getCategories()
+    if (error || !Array.isArray(data) || issued !== generation) return getCategories()
     mergeMeta(data)
     return data.map((c) => ({ id: c.id, label: c.label, icon: c.icon || '📦', color: c.color || null, thumbnail: c.thumbnail_url || null, active: c.is_active !== false }))
   } catch { return getCategories() }
@@ -191,7 +217,13 @@ export function getCatMeta(id) {
 }
 
 export function useCategories() {
+  const issued = useRef(generation).current
   const categories = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   useEffect(() => { if (!dbLoaded) loadProductCategories(); startRealtime() }, [])
-  return { categories, addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories, refreshCategories, loadProductCategories }
+  const current = () => issued === generation && isDataSessionActive()
+  const mutation = action => (...args) => current() ? action(...args) : { ok: false, error: 'Sesi sudah berakhir. Silakan login kembali.' }
+  const read = action => (...args) => current() ? action(...args) : Promise.resolve([])
+  return { categories, addCategory: mutation(addCategory), updateCategory: mutation(updateCategory),
+    deleteCategory: mutation(deleteCategory), setCategoryActive: mutation(setCategoryActive),
+    listAllCategories: read(listAllCategories), refreshCategories: read(refreshCategories), loadProductCategories: read(loadProductCategories) }
 }

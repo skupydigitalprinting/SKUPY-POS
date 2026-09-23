@@ -1,0 +1,7 @@
+{
+  "name": "skupy-security-lab",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test --test-concurrency=1 identity.test.js username.test.js recovery.test.js business.test.js accounts.test.js storage.test.js backup.test.js" },
+  "devDependencies": { "@electric-sql/pglite": "0.3.14" }
+}

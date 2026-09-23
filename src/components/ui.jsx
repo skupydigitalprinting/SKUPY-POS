@@ -284,7 +284,7 @@ function ProductImageContent({ src, alt, className, fallbackSize }) {
   return (
     <div className={`relative overflow-hidden ${className}`}
       style={{ background: image.kind === 'photo' ? undefined : '#eef0f2' }}
-      title={isIllustration ? label : undefined}>
+      title={isIllustration ? label : image.kind === 'text' ? alt || image.text : undefined}>
       {image.src ? (
         <img
           key={image.src}
@@ -299,10 +299,7 @@ function ProductImageContent({ src, alt, className, fallbackSize }) {
           decoding="async"
         />
       ) : (
-        <div className="flex items-center justify-center w-full h-full"
-          role="img" aria-label={`Foto belum tersedia: ${alt || 'produk'}`}>
-          <Package size={Math.min(fallbackSize * 0.55, 44)} color="#79828d" strokeWidth={1.5} />
-        </div>
+        <ProductNameThumbnail text={image.text} label={alt || image.text} fallbackSize={fallbackSize} />
       )}
       {isIllustration && fallbackSize >= 60 && (
         <span className="absolute bottom-2 right-2 z-10 pointer-events-none"
@@ -311,6 +308,36 @@ function ProductImageContent({ src, alt, className, fallbackSize }) {
           Ilustrasi
         </span>
       )}
+    </div>
+  )
+}
+
+function ProductNameThumbnail({ text, label, fallbackSize }) {
+  const box = React.useRef(null)
+  const [height, setHeight] = React.useState(0)
+  React.useEffect(() => {
+    const element = box.current
+    if (!element) return
+    const measure = () => setHeight(element.clientHeight)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+  const padding = height >= 80 ? 16 : 4
+  const available = Math.max(0, height - padding * 2)
+  const fontSize = Math.max(10, Math.min(22, fallbackSize * 0.28, available / 2.5 || 10))
+  // Clamp to complete lines in the actual box, including compact order rows.
+  const lines = Math.max(1, Math.min(3, Math.floor(available / (fontSize * 1.25))))
+  return (
+    <div ref={box} className="flex items-center justify-center w-full h-full text-center"
+      style={{ padding, color: '#344b59', background: '#e6edf0' }}
+      role="img" aria-label={`Thumbnail tulisan: ${label}`}>
+      <span style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical',
+        WebkitLineClamp: lines, overflow: 'hidden', overflowWrap: 'anywhere',
+        maxWidth: '100%', fontWeight: 700, fontSize, lineHeight: 1.25, letterSpacing: 0 }}>
+        {text}
+      </span>
     </div>
   )
 }

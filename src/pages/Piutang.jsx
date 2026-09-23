@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react'
+import React, { useMemo, useState, useEffect, useRef } from 'react'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
@@ -12,6 +12,7 @@ import { formatRupiah, formatDate, timeAgo, parseCurrency, toMoney } from '../ut
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 import { useInvoicePreview } from '../components/InvoicePreview'
+import { secureAuthEnabled } from '../lib/supabase'
 
 const STATUS_OPTIONS = [
   { id: 'all', label: 'Semua' },
@@ -43,7 +44,7 @@ export default function Piutang({
   const { openInvoice } = useInvoicePreview()
   const [recvChanges, setRecvChanges] = useState([])
   const isOwner = currentUser?.role === 'owner'
-  const canEditCustomer = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const canEditCustomer = !secureAuthEnabled && (currentUser?.role === 'owner' || currentUser?.role === 'admin')
   const [reassign, setReassign] = useState(null) // { group } | null
   const [reassignNewId, setReassignNewId] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
@@ -76,6 +77,12 @@ export default function Piutang({
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('transfer')
   const [paying, setPaying] = useState(false)
+  const paymentPending = useRef(false)
+  const [paymentIssues, setPaymentIssues] = useState({})
+  const paymentIssue = payTarget && paymentIssues[payTarget.key]
+  const [deleteIssues, setDeleteIssues] = useState({})
+  const [deleting, setDeleting] = useState(false)
+  const deletionPending = useRef(false)
   const [delTarget, setDelTarget] = useState(null)        // single debt
   const [historyTarget, setHistoryTarget] = useState(null) // group
   const [history, setHistory] = useState([])
@@ -215,13 +222,14 @@ export default function Piutang({
 
   // ── Bayar Gabungan ──
   const openPay = (g) => {
+    if (paymentPending.current) return
     setPayTarget(g)
-    setPayAmount(String(g.totalRemaining))  // prefill full (integer)
-    setPayMethod('transfer')
+    setPayAmount(paymentIssues[g.key]?.amount ?? String(g.totalRemaining))
+    setPayMethod(paymentIssues[g.key]?.method ?? 'transfer')
   }
 
   const handlePayCombined = async () => {
-    if (paying || !payTarget) return
+    if (paying || paymentPending.current || !payTarget || paymentIssue?.needsReconciliation) return
     const g = liveGroup(payTarget)
     if (!payAmount || String(payAmount).trim() === '') return toast.error('Masukkan nominal pembayaran')
     let amount = parseCurrency(payAmount)
@@ -229,7 +237,9 @@ export default function Piutang({
     if (amount > g.totalRemaining) amount = g.totalRemaining   // clamp
     if (amount <= 0) return toast.error('Tidak ada sisa hutang untuk dibayar')
 
+    paymentPending.current = true
     setPaying(true)
+    let paid = 0
     try {
       let res
       if (g.customerId && payCustomerDebtsFIFO) {
@@ -237,27 +247,55 @@ export default function Piutang({
       } else {
         // Fallback (customerId kosong): loop payDebt sesuai alokasi FIFO
         const alloc = allocateFIFO(g.activeInvoices, amount).filter(a => a.pay > 0)
-        let okAny = false
+        res = { ok: true, paid: 0 }
         for (const a of alloc) {
           const r = await payDebt(a.inv.id, a.pay, payMethod, 'Pembayaran gabungan (FIFO)')
-          okAny = okAny || r.ok
+          if (r?.ok !== true || r.needsReconciliation) {
+            res = { ...r, ok: false, paid, needsReconciliation: paid > 0 || r?.ok !== false || !!r?.needsReconciliation }
+            break
+          }
+          paid += a.pay
+          res.paid = paid
         }
-        res = { ok: okAny }
       }
-      if (res.ok) {
+      if (res?.ok === true && !res.needsReconciliation) {
         toast.success('Pembayaran gabungan tercatat')
+        setPaymentIssues(prev => { const next = { ...prev }; delete next[payTarget.key]; return next })
         setPayTarget(null); setPayAmount('')
       } else {
-        toast.error(res.error || 'Gagal memproses pembayaran')
+        const issue = {
+          error: res?.error || 'Hasil pembayaran belum terkonfirmasi.',
+          needsReconciliation: res?.ok !== false || !!res?.needsReconciliation,
+          paid: res?.paid ?? paid, amount: payAmount, method: payMethod,
+        }
+        setPaymentIssues(prev => ({ ...prev, [payTarget.key]: issue }))
+        toast.error(issue.error)
       }
-    } finally { setPaying(false) }
+    } catch {
+      const issue = { error: 'Koneksi terputus. Sebagian pembayaran mungkin sudah tersimpan.',
+        needsReconciliation: true, paid, amount: payAmount, method: payMethod }
+      setPaymentIssues(prev => ({ ...prev, [payTarget.key]: issue }))
+      toast.error(issue.error)
+    } finally { paymentPending.current = false; setPaying(false) }
   }
 
   const handleDelete = async () => {
-    if (!delTarget) return
-    const res = await deleteDebt(delTarget.id)
-    if (res.ok) { toast.success('Hutang dihapus'); setDelTarget(null) }
-    else toast.error(res.error || 'Gagal')
+    if (!delTarget || deletionPending.current || deleteIssues[delTarget.id]?.needsReconciliation) return
+    deletionPending.current = true
+    setDeleting(true)
+    try {
+      const res = await deleteDebt(delTarget.id)
+      if (res?.ok === true && !res.needsReconciliation) {
+        toast.success('Hutang dihapus'); setDelTarget(null)
+      } else {
+        const issue = { error: res?.error || 'Hasil penghapusan belum terkonfirmasi.',
+          needsReconciliation: res?.ok !== false || !!res?.needsReconciliation }
+        setDeleteIssues(prev => ({ ...prev, [delTarget.id]: issue }))
+        toast.error(issue.error)
+      }
+    } catch {
+      setDeleteIssues(prev => ({ ...prev, [delTarget.id]: { error: 'Koneksi terputus. Penghapusan mungkin sudah tersimpan.', needsReconciliation: true } }))
+    } finally { deletionPending.current = false; setDeleting(false) }
   }
 
   const openHistory = async (g) => {
@@ -680,7 +718,7 @@ export default function Piutang({
       </Modal>
 
       {/* ─── BAYAR GABUNGAN MODAL — FIFO simulation ─── */}
-      <Modal open={!!payTarget} onClose={() => !paying && setPayTarget(null)}
+      <Modal open={!!payTarget} onClose={() => !paymentPending.current && setPayTarget(null)}
         title="Bayar Hutang Customer"
         subtitle={payTarget?.customer?.name} size="md">
         {payTarget && (() => {
@@ -695,11 +733,16 @@ export default function Piutang({
           const totalPay = alloc.reduce((s, a) => s + a.pay, 0)
           const remainingAfter = Math.max(0, totalRemaining - totalPay)
           const formattedAmt = currentPayment > 0 ? new Intl.NumberFormat('id-ID').format(currentPayment) : ''
-          const canSubmit = !paying && currentPayment > 0 && !isEmpty
+          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !isEmpty
 
           return (
             <div className="space-y-4">
               {/* Total sisa */}
+              {paymentIssue && <div role="alert" className="p-3 text-sm rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
+                {paymentIssue.error}
+                {paymentIssue.needsReconciliation && <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>}
+                {paymentIssue.paid > 0 && <p className="mt-2">Alokasi terkonfirmasi: {formatRupiah(paymentIssue.paid)}. Sisa alokasi belum terkonfirmasi.</p>}
+              </div>}
               <div className="rounded-xl p-4 flex justify-between items-center"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <span className="text-xs uppercase tracking-wider font-bold"
@@ -722,6 +765,7 @@ export default function Piutang({
                   <input
                     type="text" inputMode="numeric" autoFocus
                     value={formattedAmt}
+                    disabled={paying || !!paymentIssue?.needsReconciliation}
                     onChange={(e) => setPayAmount(e.target.value.replace(/[^\d]/g, ''))}
                     onKeyDown={(e) => { if (e.key === 'Enter' && canSubmit) { e.preventDefault(); handlePayCombined() } }}
                     placeholder="0"
@@ -797,7 +841,7 @@ export default function Piutang({
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {[{ id: 'cash', label: 'Cash', icon: '💵' }, { id: 'transfer', label: 'Transfer', icon: '🏦' }, { id: 'qris', label: 'QRIS', icon: '📱' }].map(m => (
-                    <button key={m.id} onClick={() => setPayMethod(m.id)}
+                    <button key={m.id} onClick={() => setPayMethod(m.id)} disabled={paying || !!paymentIssue?.needsReconciliation}
                       className="flex flex-col items-center gap-1 py-2 rounded-xl text-xs font-medium"
                       style={{
                         background: payMethod === m.id ? 'rgba(139,92,246,0.15)' : 'var(--bg-card)',
@@ -868,7 +912,7 @@ export default function Piutang({
       </Modal>
 
       {/* Delete confirm — single nota */}
-      <Modal open={!!delTarget} onClose={() => setDelTarget(null)} title="Hapus Catatan Hutang" size="sm">
+      <Modal open={!!delTarget} onClose={() => !deletionPending.current && setDelTarget(null)} title="Hapus Catatan Hutang" size="sm">
         <div className="text-center py-2">
           <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
             style={{ background: 'rgba(255,77,106,0.12)', border: '2px solid rgba(255,77,106,0.3)' }}>
@@ -877,9 +921,13 @@ export default function Piutang({
           <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
             Hapus catatan hutang <strong>{delTarget?.invoiceNo}</strong>? Riwayat pembayaran juga akan terhapus.
           </p>
+          {deleteIssues[delTarget?.id] && <p role="alert" className="mb-3 text-sm" style={{ color: 'var(--red)' }}>
+            {deleteIssues[delTarget.id].error}
+            {deleteIssues[delTarget.id].needsReconciliation && ' Perlu rekonsiliasi oleh owner. Jangan ulang penghapusan.'}
+          </p>}
           <div className="flex gap-3">
-            <Button variant="secondary" className="flex-1" onClick={() => setDelTarget(null)}>Batal</Button>
-            <Button variant="danger" className="flex-1" onClick={handleDelete}>Ya, Hapus</Button>
+            <Button variant="secondary" className="flex-1" onClick={() => setDelTarget(null)} disabled={deleting}>Batal</Button>
+            <Button variant="danger" className="flex-1" onClick={handleDelete} disabled={deleting || !!deleteIssues[delTarget?.id]?.needsReconciliation}>Ya, Hapus</Button>
           </div>
         </div>
       </Modal>

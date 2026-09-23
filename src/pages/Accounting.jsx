@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import {
   Loader2, TrendingUp, TrendingDown, Wallet, Landmark, Scale, Receipt,
   ShoppingCart, BookOpen, Plus, Trash2, AlertTriangle, RefreshCw, Truck,
@@ -16,6 +16,7 @@ import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/Confirm'
 import { useInvoicePreview } from '../components/InvoicePreview'
 import { useAccounting } from '../hooks/useAccounting'
+import { loadPeriodReport, periodReportState } from '../utils/financialReports'
 
 const TABS = [
   { id: 'ringkasan', label: 'Ringkasan', icon: Scale },
@@ -347,18 +348,25 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [allTime, setAllTime] = useState(null) // { omset, pengeluaran } — tidak ikut filter tanggal
   // Total pengeluaran (non-sewa) dari getOutflowTransactions — SAMA dengan total
   // di modal Rincian, supaya kartu Uang Keluar = jumlah baris rincian.
-  const [pengOut, setPengOut] = useState(null)   // periode aktif
+  const [pengOut, setPengOut] = useState(null)   // { from, to, status, data, error }
   const [pengOutAll, setPengOutAll] = useState(null) // semua waktu
   // Default filter saat Accounting pertama dibuka = HARI INI (from = to = hari ini).
   // (Tab default tetap 'ringkasan'.) Jika user pilih preset lain, state mengikuti.
   const [from, setFrom] = useState(acc.todayISO())
   const [to, setTo] = useState(acc.todayISO())
+  const reportPeriod = `${from}|${to}`
+  const activeReportPeriod = useRef(reportPeriod)
+  activeReportPeriod.current = reportPeriod
+  const dashboardRequest = useRef(0)
+  useEffect(() => () => { dashboardRequest.current += 1 }, [])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [reloadToken, setReloadToken] = useState(0)
   const [setupNeeded, setSetupNeeded] = useState(false)
   const [setupError, setSetupError] = useState('')
   const [d, setD] = useState(null)
+  const [dPeriod, setDPeriod] = useState(null)
+  const dashboardIsCurrent = dPeriod === reportPeriod
   const [cashflowSummary, setCashflowSummary] = useState(null)
   const [employeeAdvanceBalance, setEmployeeAdvanceBalance] = useState(null)
   const [syncing, setSyncing] = useState(false)
@@ -509,29 +517,44 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [hEdit, setHEdit] = useState(null) // payment being edited
 
   const loadDashboard = async () => {
-    const res = await acc.getDashboard(from, to)
-    if (!res.ok) { if (/function|relation|does not exist|schema cache|acc_dashboard/i.test(res.error || '')) { setSetupNeeded(true); setSetupError(res.error || '') } else toast.error(res.error || 'Gagal') }
+    const request = ++dashboardRequest.current
+    const isCurrent = () => request === dashboardRequest.current && activeReportPeriod.current === reportPeriod
+    setPengOut({ from, to, status: 'loading', data: null, error: '' })
+    setLoadError('')
+    let res
+    try { res = await acc.getDashboard(from, to) }
+    catch (error) { res = { ok: false, error: error?.message || 'Laporan tidak tersedia' } }
+    if (!isCurrent()) return
+    if (!res.ok || !res.data) {
+      const error = res.error || 'Laporan tidak tersedia'
+      setD(null); setDPeriod(null); setLoadError(error)
+      setPengOut({ from, to, status: 'error', data: null, error })
+      setCashflowSummary({ from, to, status: 'error', data: null, error })
+      if (/function|relation|does not exist|schema cache|acc_dashboard/i.test(error)) { setSetupNeeded(true); setSetupError(error) }
+    }
     else {
-      setD(res.data); setSetupNeeded(false); setSetupError('')
+      setD(res.data); setDPeriod(reportPeriod); setSetupNeeded(false); setSetupError('')
       const advanceBalance = await acc.getEmployeeAdvanceBalance()
+      if (!isCurrent()) return
       if (advanceBalance.ok) setEmployeeAdvanceBalance(advanceBalance.value)
       else console.warn('[Accounting] Gagal memuat saldo kasbon terpusat:', advanceBalance.error)
       const assetPaid = await acc.getAssetPaymentTotals(to)
+      if (!isCurrent()) return
       if (assetPaid.ok) setAssetPaymentTotals(assetPaid)
       const chk = await acc.getPiutangAktif()
+      if (!isCurrent()) return
       if (chk.ok && Math.abs((chk.value || 0) - Math.round(res.data.piutang_aktif || 0)) > 1)
         console.warn('[Accounting] Piutang tidak sinkron — RPC:', res.data.piutang_aktif, 'debts:', chk.value)
-      // Total pengeluaran (non-sewa) dari daftar rincian → kartu Uang Keluar =
-      // jumlah baris di modal Rincian. Fallback ke pengeluaran_total bila gagal.
-      const out = await acc.getOutflowTransactions(from, to)
-      setPengOut(out.ok ? out.total : Math.round(res.data.pengeluaran_total || 0))
+      // Unavailable detail is not replaced by the RPC estimate.
+      const out = await loadPeriodReport({ from, to, load: () => acc.getOutflowTransactions(from, to), publish: setPengOut, isCurrent })
+      if (!isCurrent()) return
       // BUG-5 self-check: kartu Uang Keluar (Σ baris rincian) vs RPC pengeluaran_total.
       // Jika menyimpang > Rp 1 → warning agar divergensi tidak diam-diam.
-      if (out.ok && Math.abs((out.total || 0) - Math.round(res.data.pengeluaran_total || 0)) > 1)
+      if (out?.ok && Math.abs((out.total || 0) - Math.round(res.data.pengeluaran_total || 0)) > 1)
         console.warn('[Accounting] Uang Keluar tidak sinkron — rincian:', out.total, 'RPC pengeluaran_total:', Math.round(res.data.pengeluaran_total || 0))
       // Segarkan SEMUA komponen Total Aset (Aset Tetap & Sewa Dibayar Dimuka)
       // supaya Total Aset & Kekayaan Bersih ikut berubah saat ada hapus/edit.
-      loadAssets(); loadRents()
+      loadAssets(isCurrent); loadRents(isCurrent)
       loadAllTime() // segarkan card All Time (realtime ikut tiap loadDashboard)
     }
   }
@@ -555,9 +578,9 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const loadSuppliers = async () => { const r = await acc.listSuppliers(supSearch); if (r.ok) setSuppliers(r.data) }
   const loadSupDebts = async () => { const r = await acc.listSupplierDebts(); if (r.ok) setSupDebts(r.data) }
   const loadBankLoans = async () => { const r = await acc.listBankLoans(); if (r.ok) setBankLoans(r.data) }
-  const loadAssets = async () => { const r = await acc.listAssets(); if (r.ok) setAssets(r.data); return r }
+  const loadAssets = async (isCurrent = () => true) => { const r = await acc.listAssets(); if (r.ok && isCurrent()) setAssets(r.data); return r }
   const loadAssetCats = async () => { const r = await acc.listAssetCategories(); if (r.ok) setAssetCats(r.data); return r }
-  const loadRents = async () => { const r = await acc.listRents(); if (r.ok) setRents(r.data) }
+  const loadRents = async (isCurrent = () => true) => { const r = await acc.listRents(); if (r.ok && isCurrent()) setRents(r.data) }
   const loadRecap = async () => { const r = await acc.getRecapAdmin(from, to); if (r.ok) setRecap(r.data) }
   const [kasbonNeedsMigration, setKasbonNeedsMigration] = useState(false)
   const loadEmployees = async () => { const r = await acc.listEmployees(); if (r.ok) setEmployees(r.data) }
@@ -657,30 +680,32 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   // hutang bank + gaji + operasional + biaya lain. pengeluaran_total sudah mencakup
   // semuanya (lihat acc_dashboard). Jadi bayar hutang bank 50jt → laba turun 50jt.
   // Laba = Omzet − Total Pengeluaran − Beban Sewa berjalan (rumus resmi bersama netProfit)
-  // Basis pengeluaran (non-sewa) = total daftar rincian bila tersedia, jika belum
-  // termuat pakai pengeluaran_total RPC. Dipakai agar kartu = jumlah baris rincian.
-  const ukBasis = useMemo(() => pengOut != null ? pengOut : (d ? Math.round(d.pengeluaran_total || 0) : 0), [pengOut, d])
-  const laba = useMemo(() => d ? netProfit(d.penjualan, ukBasis, rentAgg.bebanPeriod) : 0, [d, rentAgg, ukBasis])
+  // Keep the formula; only complete current-period inputs may supply its values.
+  const outflowState = periodReportState(pengOut, from, to)
+  const ukBasis = outflowState.status === 'ready' ? outflowState.data.total : null
+  const laba = useMemo(() => d && dashboardIsCurrent && ukBasis != null ? netProfit(d.penjualan, ukBasis, rentAgg.bebanPeriod) : null, [d, dashboardIsCurrent, rentAgg, ukBasis])
+  const outflowLabel = outflowState.status === 'error' ? 'Tidak tersedia' : 'Memuat...'
   const hutangAset = useMemo(() => assets.reduce((sum, asset) => sum + (asset.payment_tracking ? Math.round(asset.purchase_outstanding || 0) : 0), 0), [assets])
   const totalHutang = useMemo(() => d ? Math.round((d.hutang_supplier || 0) + (d.hutang_bank || 0) + hutangAset) : 0, [d, hutangAset])
 
   // Arus kas memakai mutasi kas aktual. Amortisasi sewa tetap menjadi beban
   // laba-rugi, tetapi tidak dianggap kas keluar pada bulan amortisasinya.
-  const totalCashIn = useMemo(() => cashflowSummary?.totalMasuk ?? (d ? Math.round(d.uang_masuk_total || 0) : 0), [cashflowSummary, d])
-  const totalCashOut = useMemo(() => cashflowSummary?.totalKeluar ?? Math.round(ukBasis), [cashflowSummary, ukBasis])
-  const netCashFlow = useMemo(() => totalCashIn - totalCashOut, [totalCashIn, totalCashOut])
+  const cashflowState = periodReportState(cashflowSummary, from, to)
+  const totalCashIn = cashflowState.status === 'ready' ? cashflowState.data.totalMasuk : null
+  const totalCashOut = cashflowState.status === 'ready' ? cashflowState.data.totalKeluar : null
+  const netCashFlow = totalCashIn != null && totalCashOut != null ? totalCashIn - totalCashOut : null
+  const cashflowLabel = cashflowState.status === 'error' ? 'Tidak tersedia' : 'Memuat...'
   const periodText = `${dt(from)} – ${dt(to)}`
   const currentPositionText = `Posisi saat ini · ${dt(todayYMD())}`
 
   // LOG AUDIT SEMENTARA — rincian sumber Uang Masuk / Uang Keluar / Kasbon + selisih.
   // Tujuan: pastikan kasbon baru masuk Uang Keluar & pembayaran kasbon masuk Uang Masuk.
   useEffect(() => {
-    if (!d || tab !== 'ringkasan') return
+    if (!d || !dashboardIsCurrent || tab !== 'ringkasan') return
     let alive = true
     ;(async () => {
-      const cf = await acc.getCashflowDetail(from, to)
-      if (!alive) return
-      if (cf.ok) setCashflowSummary(cf)
+      const cf = await loadPeriodReport({ from, to, load: () => acc.getCashflowDetail(from, to), publish: setCashflowSummary, isCurrent: () => alive && activeReportPeriod.current === reportPeriod })
+      if (!alive || !cf) return
       const r = Math.round
       // Rincian Uang Masuk per sumber (dari getCashflowDetail.masuk[]).
       const masukBySource = {}
@@ -705,22 +730,22 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       }
       console.group('%c[AUDIT Uang Masuk / Keluar / Kasbon]', 'color:#10d98a;font-weight:bold')
       console.log('Periode:', from, '→', to)
-      console.log('UANG MASUK total (kartu):', r(totalCashIn), '| RPC uang_masuk_total:', r(d.uang_masuk_total || 0))
+      console.log('UANG MASUK total (rincian):', r(cf.totalMasuk), '| RPC uang_masuk_total:', r(d.uang_masuk_total || 0))
       console.table(masukRPC)
       console.log('Uang Masuk per sumber (cashflow detail):', masukBySource, '→ Σ', r((cf.masuk || []).reduce((s, x) => s + (x.amount || 0), 0)))
-      console.log('UANG KELUAR total (kartu):', r(totalCashOut), '| RPC pengeluaran_total + beban sewa:', r((d.pengeluaran_total || 0) + rentAgg.bebanPeriod))
+      console.log('UANG KELUAR total (rincian):', r(cf.totalKeluar), '| RPC pengeluaran_total + beban sewa:', r((d.pengeluaran_total || 0) + rentAgg.bebanPeriod))
       console.table(keluarRPC)
       console.log('Uang Keluar per sumber (cashflow detail):', keluarBySource, '→ Σ', r((cf.keluar || []).reduce((s, x) => s + (x.amount || 0), 0)))
       console.log('KASBON baru (uang keluar):', r(d.kasbon_keluar || 0))
       console.log('KASBON pembayaran (uang masuk):', r(d.kasbon_masuk || 0))
-      console.log('ARUS SALDO BERSIH = Masuk − Keluar =', r(totalCashIn), '−', r(totalCashOut), '=', r(netCashFlow))
-      const selisih = r(totalCashIn - totalCashOut - netCashFlow)
+      console.log('ARUS SALDO BERSIH = Masuk − Keluar =', r(cf.totalMasuk), '−', r(cf.totalKeluar), '=', r(cf.net))
+      const selisih = r(cf.totalMasuk - cf.totalKeluar - cf.net)
       console.log('Selisih kontrol (harus 0):', selisih)
       console.groupEnd()
     })()
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [d, from, to, tab, totalCashIn, totalCashOut, netCashFlow])
+  }, [d, dPeriod, from, to, tab, reloadToken])
 
   const doSync = async () => {
     if (syncing) return; setSyncing(true)
@@ -911,14 +936,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     setDetail({ kind, title, color, from: f, to: t, allTime: !!range, rows: [], total: 0, loading: true })
     const r = await acc.getCardDetail(kind, f, t)
     // Sinkronkan kartu Uang Keluar ke total rincian (non-sewa) supaya selalu sama.
-    if (kind === 'uang_keluar' && r.ok) { if (range) setPengOutAll(r.total); else setPengOut(r.total) }
+    if (kind === 'uang_keluar' && r.ok) { if (range) setPengOutAll(r.total); else setPengOut({ from: f, to: t, status: 'ready', data: r, error: '' }) }
     const inj = injectRentAmort(kind, !!range, r.ok ? r.rows : [], r.ok ? r.total : 0)
     setDetail(d => d && d.kind === kind ? { ...d, rows: inj.rows, total: inj.total, loading: false } : d)
   }
   const reloadDetail = async () => {
     if (!detail) return
     const r = await acc.getCardDetail(detail.kind, detail.from || from, detail.to || to)
-    if (detail.kind === 'uang_keluar' && r.ok) { if (detail.allTime) setPengOutAll(r.total); else setPengOut(r.total) }
+    if (detail.kind === 'uang_keluar' && r.ok) { if (detail.allTime) setPengOutAll(r.total); else setPengOut({ from: detail.from || from, to: detail.to || to, status: 'ready', data: r, error: '' }) }
     const inj = injectRentAmort(detail.kind, !!detail.allTime, r.ok ? r.rows : [], r.ok ? r.total : 0)
     setDetail(d => d ? { ...d, rows: inj.rows, total: inj.total } : d)
     loadDashboard()
@@ -1628,7 +1653,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
       )}
 
       {/* ── RINGKASAN ── */}
-      {tab === 'ringkasan' && !loading && d && (
+      {tab === 'ringkasan' && !loading && d && dashboardIsCurrent && (
         <div className="space-y-4">
           {/* BARIS 1: LABA BERSIH — KPI utama, full width, OWNER ONLY */}
           {isOwner && (
@@ -1644,8 +1669,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
                 <span className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)', fontFamily: "'Inter', sans-serif" }}>Laba Bersih Periode</span>
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontSize: 9, fontFamily: "'Inter', sans-serif" }}>OWNER</span>
               </div>
-              <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{fmt(laba)}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Periode {periodText} · Penjualan {fmt(d.penjualan)} − Beban {fmt(ukBasis + rentAgg.bebanPeriod)}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
+              <div style={{ fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.02em', color: laba >= 0 ? '#10d98a' : '#ef4444', fontSize: 'clamp(30px,9vw,46px)', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{laba != null ? fmt(laba) : outflowLabel}</div>
+              <div className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)', fontFamily: "'Inter', sans-serif" }}>Periode {periodText} · Penjualan {fmt(d.penjualan)} − Beban {ukBasis != null ? fmt(ukBasis + rentAgg.bebanPeriod) : outflowLabel}<span style={{ opacity: 0.7 }}> (termasuk beban sewa {fmt(rentAgg.bebanPeriod)}; laba operasional — di luar laba jual aset)</span></div>
             </div>
           )}
 
@@ -1667,14 +1692,14 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Card icon={Wallet} label="Penjualan / Omzet" value={fmt(d.penjualan)} color="#3b82f6" sub={`Periode ${periodText}`} onClick={() => openDetail('penjualan', 'Penjualan / Omzet', '#3b82f6')} />
             <Card icon={Wallet} label="Total Omset All Time" value={allTime ? fmt(allTime.omset) : '…'} color="#2563eb" sub={`Semua waktu s/d ${dt(todayYMD())}`} onClick={() => openDetail('penjualan', 'Total Omset — Semua Waktu', '#2563eb', { from: ALL_TIME_FROM, to: todayYMD() })} />
-            <Card icon={Scale} label="Perubahan Kas Bersih" value={fmt(netCashFlow)} color="#14b8a6" sub={`Periode ${periodText} · Operasi/Investasi/Pendanaan`} onClick={() => setArusKasOpen(true)} />
+            <Card icon={Scale} label="Perubahan Kas Bersih" value={netCashFlow != null ? fmt(netCashFlow) : cashflowLabel} color="#14b8a6" sub={`Periode ${periodText} · Operasi/Investasi/Pendanaan`} onClick={netCashFlow != null ? () => setArusKasOpen(true) : undefined} />
             <Card icon={TrendingUp} label="Piutang Sudah Dibayar" value={fmt(d.sudah_bayar)} color="#4ade80" sub="Akumulasi pada seluruh data piutang aktif" onClick={() => openDetail('sudah_bayar', 'Piutang Sudah Dibayar', '#4ade80')} />
-            <Card icon={TrendingUp} label="Kas Masuk" value={fmt(totalCashIn)} color="#10d98a" sub={`Kas aktual · periode ${periodText}`} onClick={() => setArusKasOpen(true)} />
+            <Card icon={TrendingUp} label="Kas Masuk" value={totalCashIn != null ? fmt(totalCashIn) : cashflowLabel} color="#10d98a" sub={`${totalCashIn != null ? 'Kas aktual' : cashflowLabel} · periode ${periodText}`} onClick={totalCashIn != null ? () => setArusKasOpen(true) : undefined} />
           </div>
 
           {/* BARIS 2 — Kewajiban & Biaya: Uang Keluar(merah) · Beban(kuning tua) · Hutang Supplier(orange) · Persediaan(ungu) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card icon={TrendingDown} label="Kas Keluar" value={fmt(totalCashOut)} color="#ef4444" sub={`Kas aktual · periode ${periodText}`} onClick={() => setArusKasOpen(true)} />
+            <Card icon={TrendingDown} label="Kas Keluar" value={totalCashOut != null ? fmt(totalCashOut) : cashflowLabel} color="#ef4444" sub={`${totalCashOut != null ? 'Kas aktual' : cashflowLabel} · periode ${periodText}`} onClick={totalCashOut != null ? () => setArusKasOpen(true) : undefined} />
             <Card icon={TrendingDown} label="Total Pengeluaran All Time" value={(pengOutAll != null || allTime) ? fmt((pengOutAll != null ? pengOutAll : allTime.pengeluaran) + rentBebanAllTimeAcc) : '…'} color="#dc2626" sub={`Semua waktu s/d ${dt(todayYMD())}`} onClick={() => openDetail('uang_keluar', 'Total Pengeluaran — Semua Waktu', '#dc2626', { from: ALL_TIME_FROM, to: todayYMD() })} />
             <Card icon={Wallet} label="Total Gaji Karyawan" value={fmt(d.gaji || 0)} color="#d97706" sub={`Dibayar pada periode ${periodText}`} onClick={() => setSalaryDetailOpen(true)} />
             <Card icon={Truck} label="Hutang Supplier" value={fmt(d.hutang_supplier)} color="#f97316" sub={currentPositionText} onClick={() => openDetail('hutang_supplier', 'Hutang Supplier', '#f97316')} />

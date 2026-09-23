@@ -2,11 +2,11 @@ import React, { useState } from 'react'
 import { LogIn, User, Lock, Eye, EyeOff, AlertCircle, Check } from 'lucide-react'
 import Logo from '../components/Logo'
 
-export default function Login({ login, storeInfo, busy }) {
+export default function Login({ login, storeInfo, busy, authError = '' }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
-  const [remember, setRemember] = useState(true)
+  const [remember, setRemember] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -145,7 +145,7 @@ export default function Login({ login, storeInfo, busy }) {
               </label>
             </div>
 
-            {error && (
+            {(error || authError) && (
               <div
                 className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold animate-fadeIn"
                 style={{
@@ -155,7 +155,7 @@ export default function Login({ login, storeInfo, busy }) {
                 }}
               >
                 <AlertCircle size={13} />
-                {error}
+                {error || authError}
               </div>
             )}
 
@@ -185,21 +185,6 @@ export default function Login({ login, storeInfo, busy }) {
             </button>
           </form>
 
-          {/* Hint */}
-          <div
-            className="mt-5 p-3 rounded-xl text-xs"
-            style={{
-              background: 'rgba(139,92,246,0.06)',
-              border: '1px solid rgba(139,92,246,0.15)',
-              color: 'var(--text-muted)',
-            }}
-          >
-            <div className="font-semibold mb-1" style={{ color: 'var(--accent-light)', fontFamily: 'Syne' }}>
-              ℹ️ Default Login
-            </div>
-            <div>Username: <strong style={{ color: 'var(--text-secondary)' }}>admin</strong></div>
-            <div>Password: <strong style={{ color: 'var(--text-secondary)' }}>admin</strong></div>
-          </div>
         </div>
 
         {/* Footer */}

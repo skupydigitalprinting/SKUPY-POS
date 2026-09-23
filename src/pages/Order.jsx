@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
@@ -15,6 +15,7 @@ import { Badge, Button, Input, ProductImage, EmptyState, CustomerPicker } from '
 import Modal from '../components/Modal'
 const Invoice = React.lazy(() => import('../components/Invoice'))
 import { ORDER_STATUS } from '../data/dummyData'
+import { secureAuthEnabled } from '../lib/supabase'
 
 const ORDER_WORKFLOW = [
   'menunggu', 'diproses', 'produksi', 'selesai', 'diambil', 'dikirim', 'dibatalkan',
@@ -127,7 +128,7 @@ export default function Order({
   const [reassignTrx, setReassignTrx] = useState(null)
   const [reassignNewId, setReassignNewId] = useState('')
   const [reassignBusy, setReassignBusy] = useState(false)
-  const canEditOrderCustomer = (t) => currentUser?.role === 'owner' || currentUser?.role === 'admin' || t?.cashierId === currentUser?.id
+  const canEditOrderCustomer = (t) => !secureAuthEnabled && (currentUser?.role === 'owner' || currentUser?.role === 'admin' || t?.cashierId === currentUser?.id)
   const submitReassignOrder = async () => {
     if (!reassignTrx || reassignBusy) return
     if (!reassignNewId) return
@@ -244,7 +245,14 @@ export default function Order({
   const [printTrx, setPrintTrx] = useState(null)
   const [payTrx, setPayTrx] = useState(null)
   const [payAmount, setPayAmount] = useState('')
+  const [payMethod, setPayMethod] = useState('cash')
   const [paying, setPaying] = useState(false)
+  const paymentPending = useRef(false)
+  const [paymentIssues, setPaymentIssues] = useState({})
+  const paymentIssue = payTrx && paymentIssues[payTrx.id]
+  const [actionIssues, setActionIssues] = useState({})
+  const [pendingAction, setPendingAction] = useState(null)
+  const actionPending = useRef(false)
   const [delConfirm, setDelConfirm] = useState(null)
 
   // --- Export to Excel state ---
@@ -411,13 +419,15 @@ export default function Order({
   const totalRemaining = countable.reduce((s, t) => s + toMoney(t.remaining), 0)
 
   const openPay = (t) => {
+    if (paymentPending.current) return
     setPayTrx(t)
     // Pre-fill dengan sisa yang DIDERIVASI (total - paid), bukan dari
     // t.remaining mentah yang bisa stale.
     // Integer rupiah — JANGAN simpan float (drift "16938240.0000004" akan
     // jadi "16938240000000004" saat titik desimal dibuang).
     const derivedRemaining = Math.max(0, toMoney(t.total) - toMoney(t.paid))
-    setPayAmount(String(derivedRemaining))
+    setPayAmount(paymentIssues[t.id]?.amount ?? String(derivedRemaining))
+    setPayMethod(paymentIssues[t.id]?.method ?? 'cash')
     setPaying(false)
   }
 
@@ -429,7 +439,7 @@ export default function Order({
   // Jika newRemaining <= 0 → status_bayar = 'lunas', remaining = 0
   // Jika newRemaining  > 0 → status_bayar = 'pending', remaining = newRemaining
   const handlePay = async () => {
-    if (!payTrx || paying) return
+    if (!payTrx || paying || paymentPending.current || paymentIssue?.needsReconciliation) return
     // Parse → integer rupiah (input pakai formatted "1.000.000")
     let amount = parseCurrency(payAmount)
     if (!amount || amount <= 0) return
@@ -437,24 +447,56 @@ export default function Order({
     // Clamp: jangan pernah kirim lebih besar dari sisa tagihan.
     if (amount > remainingBefore) amount = remainingBefore
     if (amount <= 0) return
+    paymentPending.current = true
     setPaying(true)
     try {
-      // updateTransactionPayment di useStore sudah handle:
-      //   1. UPDATE transactions (paid, dp, remaining, status)
-      //   2. INSERT debt_payments
-      //   3. syncDebtPaymentStatus(invoice_no) — update debts + customers
-      //   4. refreshDebts + refreshCustomers
-      await updateTransactionPayment(payTrx.id, amount)
+      const result = await updateTransactionPayment(payTrx.id, amount, payMethod)
+      if (result?.ok === true && !result.needsReconciliation) {
+        setPaymentIssues(prev => { const next = { ...prev }; delete next[payTrx.id]; return next })
+        setPayTrx(null)
+        setPayAmount('')
+      } else {
+        setPaymentIssues(prev => ({ ...prev, [payTrx.id]: {
+          error: result?.error || 'Hasil pembayaran belum terkonfirmasi.',
+          needsReconciliation: result?.ok !== false || !!result?.needsReconciliation,
+          amount: payAmount, method: payMethod,
+        } }))
+      }
+    } catch {
+      setPaymentIssues(prev => ({ ...prev, [payTrx.id]: {
+        error: 'Koneksi terputus. Pembayaran mungkin sudah tersimpan.',
+        needsReconciliation: true, amount: payAmount, method: payMethod,
+      } }))
     } finally {
+      paymentPending.current = false
       setPaying(false)
-      setPayTrx(null)
-      setPayAmount('')
     }
+  }
+
+  const runOrderAction = async (key, action, onSuccess = () => {}) => {
+    if (actionPending.current || actionIssues[key]?.needsReconciliation) return
+    actionPending.current = true
+    setPendingAction(key)
+    try {
+      const result = await action()
+      if (result?.ok === true && !result.needsReconciliation) {
+        setActionIssues(prev => { const next = { ...prev }; delete next[key]; return next })
+        onSuccess()
+      } else {
+        setActionIssues(prev => ({ ...prev, [key]: { error: result?.error || 'Hasil perubahan belum terkonfirmasi.',
+          needsReconciliation: result?.ok !== false || !!result?.needsReconciliation } }))
+      }
+    } catch {
+      setActionIssues(prev => ({ ...prev, [key]: { error: 'Koneksi terputus. Perubahan mungkin sudah tersimpan.', needsReconciliation: true } }))
+    } finally { actionPending.current = false; setPendingAction(null) }
   }
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg">
       <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+        {Object.entries(actionIssues).map(([key, issue]) => <div key={key} role="alert" className="mb-3 p-3 text-sm rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--text-primary)' }}>
+          {issue.error}{issue.needsReconciliation && ' Perlu rekonsiliasi oleh owner. Jangan ulang tindakan.'}
+        </div>)}
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
           <div>
@@ -794,7 +836,8 @@ export default function Order({
                   {/* Workflow */}
                   <div className="px-1.5 min-w-0" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {updateOrderStatus ? (
-                      <select value={t.orderStatus || 'menunggu'} onChange={(e) => updateOrderStatus(t.id, e.target.value)}
+                      <select value={t.orderStatus || 'menunggu'} disabled={!!pendingAction || !!actionIssues[`status:${t.id}`]?.needsReconciliation}
+                        onChange={(e) => { const status = e.target.value; runOrderAction(`status:${t.id}`, () => updateOrderStatus(t.id, status)) }}
                         className="text-[10px] px-1 py-1 rounded-lg border-0 outline-none cursor-pointer w-full text-center"
                         style={{ background: 'transparent', color: wf.color, fontWeight: 700, fontFamily: 'Syne' }}>
                         {ORDER_WORKFLOW.map((st) => (
@@ -1116,7 +1159,7 @@ export default function Order({
       {/* Payment Modal */}
       <Modal
         open={!!payTrx}
-        onClose={() => setPayTrx(null)}
+        onClose={() => !paymentPending.current && setPayTrx(null)}
         title="Tambah Pembayaran"
         subtitle={payTrx?.invoiceNo}
         size="sm"
@@ -1141,7 +1184,7 @@ export default function Order({
                           : isZero  ? 'Nominal pembayaran harus lebih dari 0'
                           : ''
           // Konfirmasi enabled hanya saat valid
-          const canSubmit = !paying && currentPayment > 0 && !exceeds
+          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !exceeds
 
           // Enter handler — sama dengan klik tombol Konfirmasi
           const onKeyDown = (e) => {
@@ -1154,6 +1197,10 @@ export default function Order({
           return (
             <div className="space-y-4">
               {/* TOP CARD */}
+              {paymentIssue && <div role="alert" className="p-3 text-sm rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
+                {paymentIssue.error}
+                {paymentIssue.needsReconciliation && <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>}
+              </div>}
               <div className="rounded-xl p-4 space-y-2"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div className="flex justify-between text-sm">
@@ -1184,6 +1231,21 @@ export default function Order({
                 </div>
               </div>
 
+              <div>
+                <div className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>Metode Pembayaran</div>
+                <div className="flex gap-2" role="group" aria-label="Metode Pembayaran">
+                  {[['cash', 'Cash'], ['transfer', 'Transfer'], ['qris', 'QRIS']].map(([method, label]) => (
+                    <button key={method} type="button" aria-pressed={payMethod === method}
+                      disabled={paying || !!paymentIssue?.needsReconciliation}
+                      onClick={() => setPayMethod(method)} className="flex-1 py-2 text-xs font-semibold rounded-lg"
+                      style={{ background: payMethod === method ? 'rgba(16,217,138,0.12)' : 'var(--bg-card)',
+                        border: `1px solid ${payMethod === method ? '#10d98a' : 'var(--border)'}`,
+                        color: payMethod === method ? '#10d98a' : 'var(--text-secondary)' }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {/* INPUT — formatted thousand-separator + Enter to submit */}
               <div>
                 <label className="block text-xs font-semibold mb-2"
@@ -1200,6 +1262,7 @@ export default function Order({
                     inputMode="numeric"
                     autoFocus
                     value={formattedAmt}
+                    disabled={paying || !!paymentIssue?.needsReconciliation}
                     onChange={(e) => {
                       const digits = e.target.value.replace(/[^\d]/g, '')
                       setPayAmount(digits)
@@ -1358,7 +1421,8 @@ export default function Order({
           <div className="flex gap-3">
             <Button variant="secondary" className="flex-1" onClick={() => setDelConfirm(null)}>Batal</Button>
             <Button variant="danger" className="flex-1"
-              onClick={() => { deleteTransaction(delConfirm.id); setDelConfirm(null) }}>
+              disabled={!!pendingAction || !!actionIssues[`delete:${delConfirm?.id}`]?.needsReconciliation}
+              onClick={() => runOrderAction(`delete:${delConfirm.id}`, () => deleteTransaction(delConfirm.id), () => setDelConfirm(null))}>
               Ya, Hapus
             </Button>
           </div>

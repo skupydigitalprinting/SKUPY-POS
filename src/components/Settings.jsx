@@ -12,6 +12,13 @@ import { FileText } from 'lucide-react'
 import { useConfirm } from './Confirm'
 import { useCategories } from '../hooks/useCategories'
 import { ROLE_OPTIONS, roleLabel, compressImage } from '../utils/helpers'
+import StaffPasswordRecovery from './StaffPasswordRecovery'
+import ManagedAccounts from './ManagedAccounts'
+import SelfPasswordChange from './SelfPasswordChange'
+import StaffBookAccess from './StaffBookAccess'
+import { authSession } from '../lib/authRuntime'
+import { supabase } from '../lib/supabase'
+import { captureAccountSession } from '../lib/accountSession'
 
 const TABS = [
   { id: 'toko', label: 'Toko', icon: Store },
@@ -42,7 +49,7 @@ function Banner({ kind = 'success', children }) {
 }
 
 export default function Settings({
-  open, onClose,
+  open, onClose, secureAuth = false,
   storeInfo, admins, currentUser, busy, products = [],
   updateStoreInfo, updateLogo,
   addAdmin, updateAdmin, deleteAdmin, changePassword, logout, reassignAdminCustomers,
@@ -50,6 +57,7 @@ export default function Settings({
   masterData = {},
 }) {
   const confirm = useConfirm()
+  const [accountSession] = useState(() => captureAccountSession(authSession, supabase.auth))
   const { addCategory, updateCategory, deleteCategory, setCategoryActive, listAllCategories } = useCategories()
   // ── Kategori Produk (manajemen) ──
   const [catList, setCatList] = useState([])
@@ -310,7 +318,7 @@ export default function Settings({
     >
       <div className="flex flex-col sm:flex-row gap-4">
         <div className="flex sm:flex-col gap-1 sm:w-44 flex-shrink-0 overflow-x-auto sm:overflow-visible no-scrollbar">
-          {TABS.map(({ id, label, icon: Icon }) => {
+          {TABS.filter(item => !secureAuth || item.id !== 'admin' || isOwnerUser).map(({ id, label, icon: Icon }) => {
             const active = tab === id
             return (
               <button
@@ -498,7 +506,12 @@ export default function Settings({
           )}
 
           {/* === ADMIN === */}
-          {tab === 'admin' && (
+          {tab === 'admin' && secureAuth && isOwnerUser && <div className="space-y-8">
+            <ManagedAccounts currentUser={currentUser} {...accountSession} />
+            <StaffBookAccess currentUser={currentUser} />
+            <StaffPasswordRecovery currentUser={currentUser} />
+          </div>}
+          {tab === 'admin' && !secureAuth && (
             <div className="space-y-4 animate-fadeIn">
               <div className="space-y-2">
                 {admins.map(a => {
@@ -641,7 +654,8 @@ export default function Settings({
           )}
 
           {/* === PASSWORD === */}
-          {tab === 'password' && (
+          {tab === 'password' && secureAuth && <SelfPasswordChange currentUser={currentUser} {...accountSession} />}
+          {tab === 'password' && !secureAuth && (
             <div className="space-y-3 animate-fadeIn">
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Ganti password untuk akun <strong style={{ color: 'var(--text-primary)' }}>{currentUser?.username}</strong>.

@@ -10,6 +10,7 @@ import { formatRupiah, formatRupiahShort, formatDate, timeAgo } from '../utils/h
 import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 import { useInvoicePreview } from '../components/InvoicePreview'
+import { secureAuthEnabled } from '../lib/supabase'
 
 const EMPTY = { name: '', phone: '', whatsapp: '', address: '', email: '', notes: '', ownerUserId: '' }
 
@@ -92,6 +93,7 @@ export default function Customers({
         phone: form.phone.trim(),
         whatsapp: (form.whatsapp || form.phone).trim(),
       }
+      if (secureAuthEnabled && editId) delete data.ownerUserId
       const res = editId ? await updateCustomer(editId, data) : await addCustomer(data)
       if (res.ok) {
         toast.success(editId ? 'Customer diperbarui' : 'Customer ditambahkan')
@@ -412,7 +414,7 @@ export default function Customers({
                 color: 'var(--text-primary)', fontFamily: 'DM Sans',
               }} />
           </div>
-          {canManagePIC && (
+          {canManagePIC && (!secureAuthEnabled || !editId) && (
             <div>
               <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
                 PIC Customer (Penanggung Jawab)

@@ -3,7 +3,7 @@ import {
   Plus, Search, Edit2, Trash2, Package, X, ImagePlus, Settings2, Loader2, Star,
 } from 'lucide-react'
 import { formatRupiah, compressImageToBlob } from '../utils/helpers'
-import { uploadProductImage } from '../lib/supabase'
+import { uploadProductImage, getDataClient } from '../lib/supabase'
 import { Input, MoneyInput, Textarea, Button, Badge, ProductImage, EmptyState } from '../components/ui'
 import Modal from '../components/Modal'
 import CategoryManager from '../components/CategoryManager'
@@ -27,6 +27,7 @@ const CAT_COLOR = {
 }
 
 export default function Produk({ products, currentUser, addProduct, updateProduct, deleteProduct, busy }) {
+  const [dataClient] = useState(getDataClient)
   // Harga modal (cost) hanya boleh dilihat & diubah oleh Owner.
   const isOwner = currentUser?.role === 'owner'
   const { categories, addCategory, updateCategory, deleteCategory } = useCategories()
@@ -111,7 +112,7 @@ export default function Produk({ products, currentUser, addProduct, updateProduc
       //    Cukup tajam untuk grid kasir & thumbnail; ukuran file jauh lebih kecil.
       const blob = await compressImageToBlob(file, { maxSize: 700, quality: 0.65, type: 'image/webp' })
       // 2. Upload ke Supabase Storage → dapat public URL
-      const url = await uploadProductImage(blob, form.name || 'produk')
+      const url = await uploadProductImage(blob, form.name || 'produk', dataClient)
       // 3. Simpan URL + preview
       setImagePreview(url)
       setForm((prev) => ({ ...prev, image: url }))

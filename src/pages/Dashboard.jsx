@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import React, { useMemo, useState, useEffect, useRef } from 'react'
+import { getDataClient } from '../lib/supabase'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend,
@@ -19,6 +19,7 @@ import Modal from '../components/Modal'
 import { useAccounting } from '../hooks/useAccounting'
 import { useConfirm } from '../components/Confirm'
 import Logo from '../components/Logo'
+import { reportDayBounds, inReportPeriod, installmentTotals, initialTender, initialTenderMethod, loadPeriodReport, periodReportState } from '../utils/financialReports'
 
 const COLORS = ['#8b5cf6', '#10d98a', '#f59e0b', '#3b82f6', '#ff4d6a', '#a78bfa']
 
@@ -133,34 +134,38 @@ const CustomTooltip = ({ active, payload, label }) => {
 }
 
 export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction, editDebtPayment, deleteDebtPayment }) {
+  const [supabase] = useState(getDataClient)
   const isOwner = currentUser?.role === 'owner'
   const { openInvoice } = useInvoicePreview()
 
   // ─── Owner-only: Total Uang Masuk (uang yang BENAR-BENAR diterima) ───
-  // Total  = Σ paid transaksi valid (sudah termasuk DP + cicilan, karena
-  //          paid di-update tiap pembayaran). Bukan total invoice.
-  // Cash/Transfer/QRIS = pembayaran langsung (non-hutang) per metode
-  //          + pembayaran cicilan (debt_payments) per metode.
-  // Cicilan = Σ debt_payments.amount.
-  // Transaksi 'dibatalkan' & nota terhapus tidak ikut (sudah lenyap dari data).
+  // Keep the cumulative-paid headline scoped to loaded transactions. Cancellation
+  // is not a refund. Method allocation is inferred from available payment history;
+  // missing/inconsistent legacy history cannot establish the original tender.
+  const receiptTransactions = useMemo(() => (transactions || []).filter(t => !t.deleted_at && !t.deletedAt), [transactions])
+  const activePayments = useMemo(() => (debtPayments || []).filter(p => !p.deleted_at), [debtPayments])
+  const cicByInvoice = useMemo(() => installmentTotals(activePayments), [activePayments])
+  const matchedPayments = useMemo(() => {
+    const invoices = new Set(receiptTransactions.map(t => t.invoiceNo).filter(Boolean))
+    return activePayments.filter(p => invoices.has(p.invoice_no))
+  }, [receiptTransactions, activePayments])
   const uangMasuk = useMemo(() => {
-    const valid = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
-    const total = valid.reduce((s, t) => s + toMoney(t.paid), 0)
+    const total = receiptTransactions.reduce((s, t) => s + toMoney(t.paid), 0)
     const m = { cash: 0, transfer: 0, qris: 0 }
-    valid.forEach(t => {
-      if (t.paymentMethod && m[t.paymentMethod] !== undefined) {
-        m[t.paymentMethod] += toMoney(t.paid)
+    receiptTransactions.forEach(t => {
+      const method = initialTenderMethod(t.paymentMethod)
+      if (m[method] !== undefined) {
+        m[method] += initialTender(t.paid, cicByInvoice.get(t.invoiceNo))
       }
     })
-    let cicilan = 0
-    ;(debtPayments || []).forEach(p => {
+    const cicilan = activePayments.reduce((sum, p) => sum + toMoney(p.amount), 0)
+    matchedPayments.forEach(p => {
       const amt = toMoney(p.amount)
-      cicilan += amt
       const pm = p.payment_method
       if (m[pm] !== undefined) m[pm] += amt
     })
     return { total, cash: m.cash, transfer: m.transfer, qris: m.qris, cicilan }
-  }, [transactions, debtPayments])
+  }, [receiptTransactions, activePayments, matchedPayments, cicByInvoice])
 
   // ─── Owner-only Laba-Rugi: rentang tanggal terpisah ───
   // Laba = total penjualan (transaksi lunas) − modal barang (qty × modal produk).
@@ -185,42 +190,49 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // re-fetch tiap ada transaksi (pengeluaran tak bergantung transaksi).
   const acc = useAccounting()
   const confirm = useConfirm()
-  const [pengeluaranAcc, setPengeluaranAcc] = useState(0)
   // Omset & jumlah invoice dari RPC acc_dashboard (FULL DB, ikut rentang) —
   // BUKAN dari array transactions client yang dibatasi 500 baris terbaru.
   // Ini yang membuat Total Omset benar untuk "All Time" & semua preset.
-  const [omsetAcc, setOmsetAcc] = useState(null)
-  const [omsetCount, setOmsetCount] = useState(null)
-  const [pengBreakdown, setPengBreakdown] = useState(null) // {source: amount} periode aktif
+  const [labaReport, setLabaReport] = useState(null)
   const [accBump, setAccBump] = useState(0) // dipicu setelah edit/hapus → refresh card
   const accFrom = labaFrom || '2000-01-01'
-  const accTo = labaTo || new Date().toISOString().slice(0, 10)
+  const accTo = labaTo || _ymd(new Date())
+  const labaState = periodReportState(labaReport, accFrom, accTo)
+  const labaStatusLabel = labaState.status === 'error' ? 'Tidak tersedia' : 'Memuat...'
+  const pengBreakdown = labaState.status === 'ready' ? labaState.data.breakdown : null
+  const labaRequest = useRef(0)
+  const activeLabaPeriod = useRef('')
+  activeLabaPeriod.current = `${accFrom}|${accTo}`
   // Subtotal pengeluaran per sumber dari baris getOutflowTransactions.
   const sumBySource = (rows) => {
     const m = {}
     ;(rows || []).forEach(r => { const k = r.source || 'Lainnya'; m[k] = (m[k] || 0) + (r.amount || 0) })
     return m
   }
+  const loadLabaReport = async (isActive = () => true) => {
+    const request = ++labaRequest.current
+    return loadPeriodReport({ from: accFrom, to: accTo, publish: setLabaReport,
+      isCurrent: () => isActive() && request === labaRequest.current && activeLabaPeriod.current === `${accFrom}|${accTo}`,
+      load: async () => {
+      const { data, error } = await supabase.rpc('acc_dashboard', { p_from: accFrom, p_to: accTo })
+      if (error) throw new Error(error.message)
+      const row = Array.isArray(data) ? data[0] : data
+      if (!row || row.penjualan == null) throw new Error('Omset tidak tersedia')
+      const { start, end } = reportDayBounds(accFrom, accTo)
+      const { count, error: countError } = await supabase.from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .is('deleted_at', null).neq('order_status', 'dibatalkan')
+        .gte('created_at', start).lt('created_at', end)
+      if (countError || !Number.isInteger(count)) throw new Error(countError?.message || 'Jumlah invoice tidak tersedia')
+      const out = await acc.getOutflowTransactions(accFrom, accTo)
+      if (!out.ok) throw new Error(out.error || 'Pengeluaran tidak tersedia')
+      return { ok: true, revenue: toMoney(row.penjualan), count, expenses: out.total, breakdown: sumBySource(out.rows) }
+    } })
+  }
   useEffect(() => {
     if (!isOwner) return
     let alive = true, id = null
-    const load = async () => {
-      // OMSET + jumlah invoice dari RPC (full DB).
-      const { data, error } = await supabase.rpc('acc_dashboard', { p_from: accFrom, p_to: accTo })
-      if (!alive || error || !data) return
-      const row = Array.isArray(data) ? data[0] : data
-      setOmsetAcc(toMoney(row?.penjualan) || 0)
-      const { count } = await supabase.from('transactions')
-        .select('id', { count: 'exact', head: true })
-        .is('deleted_at', null).neq('order_status', 'dibatalkan')
-        .gte('created_at', accFrom).lte('created_at', accTo + 'T23:59:59')
-      if (alive && typeof count === 'number') setOmsetCount(count)
-      // PENGELUARAN = total dari getOutflowTransactions (daftar rincian yang bisa
-      // diaudit baris per baris). Kartu = jumlah baris di modal detail, jadi
-      // SELALU cocok. Sumber yang sama dipakai di Accounting & Dashboard.
-      const out = await acc.getOutflowTransactions(accFrom, accTo)
-      if (alive && out.ok) { setPengeluaranAcc(out.total); setPengBreakdown(sumBySource(out.rows)) }
-    }
+    const load = () => loadLabaReport(() => alive)
     const start = () => { if (!id) id = setInterval(load, 60000) }
     const stop = () => { if (id) { clearInterval(id); id = null } }
     const onVis = () => { if (document.visibilityState === 'visible') { load(); start() } else stop() }
@@ -309,7 +321,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     setPengLoading(true)
     const r = await acc.getCardDetail('uang_keluar', accFrom, accTo)
     setPengRows(r.ok ? r.rows : []); setPengLoading(false)
-    if (r.ok) setPengeluaranAcc(r.total) // sinkronkan kartu Total Pengeluaran ke total rincian
+    setAccBump(b => b + 1) // refresh all period totals together
   }
   // Rincian pengeluaran SEMUA WAKTU (untuk modal Rincian Laba Bersih).
   const loadPengRowsAll = async () => {
@@ -357,14 +369,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const labaRugi = useMemo(() => {
     // Omset = total seluruh invoice/transaksi VALID (non-dibatalkan) dalam rentang.
     let list = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
-    if (labaFrom) {
-      const f = new Date(labaFrom + 'T00:00:00').getTime()
-      list = list.filter(t => new Date(t.date).getTime() >= f)
-    }
-    if (labaTo) {
-      const tt = new Date(labaTo + 'T23:59:59').getTime()
-      list = list.filter(t => new Date(t.date).getTime() <= tt)
-    }
+    list = list.filter(t => inReportPeriod(t.date, labaFrom, labaTo))
     let revenueClient = 0, modal = 0, soldRevenue = 0
     list.forEach(t => {
       revenueClient += toMoney(t.total)
@@ -377,21 +382,23 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     // OMSET = dari RPC (full DB, ikut rentang). Fallback ke hitungan client
     // hanya jika RPC belum termuat. Inilah yang membuat "All Time" benar
     // (array transactions client dibatasi 500 baris terbaru).
-    const revenue = omsetAcc != null ? omsetAcc : revenueClient
-    const count = omsetCount != null ? omsetCount : list.length
+    // Before the first server read, loaded invoices remain a provisional preview.
+    // A failed or changed-period request must never display a completed old total.
+    const revenue = labaState.status === 'ready' ? labaState.data.revenue : labaReport == null ? revenueClient : null
+    const count = labaState.status === 'ready' ? labaState.data.count : labaReport == null ? list.length : null
     // Total Pengeluaran = pengeluaran non-sewa (getOutflowTransactions: pengeluaran
     //   manual, bayar hutang bank/supplier, pembelian cash, kasbon, migrasi)
     //   + BEBAN SEWA periode (amortisasi). Pembayaran sewa di muka TIDAK dihitung
     //   penuh di sini — hanya beban bulanannya. (Arus Kas tetap full saat dibayar.)
-    const pengeluaran = pengeluaranAcc + rentBeban
+    const pengeluaran = labaState.status === 'ready' ? labaState.data.expenses + rentBeban : null
     // Perkiraan Laba = Total Harga Barang Terjual − Modal Barang Terjual
     //   (berbasis item, bukan omset invoice). Margin = laba / harga terjual.
     const estProfit = soldRevenue - modal
     const estMargin = soldRevenue > 0 ? Math.round((estProfit / soldRevenue) * 100) : 0
     // Laba Bersih = Omset − Total Pengeluaran (sudah termasuk beban sewa amortisasi).
-    const profit = revenue - pengeluaran
+    const profit = revenue != null && pengeluaran != null ? revenue - pengeluaran : null
     return { revenue, modal, soldRevenue, estProfit, estMargin, pengeluaran, bebanSewa: rentBeban, profit, count }
-  }, [transactions, modalById, labaFrom, labaTo, pengeluaranAcc, rentBeban, omsetAcc, omsetCount])
+  }, [transactions, modalById, labaFrom, labaTo, rentBeban, labaReport])
 
   // ─── Owner-only filter: admin dropdown + date range ───
   // - 'all'      → semua admin gabungan
@@ -406,14 +413,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     if (adminFilter !== 'all') {
       list = list.filter(t => t.cashierId === adminFilter)
     }
-    if (dateFrom) {
-      const from = new Date(dateFrom + 'T00:00:00').getTime()
-      list = list.filter(t => new Date(t.date).getTime() >= from)
-    }
-    if (dateTo) {
-      const to = new Date(dateTo + 'T23:59:59').getTime()
-      list = list.filter(t => new Date(t.date).getTime() <= to)
-    }
+    list = list.filter(t => inReportPeriod(t.date, dateFrom, dateTo))
     return list
   }, [transactions, adminFilter, dateFrom, dateTo])
 
@@ -424,8 +424,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
     const cashierByTrx = new Map((transactions || []).map(t => [t.id, t.cashierId]))
     let list = (debts || []).filter(d => Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)) > 0)
     if (adminFilter !== 'all') list = list.filter(d => cashierByTrx.get(d.transactionId) === adminFilter)
-    if (dateFrom) { const f = new Date(dateFrom + 'T00:00:00').getTime(); list = list.filter(d => new Date(d.createdAt).getTime() >= f) }
-    if (dateTo) { const tt = new Date(dateTo + 'T23:59:59').getTime(); list = list.filter(d => new Date(d.createdAt).getTime() <= tt) }
+    if (dateFrom || dateTo) list = list.filter(d => inReportPeriod(d.createdAt, dateFrom, dateTo))
     const value = list.reduce((s, d) => s + Math.max(0, toMoney(d.totalDebt) - toMoney(d.paid)), 0)
     const custCount = new Set(list.map(d => d.customerId).filter(Boolean)).size
     return { list, value, custCount, cashierByTrx }
@@ -435,18 +434,18 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const adminPerformance = useMemo(() => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).getTime()
-    const startOfDay = today.getTime()
+    const todayDate = _ymd(today)
+    const monthDate = _ymd(new Date(today.getFullYear(), today.getMonth(), 1))
 
     return admins.map(admin => {
       // Hanya transaksi valid (bukan 'dibatalkan'); nota terhapus sudah lenyap dari data.
       const own = (transactions || []).filter(t => t.cashierId === admin.id && (t.orderStatus || '') !== 'dibatalkan')
       const totalOmzet = own.reduce((s, t) => s + (+t.total || 0), 0)
       const omzetToday = own
-        .filter(t => new Date(t.date).getTime() >= startOfDay)
+        .filter(t => inReportPeriod(t.date, todayDate, todayDate))
         .reduce((s, t) => s + (+t.total || 0), 0)
       const omzetMonth = own
-        .filter(t => new Date(t.date).getTime() >= monthStart)
+        .filter(t => inReportPeriod(t.date, monthDate, todayDate))
         .reduce((s, t) => s + (+t.total || 0), 0)
       const ownDebts = (debts || []).filter(d => {
         const linked = (transactions || []).find(t => t.id === d.transactionId)
@@ -517,7 +516,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   })
   const validTx = (transactions || []).filter(t => (t.orderStatus || '') !== 'dibatalkan')
   const today = new Date().toDateString()
-  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+  const monthDate = _ymd(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
+  const todayDate = _ymd(new Date())
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0)
 
   const buildCard = (key) => {
@@ -533,7 +533,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: 'Omzet Hari Ini', rows, total: sum(rows, r => r.total) }
       }
       case 'omzetMonth': {
-        const rows = validTx.filter(t => new Date(t.date).getTime() >= monthStart).map(txRow)
+        const rows = validTx.filter(t => inReportPeriod(t.date, monthDate, todayDate)).map(txRow)
         return { title: 'Omzet Bulan Ini', rows, total: sum(rows, r => r.total) }
       }
 
@@ -542,7 +542,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: 'Order Hari Ini', rows, total: rows.length, isCount: true }
       }
       case 'orderMonth': {
-        const rows = validTx.filter(t => new Date(t.date).getTime() >= monthStart).map(txRow)
+        const rows = validTx.filter(t => inReportPeriod(t.date, monthDate, todayDate)).map(txRow)
         return { title: 'Order Bulan Ini', rows, total: rows.length, isCount: true }
       }
       case 'pending': {
@@ -550,17 +550,19 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
         return { title: 'Pending Order', rows, total: rows.length, isCount: true }
       }
       case 'uangMasuk': {
-        const rows = validTx.filter(t => toMoney(t.paid) > 0).map(txRow)
+        const rows = receiptTransactions.filter(t => toMoney(t.paid) > 0).map(txRow)
         return { title: 'Total Uang Masuk', rows, total: uangMasuk.total }
       }
       case 'cash': case 'transfer': case 'qris': {
-        const direct = validTx.filter(t => t.paymentMethod === key && toMoney(t.paid) > 0).map(txRow)
-        const fromCicilan = (debtPayments || []).filter(p => p.payment_method === key).map(payRow)
+        const direct = receiptTransactions.filter(t => initialTenderMethod(t.paymentMethod) === key)
+          .map(t => ({ ...txRow(t), paid: initialTender(t.paid, cicByInvoice.get(t.invoiceNo)), paymentMethod: key, editable: false }))
+          .filter(r => r.paid > 0)
+        const fromCicilan = matchedPayments.filter(p => p.payment_method === key).map(payRow)
         const rows = [...direct, ...fromCicilan]
         return { title: key.toUpperCase(), rows, total: uangMasuk[key], payment: true }
       }
       case 'cicilan': {
-        const rows = (debtPayments || []).map(payRow)
+        const rows = activePayments.map(payRow)
         return { title: 'Cicilan Hutang', rows, total: uangMasuk.cicilan, payment: true }
       }
       case 'piutang': {
@@ -922,7 +924,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
               {[
-                { key: 'uangMasuk', label: 'Total Uang Masuk', value: uangMasuk.total, icon: Banknote, hint: 'Cash + Transfer + QRIS + Cicilan' },
+                { key: 'uangMasuk', label: 'Total Uang Masuk', value: uangMasuk.total, icon: Banknote, hint: 'Transaksi dimuat, termasuk cicilan' },
                 { key: 'cash', label: 'Cash', value: uangMasuk.cash, icon: Banknote, hint: 'Pembayaran tunai' },
                 { key: 'transfer', label: 'Transfer', value: uangMasuk.transfer, icon: CreditCard, hint: 'Pembayaran transfer' },
                 { key: 'qris', label: 'QRIS', value: uangMasuk.qris, icon: Smartphone, hint: 'Pembayaran QRIS' },
@@ -1033,13 +1035,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Omset</span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}>
-                  {formatRupiah(labaRugi.revenue)}
+                  {labaRugi.revenue != null ? formatRupiah(labaRugi.revenue) : labaStatusLabel}
                 </div>
                 <div className="text-xs mt-0.5 font-semibold" style={{ color: 'var(--accent-light)' }}>
                   Omset {LABA_SCOPE_LABEL[labaPreset] || 'Periode'}
                 </div>
                 <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  {labaRugi.count} invoice valid
+                  {labaRugi.count != null ? `${labaRugi.count} invoice valid${labaReport == null ? ' (data dimuat, sementara)' : ''}` : labaStatusLabel}
                 </div>
               </div>
 
@@ -1056,7 +1058,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                   <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Total Pengeluaran</span>
                 </div>
                 <div className="text-lg sm:text-xl font-bold" style={{ fontFamily: 'Syne', color: '#ff4d6a' }}>
-                  {formatRupiah(labaRugi.pengeluaran)}
+                  {labaRugi.pengeluaran != null ? formatRupiah(labaRugi.pengeluaran) : labaStatusLabel}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                   Dari modul Accounting
@@ -1080,7 +1082,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 </div>
                 <div className="text-lg sm:text-xl font-bold"
                   style={{ fontFamily: 'Syne', color: labaRugi.profit >= 0 ? '#3b82f6' : '#ff4d6a' }}>
-                  {formatRupiah(labaRugi.profit)}
+                  {labaRugi.profit != null ? formatRupiah(labaRugi.profit) : labaStatusLabel}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                   Omset − Total Pengeluaran
@@ -1162,13 +1164,13 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
             </div>
 
             <p className="relative text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>
-              Periode: <b style={{ color: 'var(--text-secondary)' }}>{dmy(labaFrom)} – {dmy(labaTo)}</b>{labaPreset === 'all' ? ' (semua waktu)' : ''} · {labaRugi.count} transaksi valid
+              Periode: <b style={{ color: 'var(--text-secondary)' }}>{dmy(labaFrom)} – {dmy(labaTo)}</b>{labaPreset === 'all' ? ' (semua waktu)' : ''} · {labaRugi.count != null ? `${labaRugi.count} transaksi valid` : labaStatusLabel}
             </p>
 
             {/* DEBUG OWNER: breakdown pengeluaran per sumber — Periode vs All Time.
                 Total Pengeluaran & Pengeluaran All Time pakai fungsi sama
                 (getOutflowTransactions), beda hanya rentang tanggal. */}
-            {(pengBreakdown || pengBreakdownAll) && (() => {
+            {pengBreakdown && (() => {
               const SRC = ['Pengeluaran', 'Hutang Bank', 'Hutang Supplier', 'Sewa', 'Migrasi Data', 'Pembelian', 'Kasbon Karyawan']
               // Sewa = beban amortisasi (bukan pembayaran penuh), jadi disuntik manual.
               const pengBreakdown2 = { ...(pengBreakdown || {}), Sewa: rentBeban }

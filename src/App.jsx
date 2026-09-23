@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useRef, useSyncExternalStore, lazy, Suspense } from 'react'
 import { AlertTriangle, Database, RefreshCw, Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
@@ -11,6 +11,8 @@ import Logo from './components/Logo'
 import { ToastProvider, useToast } from './components/Toast'
 import { ConfirmProvider } from './components/Confirm'
 import { useStore } from './hooks/useStore'
+import { authMode } from './lib/supabase'
+import { authSession, startAuthRuntime } from './lib/authRuntime'
 
 // ─── Code splitting ───────────────────────────────────────────
 // Halaman & modal besar di-lazy-load supaya bundle awal kecil & cepat
@@ -24,6 +26,7 @@ const Piutang = lazy(() => import('./pages/Piutang'))
 const Accounting = lazy(() => import('./pages/Accounting'))
 const Credibook = lazy(() => import('./pages/Credibook'))
 const Settings = lazy(() => import('./components/Settings'))
+const PersonalPasswordDialog = lazy(() => import('./components/PersonalPasswordDialog'))
 
 function PageLoader() {
   return (
@@ -181,10 +184,10 @@ function ErrorScreen({ error, onRetry }) {
   )
 }
 
-function AppShell() {
+function AppShell({ verifiedSession = null }) {
   // Default starting page tergantung role — admin/cashier langsung ke Kasir
   // (Dashboard digated untuk owner saja).
-  const store = useStore()
+  const store = useStore(verifiedSession)
   const toast = useToast()
   const role = store.currentUser?.role
   const isOwner = role === 'owner'
@@ -193,6 +196,7 @@ function AppShell() {
   const [activePage, setActivePageRaw] = useState(canSeeDashboard ? 'dashboard' : 'kasir')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
   // Deep-link tab Accounting (mis. tombol Pengeluaran di Credibook). Signal naik
   // tiap permintaan agar Accounting selalu pindah tab walau tab-nya sama.
   const [accTab, setAccTab] = useState(null)
@@ -395,6 +399,7 @@ function AppShell() {
         currentUser={store.currentUser}
         // Only owner can open Settings — staff sees Logout button instead
         onOpenSettings={isOwner ? () => setSettingsOpen(true) : undefined}
+        onOpenPassword={verifiedSession && !isOwner ? () => setPasswordOpen(true) : undefined}
         onLogout={store.logout}
       />
       <main className="flex flex-1 flex-col overflow-hidden" style={{ minWidth: 0 }}>
@@ -437,11 +442,16 @@ function AppShell() {
         currentUser={store.currentUser}
       />
 
+      {passwordOpen && verifiedSession && <Suspense fallback={null}>
+        <PersonalPasswordDialog currentUser={store.currentUser} onClose={() => setPasswordOpen(false)} />
+      </Suspense>}
+
       {/* Settings modal — OWNER ONLY (security: not just hidden, refuse to render).
           Lazy: chunk hanya di-download saat owner benar-benar membuka Pengaturan. */}
       {settingsOpen && isOwner && (
         <Suspense fallback={null}>
           <Settings
+            secureAuth={!!verifiedSession}
             open
             onClose={() => setSettingsOpen(false)}
             storeInfo={store.storeInfo}
@@ -480,14 +490,30 @@ function AppShell() {
   )
 }
 
+function AuthenticatedApp() {
+  const session = useSyncExternalStore(authSession.subscribe, authSession.getSnapshot, authSession.getSnapshot)
+  const [booted, setBooted] = useState(false)
+  useEffect(() => { if (session.phase !== 'checking') setBooted(true) }, [session.phase])
+  useEffect(() => {
+    if (authMode === 'secure') return startAuthRuntime()
+  }, [])
+  if (authMode === 'blocked') return <ErrorScreen error="Konfigurasi login aman belum valid. Hubungi pengelola sistem." onRetry={() => window.location.reload()} />
+  if (session.phase === 'checking' && !booted) return <LoadingSplash />
+  if (session.phase === 'blocked') return <ErrorScreen error={session.error || 'Sesi belum dapat dibersihkan.'} onRetry={() => authSession.signOut()} />
+  if (session.phase !== 'ready') return <Login login={authSession.signIn} storeInfo={null} busy={session.phase === 'checking'} />
+  return <ToastProvider key={session.epoch}><ConfirmProvider>
+    <AppShell verifiedSession={{ user: session.user, logout: authSession.signOut }} />
+  </ConfirmProvider></ToastProvider>
+}
+
 export default function App() {
   return (
     <ErrorBoundary title="Aplikasi gagal dimuat">
-      <ToastProvider>
+      {authMode === 'legacy' ? <ToastProvider>
         <ConfirmProvider>
           <AppShell />
         </ConfirmProvider>
-      </ToastProvider>
+      </ToastProvider> : <AuthenticatedApp />}
     </ErrorBoundary>
   )
 }

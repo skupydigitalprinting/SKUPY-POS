@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test tests/*.test.js src/lib/*.test.js src/utils/*.test.js tools/release/*.test.js",
+    "test:security:sql": "npm --prefix tools/security-lab test",
     "build": "vite build",
     "preview": "vite preview"
   },

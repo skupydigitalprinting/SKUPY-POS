@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { supabase, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
+import { getDataClient, secureAuthEnabled, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
+import { ADMIN_PROFILE_COLUMNS, adminProfileFromDB as adminFromDB } from '../utils/adminProfile'
+import { PRODUCT_PUBLIC_COLUMNS, attachProductCosts, saveSecureProduct } from '../lib/productAccess'
 
 // Session persistence — "Ingat saya / Tetap login".
 //   • Ingat saya ON  → localStorage, berlaku 30 hari (auto-hapus bila lewat).
@@ -8,6 +10,64 @@ import { supabase, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/s
 // TIDAK pernah menyimpan password / PIN / hash.
 const SESSION_KEY = 'skupy_session_v2'
 const REMEMBER_TTL = 30 * 24 * 60 * 60 * 1000 // 30 hari (ms)
+
+// Direct reassignment is incompatible with the secure server-owned links/audit.
+const reassignmentUnavailable = () => ({
+  ok: false,
+  code: 'SECURE_REASSIGNMENT_UNAVAILABLE',
+  error: 'Pemindahan customer/PIC belum tersedia di mode keamanan baru. Tidak ada perubahan yang disimpan.',
+})
+
+const incompleteTransactionSync = () => ({
+  ok: false,
+  needsReconciliation: true,
+  error: 'Sebagian perubahan mungkin sudah tersimpan, tetapi sinkronisasi belum terkonfirmasi. Periksa invoice dan piutang sebelum mengulang tindakan.',
+})
+
+// Supabase minimal-return writes legitimately contain data:null. Row-returning
+// payment writes additionally require the affected row, so a zero-row write fails.
+function confirmedWrite(result, expectedId) {
+  return !!result && result.error === null && Object.hasOwn(result, 'data')
+    && result.count !== 0 && (expectedId === undefined
+      || (!!result.data?.id && (expectedId === null || result.data.id === expectedId)))
+}
+
+function paymentRead(result) {
+  if (!result || result.error !== null || !Object.hasOwn(result, 'data') || result.data === undefined) {
+    throw new Error('Data pembayaran belum dapat diperiksa. Tidak ada perubahan yang disimpan.')
+  }
+  return result.data
+}
+
+function paymentMoney(value) {
+  const raw = Number(value)
+  if (!['number', 'string'].includes(typeof value) || String(value).trim() === ''
+    || !Number.isFinite(raw) || raw < 0 || !Number.isSafeInteger(Math.round(raw))) {
+    throw new Error('Nominal keuangan tidak valid. Minta owner memeriksa data.')
+  }
+  return Math.round(raw)
+}
+
+function paymentSnapshot(total, paid, remaining) {
+  const t = paymentMoney(total), p = paymentMoney(paid), r = paymentMoney(remaining)
+  if (Math.abs(Number(total) - Number(paid) - Number(remaining)) >= 1 || t !== p + r) {
+    throw Object.assign(new Error('Saldo invoice/piutang tidak sesuai. Minta owner memeriksa data; belum ada perubahan yang disimpan.'), { needsReview: true })
+  }
+  return { total: t, paid: p, remaining: r }
+}
+
+function paymentBalance(total, paid, delta) {
+  const t = paymentMoney(total), p = paymentMoney(paid)
+  if (!Number.isSafeInteger(delta) || p > t
+    || p + delta < 0 || p + delta > t || !Number.isSafeInteger(p + delta)) {
+    throw new Error('Nominal pembayaran tidak valid atau melebihi sisa tagihan. Periksa saldo invoice/piutang.')
+  }
+  return { paid: p + delta, remaining: t - p - delta }
+}
+
+const inactiveFinancialInvoice = row => !!(row.deleted_at || row.deletedAt)
+  || (row.order_status || row.orderStatus) === 'dibatalkan'
+  || ['batal', 'cancelled'].includes(row.status) || row.cancelled === true
 
 function safeUser(u) {
   if (!u) return null
@@ -76,11 +136,6 @@ const settingsToDB = (s) => ({
   bank_name: s.bank?.name ?? '', bank_number: s.bank?.number ?? '', bank_holder: s.bank?.holder ?? '',
   front_logo: s.frontLogo ?? '', invoice_logo: s.invoiceLogo ?? '',
   tax_rate: s.taxRate ?? 0,
-})
-
-const adminFromDB = (r) => ({
-  id: r.id, username: r.username, password: r.password,
-  name: r.name || r.username, role: r.role || 'staff',
 })
 
 const customerFromDB = (r) => ({
@@ -152,6 +207,7 @@ const trxFromDB = (r) => ({
   cashierId: r.cashier_id,
   dueDate: r.due_date || null,
   date: r.created_at,
+  deletedAt: r.deleted_at || null,
   // Snapshot rekening bank admin pembuat (histori invoice tetap aman)
   bankAccountId: r.bank_account_id || null,
   bankName: r.bank_name || '',
@@ -228,7 +284,8 @@ const debtFromDB = (r) => ({
 
 // ---------- Hook ----------
 
-export function useStore() {
+export function useStore(verifiedSession = null) {
+  const [supabase] = useState(getDataClient)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -241,7 +298,7 @@ export function useStore() {
   const [debtPayments, setDebtPayments] = useState([])
   // Pemasukkan Credibook (pendapatan usaha non-kasir) — book-scoped, masuk Omset.
   const [credibookIncome, setCredibookIncome] = useState([])
-  const [currentUser, setCurrentUser] = useState(() => loadSession())
+  const [currentUser, setCurrentUser] = useState(() => secureAuthEnabled ? verifiedSession?.user || null : loadSession())
   // ── BOOK (multi-brand) ──
   // activeBookId null = "Semua Book" (perilaku lama, tanpa filter). Memilih book
   // tertentu menyaring data PENJUALAN (transactions/customers/debts/debt_payments).
@@ -254,6 +311,7 @@ export function useStore() {
   const [storeBankAccounts, setStoreBankAccounts] = useState([])
   const [adminInvoiceProfiles, setAdminInvoiceProfiles] = useState([])
   const [activeBookId, setActiveBookId] = useState(() => {
+    if (secureAuthEnabled) return null
     try { return localStorage.getItem('skupy_active_book') || null } catch { return null }
   })
   const defaultBookId = useMemo(() => {
@@ -266,7 +324,7 @@ export function useStore() {
   const writeBookId = activeBookId || defaultBookId
   const mounted = useRef(true)
 
-  useEffect(() => () => { mounted.current = false }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   // ─── refreshAll: initial load + manual refresh ────────────────────
   // CRITICAL: tabel `transactions` punya kolom JSONB `items` yang bisa
@@ -285,7 +343,7 @@ export function useStore() {
   // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
   // Tidak menyertakan is_favorite di sini supaya load awal TIDAK gagal bila
   // migrasi belum dijalankan. Favorit di-merge terpisah (resilient) setelahnya.
-  const PRODUCT_LIGHT_COLS = 'id,name,category,price,modal,stock,unit,description,created_at'
+  const PRODUCT_LIGHT_COLS = secureAuthEnabled ? PRODUCT_PUBLIC_COLUMNS : 'id,name,category,price,modal,stock,unit,description,created_at'
   // Ambil flag favorit terpisah & gabungkan ke state produk. Aman bila kolom
   // is_favorite belum ada (error diabaikan).
   const mergeFavorites = useCallback(async () => {
@@ -315,18 +373,18 @@ export function useStore() {
     try {
       const [s, a, p, t, c, d, dp] = await Promise.all([
         supabase.from('settings').select('*').eq('id', 1).maybeSingle(),
-        supabase.from('admins').select('*').order('created_at', { ascending: true }),
+        supabase.from('admins').select(ADMIN_PROFILE_COLUMNS).order('created_at', { ascending: true }),
         // PENTING: jangan ambil kolom `image` di sini. Gambar produk lama
         // tersimpan sebagai base64 besar (bisa MB), dan SELECT * tanpa batas
         // bikin statement timeout saat boot. Kolom ringan dulu → app cepat
         // hidup, gambar di-hydrate di latar belakang (lihat bawah).
         supabase.from('products').select(PRODUCT_LIGHT_COLS).order('created_at', { ascending: false }).limit(500),
         // Limit transactions + debts agar query selalu cepat. Difilter book aktif.
-        applyBook(supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(TRX_LIMIT)),
+        applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(TRX_LIMIT)),
         applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false })),
-        applyBook(supabase.from('debts').select('*').order('created_at', { ascending: false }).limit(DEBT_LIMIT)),
+        applyBook(supabase.from('debts').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(DEBT_LIMIT)),
         // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
-        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id').order('paid_at', { ascending: false }).limit(2000)),
+        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
       ])
       // Daftar book (defensif: jika tabel belum ada / migrasi belum jalan, abaikan).
       try {
@@ -361,6 +419,9 @@ export function useStore() {
         if (!cb.error && mounted.current) setCredibookIncome(cb.data || [])
       } catch { /* tabel credibook_income belum ada — abaikan */ }
       for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
+      const productRows = secureAuthEnabled
+        ? await attachProductCosts(supabase, p.data || [], currentUser?.role)
+        : p.data || []
       if (!mounted.current) return
       setStoreInfo(settingsFromDB(s.data) || {
         name: 'Skupy Printing', tagline: '', address: '', phone: '', email: '',
@@ -370,12 +431,12 @@ export function useStore() {
       const allAdmins = (a.data || []).map(adminFromDB)
       setAdmins(allAdmins)
       // Validate restored session: if user no longer exists, clear it
-      const restored = loadSession()
+      const restored = secureAuthEnabled ? null : loadSession()
       if (restored?.id && !allAdmins.find(x => x.id === restored.id)) {
         clearSession()
         if (mounted.current) setCurrentUser(null)
       }
-      setProducts((p.data || []).map(productFromDB))
+      setProducts(productRows.map(productFromDB))
       mergeFavorites()  // gabungkan flag favorit (resilient, non-blocking)
       // Hydrate gambar di latar belakang — tidak memblok tampilan awal.
       hydrateProductImages()
@@ -414,7 +475,9 @@ export function useStore() {
 
   // Ganti book aktif (null = Semua Book). Persist pilihan.
   const setActiveBook = useCallback((id) => {
-    try { if (id) localStorage.setItem('skupy_active_book', id); else localStorage.removeItem('skupy_active_book') } catch { /* ignore */ }
+    if (!secureAuthEnabled) {
+      try { if (id) localStorage.setItem('skupy_active_book', id); else localStorage.removeItem('skupy_active_book') } catch { /* ignore */ }
+    }
     setActiveBookId(id || null)
   }, [])
 
@@ -459,7 +522,8 @@ export function useStore() {
   const refreshDebtPayments = useCallback(async () => {
     const { data, error: e } = await applyBook(supabase
       .from('debt_payments')
-      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id')
+      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at')
+      .is('deleted_at', null)
       .order('paid_at', { ascending: false })
       .limit(2000))
     if (!e && mounted.current) setDebtPayments(data || [])
@@ -468,6 +532,7 @@ export function useStore() {
   const refreshDebts = useCallback(async () => {
     const { data, error: e } = await applyBook(supabase
       .from('debts').select('*')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(500))
     if (!e && mounted.current) setDebts((data || []).map(debtFromDB))
@@ -476,6 +541,7 @@ export function useStore() {
   const refreshTransactions = useCallback(async () => {
     const { data, error: e } = await applyBook(supabase
       .from('transactions').select('*')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(500))
     if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
@@ -510,38 +576,50 @@ export function useStore() {
   // Recompute denormalized customer summary (dipakai banyak fungsi).
   // PENTING: dideklarasikan AWAL agar tersedia di dependency array fungsi-fungsi
   // yang memakainya (hindari TDZ "Cannot access ... before initialization").
-  const recalculateCustomerSummary = useCallback(async (customerId) => {
-    if (!customerId) return
+  const recalculateCustomerSummary = useCallback(async (customerId, { validateOnly = false } = {}) => {
+    // Candidate 006 maintains these derived fields inside the database transaction.
+    if (secureAuthEnabled || !customerId) return { ok: true }
+    let writeAttempted = false
     try {
       const [trxRes, debtRes] = await Promise.all([
         supabase.from('transactions')
-          .select('total, remaining, status')
+          .select('id, invoice_no, total, remaining, status, order_status, deleted_at')
           .eq('customer_id', customerId),
         supabase.from('debts')
-          .select('remaining, status')
+          .select('transaction_id, invoice_no, remaining, status, deleted_at')
           .eq('customer_id', customerId)
+          .is('deleted_at', null)
           .eq('status', 'aktif'),
       ])
-      const trxs = trxRes.data || []
-      const activeDebts = debtRes.data || []
+      if (trxRes.error || debtRes.error || !Array.isArray(trxRes.data) || !Array.isArray(debtRes.data)) {
+        return { ok: false, error: 'Ringkasan customer belum dapat dihitung karena data transaksi/piutang belum tersedia.' }
+      }
+      const trxs = trxRes.data.filter(t => !inactiveFinancialInvoice(t))
+      const activeDebts = debtRes.data.filter(d => !d.deleted_at)
+      const inactive = trxRes.data.filter(inactiveFinancialInvoice)
+      if (activeDebts.some(d => paymentMoney(d.remaining) > 0 && inactive.some(t =>
+        (d.transaction_id && d.transaction_id === t.id) || (d.invoice_no && d.invoice_no === t.invoice_no)))) {
+        return { ok: false, needsReview: true, error: 'Piutang aktif terkait invoice batal/terhapus masih memiliki saldo. Ringkasan belum diubah; perlu pemeriksaan owner.' }
+      }
       const totalTransactions = trxs.length
-      const totalSpent = trxs.reduce((s, t) => s + (+t.total || 0), 0)
-      const totalDebt = activeDebts.reduce((s, d) => s + (+d.remaining || 0), 0)
-      const { error: e } = await supabase
+      const totalSpent = trxs.reduce((s, t) => s + paymentMoney(t.total), 0)
+      const totalDebt = activeDebts.reduce((s, d) => s + paymentMoney(d.remaining), 0)
+      // Reuse the same checks before any financial mutation; no summary write.
+      if (validateOnly) return { ok: true }
+      writeAttempted = true
+      const result = await supabase
         .from('customers')
         .update({
           total_transactions: totalTransactions,
           total_spent: totalSpent,
           total_debt: totalDebt,
-        })
+        }, { count: 'exact' })
         .eq('id', customerId)
-      if (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[useStore] recalculateCustomerSummary update gagal:', e)
-      }
+        .select('id').single()
+      if (!confirmedWrite(result, customerId)) return incompleteTransactionSync()
+      return { ok: true }
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] recalculateCustomerSummary error:', err)
+      return writeAttempted ? incompleteTransactionSync() : { ok: false, error: 'Ringkasan customer belum dapat diperiksa. Coba muat ulang data.' }
     }
   }, [])
 
@@ -615,6 +693,44 @@ export function useStore() {
     setBusy(true)
     try { return await fn() }
     finally { if (mounted.current) setBusy(false) }
+  }, [])
+
+  // Bounded, in-session containment only: not a server lock or a durable receipt.
+  const paymentOperations = useRef({ pending: new Set(), blocked: new Set() })
+  const containPayment = useCallback(async (keys, run) => {
+    const state = paymentOperations.current
+    const held = new Set()
+    let dispatched = false
+    const guard = (more) => {
+      for (const key of more.filter(Boolean)) {
+        if (state.blocked.has(key)) throw Object.assign(new Error(incompleteTransactionSync().error), { needsReconciliation: true })
+        if (state.pending.has(key) && !held.has(key)) throw new Error('Pembayaran sedang diproses. Tunggu hasilnya.')
+      }
+      for (const key of more.filter(Boolean)) { held.add(key); state.pending.add(key) }
+    }
+    try {
+      guard(keys)
+      const result = await run({ guard, write: async (query, expectedId = null, schemaFallback) => {
+        dispatched = true
+        let response = await query
+        // PGRST204 names an unknown column: PostgREST rejected the request before
+        // executing SQL. Only this definitive rejection permits a legacy retry.
+        if (schemaFallback && response?.error?.code === 'PGRST204'
+          && response.error.message?.includes("'invoice_no'")) response = await schemaFallback()
+        if (!confirmedWrite(response, expectedId)) throw new Error('Penyimpanan pembayaran belum terkonfirmasi')
+        return response.data
+      } })
+      if (result?.needsReconciliation) held.forEach(key => state.blocked.add(key))
+      return result
+    } catch (error) {
+      if (dispatched || error.needsReconciliation) {
+        if (dispatched) held.forEach(key => state.blocked.add(key))
+        return incompleteTransactionSync()
+      }
+      return { ok: false, needsReconciliation: false, ...(error.needsReview ? { needsReview: true } : {}), error: error.message || 'Data pembayaran belum dapat diperiksa' }
+    } finally {
+      held.forEach(key => state.pending.delete(key))
+    }
   }, [])
 
   // ── REKENING BANK PER ADMIN (owner only) — SETELAH `wrap` agar tidak TDZ ──
@@ -785,10 +901,11 @@ export function useStore() {
 
   // ---------- AUTH ----------
   const login = useCallback(async (username, password, remember = false) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Gunakan layar login utama.' }
     const u = (username || '').trim().toLowerCase()
     if (!u || !password) return { ok: false, error: 'Username & password wajib diisi' }
     const { data, error: e } = await supabase
-      .from('admins').select('*').eq('username', u).eq('password', password).maybeSingle()
+      .from('admins').select(ADMIN_PROFILE_COLUMNS).eq('username', u).eq('password', password).maybeSingle()
     if (e) return { ok: false, error: e.message }
     if (!data) return { ok: false, error: 'Username atau password salah' }
     const user = { id: data.id, username: data.username, name: data.name || data.username, role: data.role, login_time: Date.now() }
@@ -798,6 +915,7 @@ export function useStore() {
   }), [wrap])
 
   const logout = useCallback(() => {
+    if (secureAuthEnabled) { void verifiedSession?.logout(); return }
     setCurrentUser(null)
     clearSession()
   }, [])
@@ -818,11 +936,11 @@ export function useStore() {
         const next = { ...storeInfo, [logoType]: '' }
         const { error: e } = await supabase.from('settings').upsert({ id: 1, ...settingsToDB(next) })
         if (e) return { ok: false, error: e.message }
-        if (oldUrl) { try { await deleteLogo(oldUrl) } catch {} }
+        if (oldUrl) { try { await deleteLogo(oldUrl, supabase) } catch {} }
         if (mounted.current) setStoreInfo(next)
         return { ok: true }
       }
-      const url = await uploadLogo(fileOrEmpty, logoType)
+      const url = await uploadLogo(fileOrEmpty, logoType, supabase)
       const next = { ...storeInfo, [logoType]: url }
       const { error: e } = await supabase.from('settings').upsert({ id: 1, ...settingsToDB(next) })
       if (e) return { ok: false, error: e.message }
@@ -833,12 +951,13 @@ export function useStore() {
 
   // ---------- ADMINS ----------
   const addAdmin = useCallback(async (data) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Pembuatan akun Auth harus melalui pengelola sistem.' }
     const u = (data.username || '').trim().toLowerCase()
     if (!u) return { ok: false, error: 'Username wajib diisi' }
     if (!data.password || data.password.length < 4) return { ok: false, error: 'Password minimal 4 karakter' }
     const { data: inserted, error: e } = await supabase.from('admins')
       .insert({ username: u, password: data.password, name: data.name || u, role: data.role || 'staff' })
-      .select().single()
+      .select(ADMIN_PROFILE_COLUMNS).single()
     if (e) {
       if (String(e.message).includes('duplicate')) return { ok: false, error: 'Username sudah dipakai' }
       return { ok: false, error: e.message }
@@ -851,6 +970,7 @@ export function useStore() {
   // Guard: tidak boleh menurunkan/menghapus role Owner terakhir. Jika mengedit
   // user yang sedang login, currentUser + session ikut diperbarui.
   const updateAdmin = useCallback(async (id, fields = {}) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Gunakan pengelolaan akun Auth.' }
     if (currentUser?.role !== 'owner') return { ok: false, error: 'Hanya Owner yang bisa mengubah admin' }
     const target = admins.find(a => a.id === id)
     if (!target) return { ok: false, error: 'Admin tidak ditemukan' }
@@ -881,9 +1001,9 @@ export function useStore() {
     if (Object.keys(patch).length === 0) return { ok: true } // tidak ada perubahan
 
     // coba dengan updated_at; bila kolom belum dimigrasi → ulangi tanpa updated_at
-    let { data: updated, error } = await supabase.from('admins').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+    let { data: updated, error } = await supabase.from('admins').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id).select(ADMIN_PROFILE_COLUMNS).single()
     if (error && /updated_at|column .* does not exist|schema cache/i.test(error.message || '')) {
-      ;({ data: updated, error } = await supabase.from('admins').update(patch).eq('id', id).select().single())
+      ;({ data: updated, error } = await supabase.from('admins').update(patch).eq('id', id).select(ADMIN_PROFILE_COLUMNS).single())
     }
     if (error) {
       if (/duplicate/i.test(error.message)) return { ok: false, error: 'Username sudah dipakai' }
@@ -900,6 +1020,7 @@ export function useStore() {
   }), [admins, currentUser, wrap])
 
   const deleteAdmin = useCallback(async (id) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Penonaktifan akun Auth harus melalui pengelola sistem.' }
     if (admins.length <= 1) return { ok: false, error: 'Minimal harus ada 1 admin' }
     if (currentUser?.id === id) return { ok: false, error: 'Tidak bisa menghapus diri sendiri' }
     // Cegah hapus admin yang masih jadi PIC customer → minta pindahkan dulu.
@@ -916,6 +1037,7 @@ export function useStore() {
   // Pindahkan semua customer milik 1 admin (PIC) ke admin lain. Dipakai sebelum
   // menghapus admin, atau untuk perapian. Tidak mengubah transaksi/piutang/nominal.
   const reassignAdminCustomers = useCallback(async (fromId, toId) => wrap(async () => {
+    if (secureAuthEnabled) return reassignmentUnavailable()
     if (!fromId || !toId || fromId === toId) return { ok: false, error: 'Admin tujuan tidak valid' }
     const to = admins.find(a => a.id === toId)
     if (!to) return { ok: false, error: 'Admin tujuan tidak ditemukan' }
@@ -935,6 +1057,7 @@ export function useStore() {
   }), [admins, currentUser, wrap, refreshCustomers])
 
   const changePassword = useCallback(async (oldPass, newPass) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Pemulihan akun owner harus melalui jalur Auth yang terverifikasi.' }
     if (!currentUser) return { ok: false, error: 'Belum login' }
     if (!newPass || newPass.length < 4) return { ok: false, error: 'Password baru minimal 4 karakter' }
     const { data: me, error: e1 } = await supabase.from('admins').select('id, password').eq('id', currentUser.id).single()
@@ -942,7 +1065,6 @@ export function useStore() {
     if (me.password !== oldPass) return { ok: false, error: 'Password lama salah' }
     const { error: e2 } = await supabase.from('admins').update({ password: newPass }).eq('id', currentUser.id)
     if (e2) return { ok: false, error: e2.message }
-    if (mounted.current) setAdmins(prev => prev.map(a => a.id === currentUser.id ? { ...a, password: newPass } : a))
     return { ok: true }
   }), [currentUser, wrap])
 
@@ -965,7 +1087,7 @@ export function useStore() {
     }
     if (writeBookId) payload.book_id = writeBookId
     let { data: row, error: e } = await supabase.from('customers').insert(payload).select().single()
-    if (e && /(created_by|owner_user_id|book_id|does not exist|schema cache)/i.test(e.message || '')) {
+    if (!secureAuthEnabled && e && /(created_by|owner_user_id|book_id|does not exist|schema cache)/i.test(e.message || '')) {
       const base = customerToDB(data)
       if (writeBookId) { try { base.book_id = writeBookId } catch { /* */ } }
       ;({ data: row, error: e } = await supabase.from('customers').insert(base).select().single())
@@ -981,6 +1103,8 @@ export function useStore() {
 
   const updateCustomer = useCallback(async (id, data) => wrap(async () => {
     const prevCust = customers.find(c => c.id === id)
+    if (secureAuthEnabled && Object.prototype.hasOwnProperty.call(data, 'ownerUserId')
+      && (data.ownerUserId || null) !== (prevCust?.ownerUserId || null)) return reassignmentUnavailable()
     const patch = customerToDB(data)
     const oldOwnerId = prevCust?.ownerUserId || null
     let ownerChanged = false
@@ -992,7 +1116,7 @@ export function useStore() {
       ownerChanged = true
     }
     let { data: row, error: e } = await supabase.from('customers').update(patch).eq('id', id).select().single()
-    if (e && /owner_user_id|does not exist|schema cache/i.test(e.message || '')) {
+    if (!secureAuthEnabled && e && /owner_user_id|does not exist|schema cache/i.test(e.message || '')) {
       ;({ data: row, error: e } = await supabase.from('customers').update(customerToDB(data)).eq('id', id).select().single())
     }
     if (e) return { ok: false, error: e.message }
@@ -1011,11 +1135,15 @@ export function useStore() {
 
   const deleteCustomer = useCallback(async (id) => wrap(async () => {
     // Cegah hard delete bila customer masih punya transaksi/piutang → soft delete.
-    const [{ count: trxCount }, { count: debtCount }] = await Promise.all([
+    const [{ count: trxCount, error: trxError }, { count: debtCount, error: debtError }] = await Promise.all([
       supabase.from('transactions').select('id', { count: 'exact', head: true }).eq('customer_id', id),
       supabase.from('debts').select('id', { count: 'exact', head: true }).eq('customer_id', id),
     ])
-    const hasRelated = (trxCount || 0) > 0 || (debtCount || 0) > 0
+    if (trxError || debtError || !Number.isSafeInteger(trxCount) || trxCount < 0
+      || !Number.isSafeInteger(debtCount) || debtCount < 0) {
+      return { ok: false, error: 'Riwayat transaksi/piutang belum dapat diperiksa. Customer tidak dihapus; coba lagi setelah koneksi pulih.' }
+    }
+    const hasRelated = trxCount > 0 || debtCount > 0
     if (hasRelated) {
       const { error } = await supabase.from('customers').update({ deleted_at: new Date().toISOString() }).eq('id', id)
       if (error && /deleted_at|does not exist|schema cache/i.test(error.message || '')) {
@@ -1064,6 +1192,7 @@ export function useStore() {
 
   // PIUTANG: pindahkan semua nota hutang sebuah grup customer ke customer baru.
   const reassignReceivableCustomer = useCallback(async ({ debtIds = [], invoiceNos = [], oldCustomerId = null, oldCustomerName = '', newCustomerId, notes = '' }) => wrap(async () => {
+    if (secureAuthEnabled) return reassignmentUnavailable()
     if (currentUser?.role !== 'owner' && currentUser?.role !== 'admin') return { ok: false, error: 'Hanya Owner & Staff Admin yang bisa memindahkan piutang' }
     if (!newCustomerId) return { ok: false, error: 'Customer baru wajib dipilih' }
     const newCust = customers.find(c => c.id === newCustomerId)
@@ -1120,6 +1249,7 @@ export function useStore() {
 
   // ORDER: pindahkan customer satu invoice/order (invoice tetap sama).
   const reassignOrderCustomer = useCallback(async ({ transactionId, invoiceNo, newCustomerId, notes = '' }) => wrap(async () => {
+    if (secureAuthEnabled) return reassignmentUnavailable()
     if (!newCustomerId) return { ok: false, error: 'Customer baru wajib dipilih' }
     const newCust = customers.find(c => c.id === newCustomerId)
     if (!newCust) return { ok: false, error: 'Customer baru tidak ditemukan' }
@@ -1173,6 +1303,11 @@ export function useStore() {
 
   const addProduct = useCallback(async (data) => wrap(async () => {
     const payload = productToDB(data)
+    if (secureAuthEnabled) {
+      const row = await saveSecureProduct(supabase, null, payload, currentUser?.role)
+      if (mounted.current) setProducts(prev => [productFromDB(row), ...prev])
+      return { ok: true }
+    }
     let { data: row, error: e } = await supabase
       .from('products').insert(payload).select().single()
     // Fallback: DB belum punya kolom is_favorite (migrasi belum jalan).
@@ -1191,10 +1326,15 @@ export function useStore() {
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setProducts(prev => [productFromDB(row), ...prev])
     return { ok: true }
-  }), [wrap])
+  }), [wrap, currentUser?.role])
 
   const updateProduct = useCallback(async (id, data) => wrap(async () => {
     const payload = productToDB(data)
+    if (secureAuthEnabled) {
+      const row = await saveSecureProduct(supabase, id, payload, currentUser?.role)
+      if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? productFromDB(row) : p))
+      return { ok: true }
+    }
     let { data: row, error: e } = await supabase
       .from('products').update(payload).eq('id', id).select().single()
     if (e && isSchemaCacheError(e, 'is_favorite')) {
@@ -1211,7 +1351,7 @@ export function useStore() {
     if (e) return { ok: false, error: e.message }
     if (mounted.current) setProducts(prev => prev.map(p => p.id === id ? productFromDB(row) : p))
     return { ok: true }
-  }), [wrap])
+  }), [wrap, currentUser?.role])
 
   const deleteProduct = useCallback(async (id) => wrap(async () => {
     const { error: e } = await supabase.from('products').delete().eq('id', id)
@@ -1299,6 +1439,7 @@ export function useStore() {
   // tidak ada drift antar tabel (trigger DB hanya menambah saat INSERT, tidak
   // mengurangi saat DELETE).
   const addTransaction = useCallback(async (trx) => wrap(async () => {
+    let writeDispatched = false
     try {
       const cashier = currentUser?.name || currentUser?.username || ''
       const cashierId = currentUser?.id || null
@@ -1357,40 +1498,47 @@ export function useStore() {
         if (writeBookId) payload.book_id = writeBookId
         // eslint-disable-next-line no-console
         console.log(`[useStore] Inserting transaction (attempt ${attempt}/${MAX_ATTEMPTS}):`, invoiceNo)
+        writeDispatched = true
         let res = await supabase.from('transactions').insert(payload).select().single()
         // Defensive retry kalau DB belum punya kolom due_date / cashier_role.
-        if (res.error && isSchemaCacheError(res.error, 'due_date')) {
+        if (!secureAuthEnabled && res.error && isSchemaCacheError(res.error, 'due_date')) {
           // eslint-disable-next-line no-console
           console.warn('[useStore] DB belum punya kolom transactions.due_date — transaksi disimpan tanpa due_date.')
           res = await supabase
             .from('transactions').insert(omit(payload, ['due_date'])).select().single()
         }
-        if (res.error && isSchemaCacheError(res.error, 'cashier_role')) {
+        if (!secureAuthEnabled && res.error && isSchemaCacheError(res.error, 'cashier_role')) {
           // eslint-disable-next-line no-console
           console.warn('[useStore] DB belum punya kolom transactions.cashier_role — transaksi disimpan tanpa role.')
           res = await supabase
             .from('transactions').insert(omit(payload, ['cashier_role'])).select().single()
         }
-        if (res.error && (isSchemaCacheError(res.error, 'owner_user_id') || isSchemaCacheError(res.error, 'owner_name'))) {
+        if (!secureAuthEnabled && res.error && (isSchemaCacheError(res.error, 'owner_user_id') || isSchemaCacheError(res.error, 'owner_name'))) {
           res = await supabase
             .from('transactions').insert(omit(payload, ['owner_user_id', 'owner_name'])).select().single()
         }
         // Fallback bila kolom book_id belum ada (migrasi Book belum dijalankan).
-        if (res.error && isSchemaCacheError(res.error, 'book_id')) {
+        if (!secureAuthEnabled && res.error && isSchemaCacheError(res.error, 'book_id')) {
           res = await supabase.from('transactions').insert(omit(payload, ['book_id'])).select().single()
         }
         // Fallback bila kolom snapshot rekening bank belum ada (migrasi belum jalan).
-        if (res.error && (isSchemaCacheError(res.error, 'bank_account_id') || isSchemaCacheError(res.error, 'bank_name') || isSchemaCacheError(res.error, 'bank_account_number') || isSchemaCacheError(res.error, 'bank_account_holder') || isSchemaCacheError(res.error, 'created_by_admin_id'))) {
+        if (!secureAuthEnabled && res.error && (isSchemaCacheError(res.error, 'bank_account_id') || isSchemaCacheError(res.error, 'bank_name') || isSchemaCacheError(res.error, 'bank_account_number') || isSchemaCacheError(res.error, 'bank_account_holder') || isSchemaCacheError(res.error, 'created_by_admin_id'))) {
           res = await supabase.from('transactions').insert(omit(payload, ['bank_account_id', 'bank_name', 'bank_account_number', 'bank_account_holder', 'created_by_admin_id'])).select().single()
         }
         // Fallback bila kolom snapshot identitas toko belum ada (migrasi belum jalan).
-        if (res.error && (isSchemaCacheError(res.error, 'store_name_snapshot') || isSchemaCacheError(res.error, 'address_snapshot') || isSchemaCacheError(res.error, 'phone_snapshot'))) {
+        if (!secureAuthEnabled && res.error && (isSchemaCacheError(res.error, 'store_name_snapshot') || isSchemaCacheError(res.error, 'address_snapshot') || isSchemaCacheError(res.error, 'phone_snapshot'))) {
           res = await supabase.from('transactions').insert(omit(payload, ['store_name_snapshot', 'address_snapshot', 'phone_snapshot'])).select().single()
         }
         row = res.data
         e = res.error
         if (!e) break // success
-        if (isUniqueViolation(e)) {
+        // A transport/representation failure can arrive after the INSERT committed.
+        const rejected = (res.status === 409 && ['23505', '23503'].includes(e.code)) ||
+          ([401, 403].includes(res.status) && e.code === '42501') ||
+          (res.status === 400 && ['PGRST204', '23502', '23514', '22023', '22P02'].includes(e.code)) ||
+          (res.status === 404 && e.code === 'PGRST205')
+        if (!rejected) return incompleteTransactionSync()
+        if (secureAuthEnabled ? e.code === '23505' : isUniqueViolation(e)) {
           // eslint-disable-next-line no-console
           console.warn(`[useStore] Nomor invoice ${invoiceNo} sudah dipakai, generate ulang (attempt ${attempt}/${MAX_ATTEMPTS})…`)
           // Short backoff so concurrent inserts don't keep stepping on each other
@@ -1410,10 +1558,11 @@ export function useStore() {
         const friendly = isUniqueViolation(e)
           ? 'Nomor invoice sedang sibuk digunakan kasir lain. Coba checkout sekali lagi.'
           : isAccPerm
-          ? 'Checkout gagal karena modul Accounting belum siap di database. Jalankan migrasi supabase/migrations/2026_06_accounting_rls_fix.sql di Supabase SQL Editor, lalu coba lagi.'
+          ? 'Checkout gagal karena hak akses Accounting belum siap. Hubungi owner untuk memeriksa konfigurasi keamanan.'
           : `Gagal menyimpan transaksi: ${e.message}`
         return { ok: false, error: friendly }
       }
+      if (!row?.id) return incompleteTransactionSync()
 
       // Decrement stock
       await Promise.all(trx.items.map(async (item) => {
@@ -1447,13 +1596,13 @@ export function useStore() {
         }
         if (writeBookId) debtPayload.book_id = writeBookId
         let { error: debtErr } = await supabase.from('debts').insert(debtPayload)
-        if (debtErr && isSchemaCacheError(debtErr, 'book_id')) {
+        if (!secureAuthEnabled && debtErr && isSchemaCacheError(debtErr, 'book_id')) {
           ;({ error: debtErr } = await supabase.from('debts').insert(omit(debtPayload, ['book_id'])))
         }
         if (debtErr) {
           // eslint-disable-next-line no-console
           console.error('[useStore] Gagal membuat hutang:', debtErr, debtPayload)
-          return { ok: false, error: `Transaksi tersimpan, tapi data hutang gagal disimpan: ${debtErr.message}` }
+          return incompleteTransactionSync()
         }
         await refreshDebts()
       }
@@ -1470,11 +1619,14 @@ export function useStore() {
       // Refresh customer stats — use recalculate to keep numbers honest
       // (the INSERT trigger only adds; we want canonical values).
       if (trx.customerId) {
-        await recalculateCustomerSummary(trx.customerId)
+        const summary = await recalculateCustomerSummary(trx.customerId)
+        if (!summary.ok) return incompleteTransactionSync()
         await refreshCustomers()
       }
       return { ok: true, data: newTrx }
-    } catch (err) { return { ok: false, error: err.message || String(err) } }
+    } catch (err) {
+      return writeDispatched ? incompleteTransactionSync() : { ok: false, error: err.message || String(err) }
+    }
   }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin, invoiceProfileForAdmin])
 
   // ---------- SYNC DEBT ↔ TRANSACTION ↔ CUSTOMER ----------
@@ -1495,6 +1647,7 @@ export function useStore() {
   // Idempotent — aman dipanggil berkali-kali untuk invoice yang sama.
   const syncDebtPaymentStatus = useCallback(async (invoiceNo) => {
     if (!invoiceNo) return { ok: false, error: 'invoice_no kosong' }
+    let writeAttempted = false
     try {
       // 1. Transaction by invoice_no
       const { data: trx, error: trxErr } = await supabase
@@ -1508,22 +1661,25 @@ export function useStore() {
       const totalAmt = Math.round(+trx.total || 0)
 
       // 2. Debt by invoice_no OR transaction_id (whichever matches first)
-      let { data: debt } = await supabase
+      let { data: debt, error: debtError } = await supabase
         .from('debts')
         .select('*')
         .eq('invoice_no', invoiceNo)
         .maybeSingle()
+      if (debtError) return { ok: false, error: 'Piutang belum dapat diperiksa. Sinkronisasi tidak dijalankan.' }
       if (!debt) {
         const byTrx = await supabase
           .from('debts').select('*').eq('transaction_id', trx.id).maybeSingle()
+        if (byTrx.error) return { ok: false, error: 'Piutang belum dapat diperiksa. Sinkronisasi tidak dijalankan.' }
         debt = byTrx.data
       }
 
       let newPaid, newRemaining, newStatus
       if (debt) {
         // 3. SUM debt_payments → authoritative source of paid
-        const { data: payments } = await supabase
+        const { data: payments, error: paymentsError } = await supabase
           .from('debt_payments').select('amount').eq('debt_id', debt.id)
+        if (paymentsError || !Array.isArray(payments)) return { ok: false, error: 'Riwayat pembayaran belum dapat diperiksa. Sinkronisasi tidak dijalankan.' }
         const paidFromHistory = Math.round((payments || []).reduce((s, p) => s + (+p.amount || 0), 0))
         // If trx.paid is higher (e.g. user marked Lunas manually from Order
         // without going through payDebt), take the larger number — that
@@ -1533,11 +1689,13 @@ export function useStore() {
         newStatus = newRemaining <= 0 ? 'lunas' : 'aktif'
 
         // 4. Update debts
-        await supabase.from('debts').update({
+        writeAttempted = true
+        const debtWriteResult = await supabase.from('debts').update({
           paid: newPaid,
           remaining: newRemaining,
           status: newStatus,
-        }).eq('id', debt.id)
+        }).eq('id', debt.id).select('id').single()
+        if (!confirmedWrite(debtWriteResult, debt.id)) return incompleteTransactionSync()
       } else {
         // No debt row — purely cash/transfer/qris transaction
         newPaid = Math.round(+trx.paid || 0)
@@ -1547,266 +1705,194 @@ export function useStore() {
 
       // 5. Update transactions (always — payment status reflects in Order)
       const trxStatus = newRemaining <= 0 ? 'lunas' : 'pending'
-      await supabase.from('transactions').update({
+      writeAttempted = true
+      const trxWriteResult = await supabase.from('transactions').update({
         paid: newPaid,
         dp: newPaid,
         remaining: newRemaining,
         status: trxStatus,
-      }).eq('id', trx.id)
+      }).eq('id', trx.id).select('id').single()
+      if (!confirmedWrite(trxWriteResult, trx.id)) return incompleteTransactionSync()
 
       // 6. Recalc customer summary
       if (trx.customer_id) {
-        await recalculateCustomerSummary(trx.customer_id)
+        const summary = await recalculateCustomerSummary(trx.customer_id)
+        if (!summary.ok) return incompleteTransactionSync()
       }
 
       return { ok: true, data: { paid: newPaid, remaining: newRemaining, status: trxStatus } }
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[useStore] syncDebtPaymentStatus error:', err)
-      return { ok: false, error: err.message || String(err) }
+      return writeAttempted ? incompleteTransactionSync() : { ok: false, error: 'Data invoice/piutang belum dapat diperiksa. Sinkronisasi tidak dijalankan.' }
     }
   }, [recalculateCustomerSummary])
+
+  const destructivePaymentCheck = useCallback(async (trx, debt) => {
+    const review = { ok: false, needsReview: true, error: 'Ada pembayaran/DP atau riwayat keuangan. Penghapusan/pembatalan belum tersedia tanpa rekonsiliasi oleh owner; belum ada perubahan yang disimpan.' }
+    if ((trx && (paymentMoney(trx.paid) > 0 || paymentMoney(trx.dp) > 0))
+      || (debt && paymentMoney(debt.paid) > 0)) return review
+    // Include even retained soft-deleted history: destructive deletion must not
+    // erase its audit trail. These are existence checks, not receipt totals.
+    if (debt?.id) {
+      const history = paymentRead(await supabase.from('debt_payments').select('id').eq('debt_id', debt.id).limit(1))
+      if (!Array.isArray(history)) throw new Error('Riwayat pembayaran belum dapat diperiksa')
+      if (history.length) return review
+    }
+    const invoiceNo = trx?.invoice_no || debt?.invoice_no
+    if (invoiceNo) {
+      const history = paymentRead(await supabase.from('debt_payments').select('id').eq('invoice_no', invoiceNo).limit(1))
+      if (!Array.isArray(history)) throw new Error('Riwayat pembayaran belum dapat diperiksa')
+      if (history.length) return review
+    }
+    return { ok: true }
+  }, [])
 
   const updateOrderStatus = useCallback(async (id, newStatus) => wrap(async () => {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
-    const cashier = currentUser?.name || currentUser?.username || 'system'
-    const newHistory = [
-      ...(current.statusHistory || []),
-      {
-        order_status: newStatus,
-        changed_at: new Date().toISOString(),
-        changed_by: cashier,
-        from: current.orderStatus || 'menunggu',
-      },
-    ]
-    const { data: row, error: e } = await supabase
-      .from('transactions')
-      .update({ order_status: newStatus, status_history: newHistory })
-      .eq('id', id).select().single()
-    if (e) return { ok: false, error: e.message }
-    if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
-    return { ok: true }
-  }), [transactions, currentUser, wrap])
+    return containPayment([current.invoiceNo && `invoice:${current.invoiceNo}`, current.customerId && `customer:${current.customerId}`], async ({ write, guard }) => {
+      let snapshot = current
+      if (newStatus === 'dibatalkan') {
+        const fresh = paymentRead(await supabase.from('transactions')
+          .select('id, invoice_no, customer_id, paid, dp, status_history, order_status, deleted_at').eq('id', id).maybeSingle())
+        if (!fresh || fresh.id !== id || fresh.deleted_at) return { ok: false, error: 'Invoice belum dapat diperiksa' }
+        guard([fresh.invoice_no && `invoice:${fresh.invoice_no}`, fresh.customer_id && `customer:${fresh.customer_id}`])
+        // Legacy cancellation SQL removes cash postings. Until DP disposition has
+        // a real ledger workflow, refuse any invoice that has received money.
+        if (!Number.isFinite(Number(fresh.paid)) || !Number.isFinite(Number(fresh.dp))
+          || Number(fresh.paid) !== 0 || Number(fresh.dp) !== 0) {
+          return { ok: false, error: 'Invoice sudah menerima pembayaran/DP. Pembatalan memerlukan penyelesaian DP oleh owner; belum ada perubahan yang disimpan.' }
+        }
+        let debt = paymentRead(await supabase.from('debts').select('*').eq('transaction_id', id).maybeSingle())
+        if (!debt && fresh.invoice_no) {
+          debt = paymentRead(await supabase.from('debts').select('*').eq('invoice_no', fresh.invoice_no).maybeSingle())
+        }
+        if (debt && paymentMoney(debt.remaining) > 0) {
+          return { ok: false, needsReview: true, error: 'Invoice masih memiliki piutang terkait. Pembatalan memerlukan penyelesaian piutang oleh owner; belum ada perubahan yang disimpan.' }
+        }
+        const allowed = await destructivePaymentCheck(fresh, debt)
+        if (!allowed.ok) return allowed
+        snapshot = { ...current, statusHistory: fresh.status_history, orderStatus: fresh.order_status }
+      }
+      const newHistory = [...(snapshot.statusHistory || []), {
+        order_status: newStatus, changed_at: new Date().toISOString(),
+        changed_by: currentUser?.name || currentUser?.username || 'system',
+        from: snapshot.orderStatus || 'menunggu',
+      }]
+      const row = await write(supabase.from('transactions')
+        .update({ order_status: newStatus, status_history: newHistory }).eq('id', id).select().single(), id)
+      if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
+      return { ok: true }
+    })
+  }), [transactions, currentUser, wrap, containPayment, destructivePaymentCheck])
 
   const updateTransactionStatus = useCallback(async (id, status) => wrap(async () => {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
-    const updates = { status }
-    if (status === 'lunas') {
-      const totalInt = Math.round(+current.total || 0)
-      updates.paid = totalInt; updates.dp = totalInt; updates.remaining = 0
-    }
-    const { data: row, error: e } = await supabase.from('transactions').update(updates).eq('id', id).select().single()
-    if (e) return { ok: false, error: e.message }
-    // ─── Sync the linked debt + customer summary if this trx has hutang ───
-    // If user marked Lunas from Order, the debt row must mirror that.
-    if (current.invoiceNo) {
-      const syncResult = await syncDebtPaymentStatus(current.invoiceNo)
-      if (!syncResult.ok) {
-        // eslint-disable-next-line no-console
-        console.warn('[useStore] sync debt after status change gagal:', syncResult.error)
+    return containPayment([current.invoiceNo && `invoice:${current.invoiceNo}`, current.customerId && `customer:${current.customerId}`], async ({ write }) => {
+      if (status === 'lunas') {
+        if (Number(current.remaining) > 0 || Number(current.paid) < Number(current.total)) {
+          return { ok: false, error: 'Masih ada sisa tagihan. Gunakan Tambah Pembayaran agar nominal dan metode tercatat.' }
+        }
+        const fresh = paymentRead(await supabase.from('transactions').select('id, total, paid, remaining').eq('id', id).maybeSingle())
+        if (fresh?.id !== id || Number(fresh.remaining) !== 0 || Number(fresh.total) !== Number(fresh.paid)) {
+          return { ok: false, error: 'Saldo belum terkonfirmasi lunas. Gunakan Tambah Pembayaran atau minta owner memeriksa invoice.' }
+        }
       }
-    }
-    if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
-    // Refresh debts + customers so Piutang page + Dashboard pick up the change
-    await Promise.all([refreshDebts(), refreshCustomers()])
-    return { ok: true }
-  }), [transactions, wrap, syncDebtPaymentStatus, refreshDebts, refreshCustomers])
-
-  // ═══════════════════════════════════════════════════════════════════
-  // processDebtPayment(opts) — CANONICAL helper untuk pembayaran hutang.
-  // Dipakai oleh BOTH:
-  //   • Halaman Order (tombol "Tambah Pembayaran")
-  //   • Halaman Piutang (tombol "Bayar Cicilan")
-  //
-  // Rumus (sumber kebenaran tunggal — TIDAK pakai total - paidAfter):
-  //   remainingBefore = debt.remaining  ?? transaction.remaining
-  //   paidBefore      = debt.paid       ?? transaction.paid
-  //   paidAfter       = paidBefore + paymentAmount
-  //   remainingAfter  = max(0, remainingBefore - paymentAmount)
-  //
-  // Wajib update bersamaan:
-  //   transactions { paid, dp, remaining, status='lunas'/'pending' }
-  //   debts        { paid, remaining, status='lunas'/'aktif' }
-  //   debt_payments INSERT history row
-  //   customers    { total_debt = SUM(debts.remaining WHERE aktif) }
-  //
-  // Lalu refresh state lokal supaya Order, Piutang, Customers, Dashboard
-  // langsung sinkron tanpa menunggu echo realtime.
-  // ═══════════════════════════════════════════════════════════════════
-  const processDebtPayment = useCallback(async ({
-    invoice_no,
-    paymentAmount,
-    paymentMethod = 'cash',
-    notes = '',
-    skipRefresh = false,   // FIFO loop refresh sekali di akhir, bukan per-invoice
-  }) => wrap(async () => {
-    // Uang = integer rupiah. Bulatkan untuk hindari floating drift.
-    const amount = Math.round(Number(paymentAmount) || 0)
-    if (amount <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
-    if (!invoice_no) return { ok: false, error: 'invoice_no kosong' }
-
-    // 1. Fetch transaction by invoice_no (BISA tidak ada untuk piutang saldo
-    //    awal / migrasi yang TANPA transaksi — ditangani jalur debt-only).
-    const { data: trxRow } = await supabase
-      .from('transactions')
-      .select('id, invoice_no, customer_id, total, paid, remaining, status, dp')
-      .eq('invoice_no', invoice_no)
-      .maybeSingle()
-
-    // 2. Fetch debt by invoice_no, fallback ke transaction_id
-    let { data: debtRow } = await supabase
-      .from('debts').select('*')
-      .eq('invoice_no', invoice_no).maybeSingle()
-    if (!debtRow && trxRow) {
-      const byTrx = await supabase.from('debts').select('*')
-        .eq('transaction_id', trxRow.id).maybeSingle()
-      debtRow = byTrx.data
-    }
-
-    // Tidak ada transaksi MAUPUN debt → memang tidak ada apa pun untuk dibayar.
-    if (!trxRow && !debtRow) {
-      return { ok: false, error: 'Transaksi/hutang tidak ditemukan' }
-    }
-
-    // ── JALUR DEBT-ONLY (piutang lama tanpa transaksi) ──
-    if (!trxRow && debtRow) {
-      const dTotal = Math.round(Number(debtRow.total_debt) || 0)
-      const dPaidBefore = Math.round(Number(debtRow.paid) || 0)
-      const dRemainingBefore = Math.max(0, dTotal - dPaidBefore)
-      if (amount > dRemainingBefore) return { ok: false, error: 'Nominal pembayaran melebihi sisa tagihan' }
-      const dPaidAfter = dPaidBefore + amount
-      const dRemainingAfter = Math.max(0, dRemainingBefore - amount)
-      await supabase.from('debts').update({
-        paid: dPaidAfter, remaining: dRemainingAfter, status: dRemainingAfter <= 0 ? 'lunas' : 'aktif',
-      }).eq('id', debtRow.id)
-      const payRow = {
-        debt_id: debtRow.id, amount, payment_method: paymentMethod, notes,
-        cashier: currentUser?.name || currentUser?.username || '', cashier_id: currentUser?.id || null,
-        invoice_no, paid_at: new Date().toISOString(),
-      }
-      let { error: pErr } = await supabase.from('debt_payments').insert(payRow)
-      if (pErr && isSchemaCacheError(pErr, 'invoice_no')) {
-        const retry = await supabase.from('debt_payments').insert(omit(payRow, ['invoice_no']))
-        pErr = retry.error
-      }
-      if (pErr) return { ok: false, error: pErr.message }
-      if (debtRow.customer_id) await recalculateCustomerSummary(debtRow.customer_id)
-      if (!skipRefresh) await Promise.all([refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      const row = await write(supabase.from('transactions').update({ status }).eq('id', id).select().single(), id)
+      if (mounted.current) setTransactions(prev => prev.map(t => t.id === id ? trxFromDB(row) : t))
+      await Promise.all([refreshDebts(), refreshCustomers()])
       return { ok: true }
-    }
+    })
+  }), [transactions, wrap, containPayment, refreshDebts, refreshCustomers])
 
-    // 3-6. Tentukan remainingBefore + paidBefore
-    // PRIORITAS: TRANSACTIONS (karena selalu include DP awal). Fallback ke
-    // debt kalau transaction.paid masih 0 untuk row legacy.
-    const total = Math.round(Number(trxRow.total) || 0)
-    const paidBefore = Math.round(
-      (Number(trxRow.paid) || 0) > 0
-        ? Number(trxRow.paid)
-        : (debtRow && Number(debtRow.paid) ? Number(debtRow.paid) : 0)
-    )
-    const remainingBefore = Math.max(0, total - paidBefore)
-
-    // 7. Hitung — kurangkan dari remainingBefore (BUKAN dari total - paidAfter
-    //    yang bisa salah kalau ada drift). Semua integer → remainingAfter===0
-    //    persis saat lunas.
-    const paidAfter = paidBefore + amount
-    let remainingAfter = Math.max(0, remainingBefore - amount)
-
-    // 8. Validasi paymentAmount <= remainingBefore
-    if (amount > remainingBefore) {
-      return { ok: false, error: 'Nominal pembayaran melebihi sisa tagihan' }
+  // Shared Order/Piutang installment flow. Preflight rejects missing debts and
+  // inconsistent balances. Writes are sequential, NOT atomic: any unconfirmed
+  // dispatch requires reconciliation and blocks repeat in this hook instance.
+  const processDebtPayment = useCallback(async ({
+    invoice_no, paymentAmount, paymentMethod = 'cash', notes = '', skipRefresh = false,
+  }) => wrap(() => containPayment([invoice_no && `invoice:${invoice_no}`], async ({ guard, write }) => {
+    const amount = paymentMoney(paymentAmount)
+    if (amount <= 0) {
+      return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
     }
+    if (!invoice_no) return { ok: false, error: 'invoice_no kosong' }
+    if (!['cash', 'transfer', 'qris'].includes(paymentMethod)) return { ok: false, error: 'Metode pembayaran tidak valid' }
 
-    // 9. Update transactions
-    const trxStatus = remainingAfter <= 0 ? 'lunas' : 'pending'
-    const { error: trxUpdErr } = await supabase
-      .from('transactions')
-      .update({
-        paid: paidAfter,
-        dp: paidAfter,
-        remaining: remainingAfter,
-        status: trxStatus,
-      })
-      .eq('id', trxRow.id)
-    if (trxUpdErr) {
-      // eslint-disable-next-line no-console
-      console.error('[processDebtPayment] gagal update transactions:', trxUpdErr)
+    const trxRow = paymentRead(await applyBook(supabase.from('transactions')
+      .select('id, invoice_no, customer_id, total, paid, remaining, status, dp, order_status, deleted_at, book_id')
+      .eq('invoice_no', invoice_no)).maybeSingle())
+    let debtRow = paymentRead(await applyBook(supabase.from('debts').select('*')
+      .eq('invoice_no', invoice_no)).maybeSingle())
+    if (!debtRow && trxRow) {
+      debtRow = paymentRead(await applyBook(supabase.from('debts').select('*')
+        .eq('transaction_id', trxRow.id)).maybeSingle())
     }
+    // debt_payments.debt_id is NOT NULL; never persist an invoice-only installment.
+    if (!debtRow?.id) return { ok: false, error: 'Piutang terkait tidak ditemukan. Pembayaran belum disimpan.' }
+    if (trxRow && !trxRow.id) throw new Error('Data invoice tidak valid')
+    if (trxRow?.order_status === 'dibatalkan' || debtRow.deleted_at || trxRow?.deleted_at) {
+      return { ok: false, error: 'Invoice batal/terhapus tidak dapat menerima pembayaran.' }
+    }
+    if (debtRow.transaction_id && debtRow.transaction_id !== trxRow?.id) {
+      return { ok: false, error: 'Hubungan invoice dan piutang belum dapat dikonfirmasi.' }
+    }
+    const customerId = trxRow?.customer_id || debtRow.customer_id
+    if (trxRow?.customer_id && debtRow.customer_id && trxRow.customer_id !== debtRow.customer_id) {
+      return { ok: false, error: 'Customer invoice dan piutang tidak sesuai.' }
+    }
+    const debtBefore = paymentSnapshot(debtRow.total_debt, debtRow.paid, debtRow.remaining)
+    const trxBefore = trxRow && paymentSnapshot(trxRow.total, trxRow.paid, trxRow.remaining)
+    if (trxRow && (trxRow.invoice_no !== invoice_no
+      || (debtRow.invoice_no && debtRow.invoice_no !== invoice_no)
+      || (debtRow.book_id && trxRow.book_id && debtRow.book_id !== trxRow.book_id)
+      || trxBefore.total !== debtBefore.total || trxBefore.paid !== debtBefore.paid
+      || trxBefore.remaining !== debtBefore.remaining)) {
+      return { ok: false, needsReview: true, error: 'Saldo atau identitas invoice dan piutang tidak sesuai. Minta owner memeriksa data; pembayaran belum disimpan.' }
+    }
+    guard([`debt:${debtRow.id}`, customerId && `customer:${customerId}`])
 
-    // 10. Update debts (kalau ada row debts)
-    const debtStatus = remainingAfter <= 0 ? 'lunas' : 'aktif'
-    if (debtRow) {
-      const { error: debtUpdErr } = await supabase
-        .from('debts')
-        .update({
-          paid: paidAfter,
-          remaining: remainingAfter,
-          status: debtStatus,
-        })
-        .eq('id', debtRow.id)
-      if (debtUpdErr) {
-        // eslint-disable-next-line no-console
-        console.error('[processDebtPayment] gagal update debts:', debtUpdErr)
-      }
+    const { total, paid: paidBefore } = trxBefore || debtBefore
+    const { paid: paidAfter, remaining: remainingAfter } = paymentBalance(total, paidBefore, amount)
+    const status = remainingAfter === 0 ? 'lunas' : 'pending'
+    const preflight = await recalculateCustomerSummary(customerId, { validateOnly: true })
+    if (!preflight.ok) return preflight
+    if (trxRow) {
+      await write(supabase.from('transactions').update({
+        paid: paidAfter, dp: paidAfter, remaining: remainingAfter, status,
+      }).eq('id', trxRow.id).select('id').single(), trxRow.id)
     }
-
-    // 11. Insert debt_payments history
-    const cashier = currentUser?.name || currentUser?.username || ''
-    const cashierId = currentUser?.id || null
-    const payPayload = {
-      debt_id: debtRow?.id || null,
-      amount,
-      payment_method: paymentMethod,
-      notes,
-      cashier,
-      cashier_id: cashierId,
-      invoice_no,
-      paid_at: new Date().toISOString(),
+    await write(supabase.from('debts').update({
+      paid: paidAfter, remaining: remainingAfter, status: remainingAfter === 0 ? 'lunas' : 'aktif',
+    }).eq('id', debtRow.id).select('id').single(), debtRow.id)
+    const payload = {
+      debt_id: debtRow.id, amount, payment_method: paymentMethod, notes,
+      cashier: currentUser?.name || currentUser?.username || '',
+      cashier_id: currentUser?.id || null, invoice_no, paid_at: new Date().toISOString(),
+      ...(debtRow.book_id ? { book_id: debtRow.book_id } : {}),
     }
-    let { error: payErr } = await supabase.from('debt_payments').insert(payPayload)
-    if (payErr && isSchemaCacheError(payErr, 'invoice_no')) {
-      // Legacy schema tanpa kolom invoice_no di debt_payments
-      const retry = await supabase.from('debt_payments').insert(omit(payPayload, ['invoice_no']))
-      payErr = retry.error
+    await write(supabase.from('debt_payments').insert(payload).select('id').single(), null,
+      () => supabase.from('debt_payments').insert(omit(payload, ['invoice_no'])).select('id').single())
+    if (customerId) {
+      const summary = await recalculateCustomerSummary(customerId)
+      if (!summary?.ok) throw new Error('Ringkasan customer belum tersimpan')
     }
-    if (payErr) {
-      // eslint-disable-next-line no-console
-      console.error('[processDebtPayment] gagal insert debt_payments:', payErr)
-      // Tidak return error — UPDATE sudah berhasil; history boleh gagal silent.
-    }
-
-    // 12. Recalculate customers.total_debt
-    const custId = trxRow.customer_id || debtRow?.customer_id || null
-    if (custId) {
-      await recalculateCustomerSummary(custId)
-    }
-
-    // 13. Refresh state lokal: Order + Piutang + Customers + Uang Masuk
     if (!skipRefresh) {
       await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
     }
-
-    return {
-      ok: true,
-      data: { paidAfter, remainingAfter, status: trxStatus, remainingBefore, paidBefore },
-    }
-  }), [wrap, currentUser, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, recalculateCustomerSummary])
+    return { ok: true, data: { paidAfter, remainingAfter, status, remainingBefore: total - paidBefore, paidBefore } }
+  })), [wrap, containPayment, activeBookId, currentUser, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, recalculateCustomerSummary])
 
   // updateTransactionPayment (Order) — DELEGATE ke processDebtPayment.
   // Tidak ada wrap() outer karena processDebtPayment sudah pakai wrap sendiri.
   // Signature lama dipertahankan untuk backward compat: (id, addPayment).
-  const updateTransactionPayment = useCallback(async (id, addPayment) => {
+  const updateTransactionPayment = useCallback(async (id, addPayment, paymentMethod = 'cash') => {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
-    const amount = Number(addPayment) || 0
-    if (amount <= 0) return { ok: false, error: 'Nominal harus > 0' }
     if (!current.invoiceNo) return { ok: false, error: 'invoice_no kosong' }
     return await processDebtPayment({
       invoice_no: current.invoiceNo,
-      paymentAmount: amount,
-      paymentMethod: 'transfer',
+      paymentAmount: addPayment,
+      paymentMethod,
       notes: 'Pembayaran dari halaman Order',
     })
   }, [transactions, processDebtPayment])
@@ -1837,85 +1923,85 @@ export function useStore() {
       .from('transactions').update(upd).eq('id', id).select().single()
     if (error) return { ok: false, error: error.message }
 
-    // Mirror ke debt terkait (kalau ada)
-    let debtRow = null
-    if (cur.invoiceNo) {
-      const r = await supabase.from('debts').select('id').eq('invoice_no', cur.invoiceNo).maybeSingle()
-      debtRow = r.data
-    }
-    if (!debtRow && cur.transactionId) { /* noop */ }
-    if (!debtRow) {
-      const r2 = await supabase.from('debts').select('id').eq('transaction_id', id).maybeSingle()
-      debtRow = r2.data
-    }
-    if (debtRow) {
-      await supabase.from('debts').update({
-        total_debt: total, paid, remaining,
-        status: remaining <= 0 ? 'lunas' : 'aktif',
-        due_date: upd.due_date,
-      }).eq('id', debtRow.id)
-    }
+    try {
+      // Mirror ke debt terkait (kalau ada)
+      let debtRow = null
+      if (cur.invoiceNo) {
+        const r = await supabase.from('debts').select('id').eq('invoice_no', cur.invoiceNo).maybeSingle()
+        if (r.error) return incompleteTransactionSync()
+        debtRow = r.data
+      }
+      if (!debtRow) {
+        const r2 = await supabase.from('debts').select('id').eq('transaction_id', id).maybeSingle()
+        if (r2.error) return incompleteTransactionSync()
+        debtRow = r2.data
+      }
+      if (debtRow) {
+        const { error: mirrorError } = await supabase.from('debts').update({
+          total_debt: total, paid, remaining,
+          status: remaining <= 0 ? 'lunas' : 'aktif',
+          due_date: upd.due_date,
+        }).eq('id', debtRow.id)
+        if (mirrorError) return incompleteTransactionSync()
+      }
 
-    if (cur.customerId) await recalculateCustomerSummary(cur.customerId)
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
-    return { ok: true, data: trxFromDB(row) }
+      if (cur.customerId) {
+        const summary = await recalculateCustomerSummary(cur.customerId)
+        if (!summary.ok) return incompleteTransactionSync()
+      }
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      return { ok: true, data: trxFromDB(row) }
+    } catch {
+      return incompleteTransactionSync()
+    }
   }), [transactions, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const deleteTransaction = useCallback(async (id) => wrap(async () => {
-    // Capture customerId BEFORE deleting so we can recalc afterwards.
-    const trx = transactions.find(t => t.id === id)
-    const customerId = trx?.customerId || null
-    // FK CASCADE on debts.transaction_id + debt_payments.debt_id (set up in
-    // the migration) ensures related rows die alongside this row.
-    const { error: e } = await supabase.from('transactions').delete().eq('id', id)
-    if (e) return { ok: false, error: e.message }
-    if (mounted.current) {
-      setTransactions(prev => prev.filter(t => t.id !== id))
-      setDebts(prev => prev.filter(d => d.transactionId !== id))
-    }
-    // Recompute customer totals so total_debt + total_spent stay honest.
-    if (customerId) {
-      await recalculateCustomerSummary(customerId)
-    }
-    // Re-fetch dari DB supaya Dashboard TIDAK pernah membaca nota terhapus
-    // (FK CASCADE sudah menghapus debts + debt_payments terkait di server).
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
-    return { ok: true }
-  }), [transactions, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+    const current = transactions.find(t => t.id === id)
+    if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
+    return containPayment([`transaction:${id}`, current.invoiceNo && `invoice:${current.invoiceNo}`], async ({ guard, write }) => {
+      const fresh = paymentRead(await applyBook(supabase.from('transactions').select('*').eq('id', id)).maybeSingle())
+      if (!fresh || fresh.id !== id) return { ok: false, error: 'Transaksi tidak ditemukan' }
+      let debt = paymentRead(await supabase.from('debts').select('*').eq('transaction_id', id).maybeSingle())
+      if (!debt && fresh.invoice_no) {
+        debt = paymentRead(await supabase.from('debts').select('*').eq('invoice_no', fresh.invoice_no).maybeSingle())
+      }
+      const allowed = await destructivePaymentCheck(fresh, debt)
+      if (!allowed.ok) return allowed
+      guard([fresh.invoice_no && `invoice:${fresh.invoice_no}`, fresh.customer_id && `customer:${fresh.customer_id}`,
+        debt?.id && `debt:${debt.id}`])
+      const preflight = await recalculateCustomerSummary(fresh.customer_id, { validateOnly: true })
+      if (!preflight.ok) return preflight
+      await write(supabase.from('transactions').delete().eq('id', id).select('id').single(), id)
+      if (fresh.customer_id && !(await recalculateCustomerSummary(fresh.customer_id))?.ok) {
+        throw new Error('Ringkasan customer belum tersimpan')
+      }
+      if (mounted.current) setTransactions(prev => prev.filter(t => t.id !== id))
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      return { ok: true }
+    })
+  }), [transactions, activeBookId, wrap, containPayment, destructivePaymentCheck, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   // ---------- DEBTS ----------
-  // Bayar hutang — atomic flow yang mengupdate KEEMPAT tabel sekaligus
-  // (debt_payments, debts, transactions, customers). Tidak hanya bergantung
-  // pada SQL trigger; client-side update juga eksplisit agar:
-  //   1. UI bisa update langsung sebelum realtime echo datang.
-  //   2. Kalau trigger DB gagal/tidak terpasang, data tetap konsisten.
-  // payDebt (Piutang) — DELEGATE ke processDebtPayment.
-  // Signature lama dipertahankan: (debtId, amount, paymentMethod, notes).
-  // Internal: ambil invoice_no dari debt row, lalu panggil canonical helper
-  // sehingga rumus pengurangan IDENTIK dengan jalur Order.
+  // Legacy signatures delegate to the same non-atomic, guarded payment callback.
   const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '') => {
-    const amt = Number(amount)
-    if (!amt || amt <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
-    // Resolve debt → invoice_no
-    const { data: debtBefore, error: debtFetchErr } = await supabase
-      .from('debts').select('id, invoice_no, transaction_id, customer_id').eq('id', debtId).maybeSingle()
-    if (debtFetchErr || !debtBefore) {
-      return { ok: false, error: debtFetchErr?.message || 'Hutang tidak ditemukan' }
+    try {
+      const amt = paymentMoney(amount)
+      if (amt <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
+      const debt = paymentRead(await supabase.from('debts')
+        .select('id, invoice_no, transaction_id, customer_id').eq('id', debtId).maybeSingle())
+      if (!debt?.id) return { ok: false, error: 'Hutang tidak ditemukan' }
+      let invoiceNo = debt.invoice_no
+      if (!invoiceNo && debt.transaction_id) {
+        const trx = paymentRead(await supabase.from('transactions').select('invoice_no')
+          .eq('id', debt.transaction_id).maybeSingle())
+        invoiceNo = trx?.invoice_no
+      }
+      if (!invoiceNo) return { ok: false, error: 'invoice_no kosong di debt + transaction' }
+      return await processDebtPayment({ invoice_no: invoiceNo, paymentAmount: amt, paymentMethod, notes })
+    } catch (error) {
+      return { ok: false, needsReconciliation: false, error: error.message || 'Data piutang belum dapat diperiksa' }
     }
-    // Fallback: kalau debt tidak punya invoice_no, lookup via transactions
-    let invoiceNo = debtBefore.invoice_no
-    if (!invoiceNo && debtBefore.transaction_id) {
-      const { data: trx } = await supabase
-        .from('transactions').select('invoice_no').eq('id', debtBefore.transaction_id).maybeSingle()
-      invoiceNo = trx?.invoice_no || null
-    }
-    if (!invoiceNo) return { ok: false, error: 'invoice_no kosong di debt + transaction' }
-    return await processDebtPayment({
-      invoice_no: invoiceNo,
-      paymentAmount: amt,
-      paymentMethod,
-      notes,
-    })
   }, [processDebtPayment])
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1928,194 +2014,210 @@ export function useStore() {
   //   • Clamp: kalau nominal > total sisa hutang customer, dipotong ke total.
   // ═══════════════════════════════════════════════════════════════════
   const payCustomerDebtsFIFO = useCallback(async ({
-    customerId,
-    amount,
-    paymentMethod = 'cash',
-    notes = '',
+    customerId, amount, paymentMethod = 'cash', notes = '',
   }) => wrap(async () => {
-    let pay = Math.round(Number(amount) || 0)
-    if (pay <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
-    if (!customerId) return { ok: false, error: 'Customer tidak valid' }
-
-    // Hutang aktif customer (sisa > 0), urut FIFO created_at ASC.
-    const list = debts
-      .filter(d => d.customerId === customerId
-        && Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0)) > 0)
-      .slice()
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-
-    if (!list.length) return { ok: false, error: 'Tidak ada hutang aktif untuk customer ini' }
-
-    const totalRemaining = list.reduce(
-      (s, d) => s + Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0)), 0)
-    if (pay > totalRemaining) pay = totalRemaining   // clamp
-
-    let left = pay
     const results = []
-    for (const d of list) {
-      if (left <= 0) break
-      const rem = Math.max(0, Math.round(+d.totalDebt || 0) - Math.round(+d.paid || 0))
-      if (rem <= 0) continue
-      const alloc = Math.min(left, rem)
-
-      // Resolve invoice_no (fallback ke transaction_id)
-      let inv = d.invoiceNo
-      if (!inv && d.transactionId) {
-        const { data: trx } = await supabase
-          .from('transactions').select('invoice_no').eq('id', d.transactionId).maybeSingle()
-        inv = trx?.invoice_no || null
-      }
-      if (!inv) {
-        results.push({ debtId: d.id, alloc, ok: false, error: 'invoice_no kosong' })
-        continue
-      }
-
-      const res = await processDebtPayment({
-        invoice_no: inv,
-        paymentAmount: alloc,
-        paymentMethod,
-        notes: notes || 'Pembayaran gabungan (FIFO)',
-        skipRefresh: true,
-      })
-      results.push({ debtId: d.id, invoiceNo: inv, alloc, ok: res.ok, error: res.error })
-      if (res.ok) left -= alloc
+    let paid = 0
+    const stop = (result) => {
+      const needsReconciliation = paid > 0 || !!result.needsReconciliation
+      if (needsReconciliation) paymentOperations.current.blocked.add(`customer:${customerId}`)
+      return { ...result, ...(needsReconciliation ? incompleteTransactionSync() : {}),
+        ok: false, needsReconciliation, paid, results }
     }
-
-    // Refresh sekali di akhir → Order, Piutang, Customers, Dashboard sinkron.
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
-
-    const paidTotal = pay - left
-    const anyOk = results.some(r => r.ok)
-    if (!anyOk) return { ok: false, error: results[0]?.error || 'Pembayaran gagal' }
-    return { ok: true, paid: paidTotal, results }
-  }), [debts, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, wrap])
+    try {
+      let pay = paymentMoney(amount)
+      if (pay <= 0) return stop({ error: 'Nominal pembayaran harus lebih dari 0' })
+      if (!customerId) return stop({ error: 'Customer tidak valid' })
+      if (paymentOperations.current.blocked.has(`customer:${customerId}`)) return stop(incompleteTransactionSync())
+      // Fresh balances and ordering, not the potentially stale page snapshot.
+      const rows = paymentRead(await applyBook(supabase.from('debts').select('*')
+        .eq('customer_id', customerId).is('deleted_at', null).order('created_at', { ascending: true })))
+      if (!Array.isArray(rows)) throw new Error('Daftar piutang belum dapat diperiksa')
+      const list = rows.map(d => ({ ...d, balance: paymentSnapshot(d.total_debt, d.paid, d.remaining) }))
+        .filter(d => d.balance.remaining > 0)
+      if (!list.length) return stop({ error: 'Tidak ada hutang aktif untuk customer ini' })
+      const totalRemaining = list.reduce((s, d) => s + d.balance.remaining, 0)
+      pay = Math.min(pay, totalRemaining)
+      for (const debt of list) {
+        if (paid >= pay) break
+        const alloc = Math.min(pay - paid, debt.balance.remaining)
+        let inv = debt.invoice_no
+        if (!inv && debt.transaction_id) {
+          inv = paymentRead(await applyBook(supabase.from('transactions').select('invoice_no')
+            .eq('id', debt.transaction_id)).maybeSingle())?.invoice_no
+        }
+        if (!inv) {
+          const failure = { debtId: debt.id, alloc, ok: false, error: 'invoice_no kosong' }
+          results.push(failure)
+          return stop(failure)
+        }
+        const result = await processDebtPayment({
+          invoice_no: inv, paymentAmount: alloc, paymentMethod,
+          notes: notes || 'Pembayaran gabungan (FIFO)', skipRefresh: true,
+        })
+        results.push({ ...result, debtId: debt.id, invoiceNo: inv, alloc })
+        if (!result?.ok) return stop(result || incompleteTransactionSync())
+        paid += alloc
+      }
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
+      return { ok: true, paid, results }
+    } catch (error) {
+      return stop({ error: error.message || 'Pembayaran gabungan belum selesai' })
+    }
+  }), [activeBookId, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, wrap])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
     const debt = debts.find(d => d.id === id)
-    const customerId = debt?.customerId || null
-    // FK CASCADE on debt_payments.debt_id wipes history rows automatically.
-    const { error: e } = await supabase.from('debts').delete().eq('id', id)
-    if (e) return { ok: false, error: e.message }
-    if (mounted.current) setDebts(prev => prev.filter(d => d.id !== id))
-    if (customerId) {
-      await recalculateCustomerSummary(customerId)
-    }
-    await Promise.all([refreshDebts(), refreshDebtPayments(), refreshCustomers()])
-    return { ok: true }
-  }), [debts, wrap, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
+    return containPayment([`debt:${id}`, debt?.invoiceNo && `invoice:${debt.invoiceNo}`,
+      debt?.customerId && `customer:${debt.customerId}`], async ({ guard, write }) => {
+      const fresh = paymentRead(await applyBook(supabase.from('debts').select('*').eq('id', id)).maybeSingle())
+      if (!fresh || fresh.id !== id) return { ok: false, error: 'Piutang tidak ditemukan' }
+      let trx = null
+      if (fresh.transaction_id) {
+        trx = paymentRead(await supabase.from('transactions').select('*').eq('id', fresh.transaction_id).maybeSingle())
+        if (!trx || trx.id !== fresh.transaction_id) return { ok: false, needsReview: true, error: 'Invoice terkait tidak ditemukan. Penghapusan belum disimpan.' }
+      }
+      const allowed = await destructivePaymentCheck(trx, fresh)
+      if (!allowed.ok) return allowed
+      guard([fresh.invoice_no && `invoice:${fresh.invoice_no}`, fresh.customer_id && `customer:${fresh.customer_id}`])
+      const preflight = await recalculateCustomerSummary(fresh.customer_id, { validateOnly: true })
+      if (!preflight.ok) return preflight
+      await write(supabase.from('debts').delete().eq('id', id).select('id').single(), id)
+      if (fresh.customer_id && !(await recalculateCustomerSummary(fresh.customer_id))?.ok) {
+        throw new Error('Ringkasan customer belum tersimpan')
+      }
+      if (mounted.current) setDebts(prev => prev.filter(d => d.id !== id))
+      await Promise.all([refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      return { ok: true }
+    })
+  }), [debts, activeBookId, wrap, containPayment, destructivePaymentCheck, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const getDebtPayments = useCallback(async (debtId) => {
     const { data, error: e } = await supabase
-      .from('debt_payments').select('*').eq('debt_id', debtId).order('paid_at', { ascending: true })
+      .from('debt_payments').select('*').eq('debt_id', debtId).is('deleted_at', null).order('paid_at', { ascending: true })
     if (e) return { ok: false, error: e.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
 
-  // editDebtPayment — koreksi 1 baris pembayaran cicilan (debt_payments).
-  // Mengubah: metode, nominal, tanggal, admin, keterangan. TIDAK membuat baris
-  // baru (update by id). Kalau nominal berubah, debt.paid + transaction.paid
-  // disesuaikan dengan selisihnya (debt.paid = DP + Σ payments → cukup geser delta).
-  const editDebtPayment = useCallback(async (paymentId, fields) => wrap(async () => {
-    if (!paymentId) return { ok: false, error: 'Pembayaran tidak ditemukan' }
-    const { data: pay, error: e0 } = await supabase
-      .from('debt_payments')
-      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, notes')
-      .eq('id', paymentId).maybeSingle()
-    if (e0 || !pay) return { ok: false, error: e0?.message || 'Pembayaran tidak ditemukan' }
-
-    const oldAmount = Math.round(+pay.amount || 0)
-    const newAmount = fields.amount != null ? Math.max(0, Math.round(Number(fields.amount) || 0)) : oldAmount
-    const delta = newAmount - oldAmount
-
-    const upd = {
-      payment_method: fields.paymentMethod ?? pay.payment_method,
-      amount: newAmount,
-      paid_at: fields.paidAt ? new Date(fields.paidAt).toISOString() : pay.paid_at,
-      cashier_id: fields.cashierId !== undefined ? (fields.cashierId || null) : pay.cashier_id,
-    }
-    if (fields.notes !== undefined) upd.notes = String(fields.notes || '')
-    const { error: e1 } = await supabase.from('debt_payments').update(upd).eq('id', paymentId)
-    if (e1) return { ok: false, error: e1.message }
-
-    // Sesuaikan debt + transaction kalau nominal berubah.
-    if (delta !== 0 && pay.debt_id) {
-      const { data: debt } = await supabase.from('debts')
-        .select('id, customer_id, invoice_no, total_debt, paid').eq('id', pay.debt_id).maybeSingle()
-      if (debt) {
-        const total = Math.round(+debt.total_debt || 0)
-        const np = Math.max(0, Math.min(total, Math.round(+debt.paid || 0) + delta))
-        const nr = Math.max(0, total - np)
-        await supabase.from('debts').update({ paid: np, remaining: nr, status: nr <= 0 ? 'lunas' : 'aktif' }).eq('id', debt.id)
-        const inv = pay.invoice_no || debt.invoice_no
-        if (inv) {
-          const { data: trx } = await supabase.from('transactions').select('id, total, paid').eq('invoice_no', inv).maybeSingle()
-          if (trx) {
-            const t = Math.round(+trx.total || 0)
-            const tp = Math.max(0, Math.min(t, Math.round(+trx.paid || 0) + delta))
-            const tr = Math.max(0, t - tp)
-            await supabase.from('transactions').update({ paid: tp, dp: tp, remaining: tr, status: tr <= 0 ? 'lunas' : 'pending' }).eq('id', trx.id)
-          }
-        }
-        if (debt.customer_id) await recalculateCustomerSummary(debt.customer_id)
+  // Preflight every linked balance before changing history. Delta preserves the
+  // original DP; no clamping a correction into a different receipt amount.
+  const correctDebtPayment = useCallback(async (paymentId, fields = {}, remove = false) =>
+    wrap(() => containPayment([paymentId && `payment:${paymentId}`], async ({ guard, write }) => {
+      if (!paymentId) return { ok: false, error: 'Pembayaran tidak ditemukan' }
+      const pay = paymentRead(await supabase.from('debt_payments')
+        .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, notes, deleted_at')
+        .eq('id', paymentId).maybeSingle())
+      if (!pay?.id || pay.deleted_at) return { ok: false, error: 'Pembayaran tidak ditemukan atau sudah dihapus' }
+      const oldAmount = paymentMoney(pay.amount)
+      const newAmount = remove ? 0 : paymentMoney(fields.amount !== undefined ? fields.amount : oldAmount)
+      if (oldAmount <= 0 || (!remove && newAmount <= 0)) {
+        return { ok: false, error: 'Nominal koreksi harus lebih dari 0 dan berupa angka valid' }
       }
-    }
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
-    return { ok: true }
-  }), [wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
-
-  const deleteDebtPayment = useCallback(async (paymentId) => wrap(async () => {
-    const { data: pay } = await supabase.from('debt_payments')
-      .select('id, debt_id, invoice_no, amount').eq('id', paymentId).maybeSingle()
-    if (!pay) return { ok: false, error: 'Pembayaran tidak ditemukan' }
-    const amt = Math.round(+pay.amount || 0)
-    const { error } = await supabase.from('debt_payments').delete().eq('id', paymentId)
-    if (error) return { ok: false, error: error.message }
-    if (pay.debt_id) {
-      const { data: debt } = await supabase.from('debts')
-        .select('id, customer_id, invoice_no, total_debt, paid').eq('id', pay.debt_id).maybeSingle()
-      if (debt) {
-        const total = Math.round(+debt.total_debt || 0)
-        const np = Math.max(0, Math.round(+debt.paid || 0) - amt)
-        const nr = Math.max(0, total - np)
-        await supabase.from('debts').update({ paid: np, remaining: nr, status: nr <= 0 ? 'lunas' : 'aktif' }).eq('id', debt.id)
-        const inv = pay.invoice_no || debt.invoice_no
-        if (inv) {
-          const { data: trx } = await supabase.from('transactions').select('id, total, paid').eq('invoice_no', inv).maybeSingle()
-          if (trx) {
-            const t = Math.round(+trx.total || 0)
-            const tp = Math.max(0, Math.round(+trx.paid || 0) - amt)
-            const tr = Math.max(0, t - tp)
-            await supabase.from('transactions').update({ paid: tp, dp: tp, remaining: tr, status: tr <= 0 ? 'lunas' : 'pending' }).eq('id', trx.id)
-          }
-        }
-        if (debt.customer_id) await recalculateCustomerSummary(debt.customer_id)
+      const delta = newAmount - oldAmount
+      let debt = null, trx = null, debtBalance = null, trxBalance = null
+      if (pay.debt_id) {
+        debt = paymentRead(await supabase.from('debts').select('*').eq('id', pay.debt_id).maybeSingle())
+        if (!debt?.id) return { ok: false, error: 'Piutang terkait tidak ditemukan. Koreksi belum disimpan.' }
       }
-    }
-    await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
-    return { ok: true }
-  }), [wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+      const invoiceNo = pay.invoice_no || debt?.invoice_no
+      guard([invoiceNo && `invoice:${invoiceNo}`, pay.debt_id && `debt:${pay.debt_id}`])
+      if (invoiceNo) {
+        trx = paymentRead(await supabase.from('transactions').select('*').eq('invoice_no', invoiceNo).maybeSingle())
+      } else if (debt?.transaction_id) {
+        trx = paymentRead(await supabase.from('transactions').select('*').eq('id', debt.transaction_id).maybeSingle())
+      }
+      if ((!debt && !trx?.id) || (debt?.transaction_id && trx?.id !== debt.transaction_id)) {
+        return { ok: false, error: 'Hubungan pembayaran, piutang, dan invoice belum dapat dikonfirmasi.' }
+      }
+      if (trx?.order_status === 'dibatalkan' || trx?.deleted_at || debt?.deleted_at) {
+        return { ok: false, error: 'Koreksi invoice batal/terhapus memerlukan pemeriksaan terlebih dahulu.' }
+      }
+      const debtBefore = debt && paymentSnapshot(debt.total_debt, debt.paid, debt.remaining)
+      const trxBefore = trx && paymentSnapshot(trx.total, trx.paid, trx.remaining)
+      if (pay.id !== paymentId || (pay.debt_id && debt?.id !== pay.debt_id)
+        || (pay.invoice_no && debt?.invoice_no && pay.invoice_no !== debt.invoice_no)
+        || (trx && invoiceNo && trx.invoice_no !== invoiceNo)
+        || (debt && trx && (debt.customer_id !== trx.customer_id
+          || debtBefore.total !== trxBefore.total || debtBefore.paid !== trxBefore.paid
+          || debtBefore.remaining !== trxBefore.remaining))) {
+        return { ok: false, needsReview: true, error: 'Saldo atau identitas pembayaran, piutang, dan invoice tidak sesuai. Minta owner memeriksa data; koreksi belum disimpan.' }
+      }
+      if (fields.paymentMethod !== undefined && !['cash', 'transfer', 'qris'].includes(fields.paymentMethod)) {
+        return { ok: false, error: 'Metode pembayaran tidak valid' }
+      }
+      const history = paymentRead(await supabase.from('debt_payments').select('id, amount')
+        .eq(pay.debt_id ? 'debt_id' : 'invoice_no', pay.debt_id || invoiceNo).is('deleted_at', null))
+      if (!Array.isArray(history)) throw new Error('Riwayat pembayaran belum dapat diperiksa')
+      const historyTotal = history.reduce((sum, row) => sum + paymentMoney(row.amount), 0)
+      const rawHistoryTotal = history.reduce((sum, row) => sum + Number(row.amount), 0)
+      if (!history.some(row => row.id === paymentId) || !Number.isSafeInteger(historyTotal)
+        || (debt && (historyTotal > debtBefore.paid || rawHistoryTotal - Number(debt.paid) >= 1))
+        || (trx && (historyTotal > trxBefore.paid || rawHistoryTotal - Number(trx.paid) >= 1))) {
+        return { ok: false, needsReview: true, error: 'Riwayat pembayaran melebihi saldo dibayar atau belum lengkap. Minta owner memeriksa data; koreksi belum disimpan.' }
+      }
+      const customerId = debt?.customer_id || trx?.customer_id
+      guard([trx?.invoice_no && `invoice:${trx.invoice_no}`, customerId && `customer:${customerId}`])
+      if (debt) debtBalance = paymentBalance(debtBefore.total, debtBefore.paid, delta)
+      if (trx) trxBalance = paymentBalance(trxBefore.total, trxBefore.paid, delta)
+      const preflight = await recalculateCustomerSummary(customerId, { validateOnly: true })
+      if (!preflight.ok) return preflight
+      if (remove) {
+        await write(supabase.from('debt_payments').delete().eq('id', paymentId).select('id').single(), paymentId)
+      } else {
+        const updates = {
+          payment_method: fields.paymentMethod ?? pay.payment_method, amount: newAmount,
+          paid_at: fields.paidAt ? new Date(fields.paidAt).toISOString() : pay.paid_at,
+          cashier_id: fields.cashierId !== undefined ? (fields.cashierId || null) : pay.cashier_id,
+        }
+        if (fields.notes !== undefined) updates.notes = String(fields.notes || '')
+        await write(supabase.from('debt_payments').update(updates).eq('id', paymentId).select('id').single(), paymentId)
+      }
+      if (delta !== 0) {
+        if (debt) {
+          await write(supabase.from('debts').update({
+            ...debtBalance, status: debtBalance.remaining === 0 ? 'lunas' : 'aktif',
+          }).eq('id', debt.id).select('id').single(), debt.id)
+        }
+        if (trx) {
+          await write(supabase.from('transactions').update({
+            ...trxBalance, dp: trxBalance.paid, status: trxBalance.remaining === 0 ? 'lunas' : 'pending',
+          }).eq('id', trx.id).select('id').single(), trx.id)
+        }
+        if (customerId && !(await recalculateCustomerSummary(customerId))?.ok) {
+          throw new Error('Ringkasan customer belum tersimpan')
+        }
+      }
+      await Promise.all([refreshTransactions(), refreshDebts(), refreshDebtPayments(), refreshCustomers()])
+      return { ok: true }
+    })), [wrap, containPayment, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
+
+  const editDebtPayment = useCallback((paymentId, fields) =>
+    correctDebtPayment(paymentId, fields), [correctDebtPayment])
+  const deleteDebtPayment = useCallback((paymentId) =>
+    correctDebtPayment(paymentId, {}, true), [correctDebtPayment])
 
   // ---------- STATS ----------
   const stats = useMemo(() => {
     const today = new Date().toDateString()
     const now = new Date()
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
 
     const todayTrx = transactions.filter(t => new Date(t.date).toDateString() === today)
-    const monthTrx = transactions.filter(t => new Date(t.date) >= monthStart)
+    const monthTrx = transactions.filter(t => new Date(t.date) >= monthStart && new Date(t.date) < nextMonth)
 
     // OMZET = total NILAI seluruh invoice valid (Cash/Transfer/QRIS/Hutang/DP/
     // Cicilan), TANPA melihat sudah dibayar atau belum. Hanya transaksi batal
     // ('dibatalkan') yang dikecualikan; nota terhapus sudah lenyap dari data.
     // (BUKAN SUM(paid) dan BUKAN hanya status 'lunas'.)
-    const notCanceled = (t) => (t.orderStatus || '') !== 'dibatalkan'
+    const notCanceled = (t) => !inactiveFinancialInvoice(t)
     // Pemasukkan Credibook → HANYA jenis 'omzet' yang menambah Omset (book-scoped).
     // (refund/capital/other = kas masuk saja, dihitung di Accounting, bukan Omset.)
     const cbAmt = (x) => Math.round(+x.amount || 0)
     const cbDate = (x) => new Date(x.transaction_date)
     const cbOmzet = credibookIncome.filter(x => (x.income_type || 'omzet') === 'omzet')
     const cbToday = cbOmzet.filter(x => cbDate(x).toDateString() === today)
-    const cbMonth = cbOmzet.filter(x => cbDate(x) >= monthStart)
+    const cbMonth = cbOmzet.filter(x => cbDate(x) >= monthStart && cbDate(x) < nextMonth)
     const cbTotalSum = cbOmzet.reduce((s, x) => s + cbAmt(x), 0)
     const cbTodaySum = cbToday.reduce((s, x) => s + cbAmt(x), 0)
     const cbMonthSum = cbMonth.reduce((s, x) => s + cbAmt(x), 0)
@@ -2128,7 +2230,7 @@ export function useStore() {
     const monthOrders = monthTrx.length
 
     const productSales = {}
-    transactions.forEach(t => t.items.forEach(i => {
+    transactions.filter(notCanceled).forEach(t => t.items.forEach(i => {
       productSales[i.productId] = (productSales[i.productId] || 0) + i.qty
     }))
     const topProducts = products
@@ -2138,19 +2240,19 @@ export function useStore() {
     const chartData = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - (6 - i))
       const ds = d.toDateString()
-      const dayTrx = transactions.filter(t => new Date(t.date).toDateString() === ds)
+      const dayTrx = transactions.filter(t => notCanceled(t) && new Date(t.date).toDateString() === ds)
       const dayCb = credibookIncome.filter(x => (x.income_type || 'omzet') === 'omzet' && new Date(x.transaction_date).toDateString() === ds)
       return {
         day: d.toLocaleDateString('id-ID', { weekday: 'short' }),
         date: d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
-        omzet: dayTrx.filter(t => t.status === 'lunas').reduce((s, t) => s + t.total, 0)
+        omzet: dayTrx.reduce((s, t) => s + (+t.total || 0), 0)
           + dayCb.reduce((s, x) => s + Math.round(+x.amount || 0), 0),
         transaksi: dayTrx.length,
       }
     })
 
     const categoryRevenue = {}
-    transactions.forEach(t => t.items.forEach(item => {
+    transactions.filter(notCanceled).forEach(t => t.items.forEach(item => {
       const p = products.find(x => x.id === item.productId)
       if (!p) return
       categoryRevenue[p.category] = (categoryRevenue[p.category] || 0) + (item.qty * item.price)

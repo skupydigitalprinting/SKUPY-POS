@@ -2,7 +2,7 @@ import React from 'react'
 import {
   LayoutDashboard, ShoppingCart, Package, ClipboardList,
   ChevronRight, X, Settings as SettingsIcon, Crown,
-  Users, Wallet, LogOut, Landmark, NotebookPen,
+  Users, Wallet, LogOut, Landmark, NotebookPen, KeyRound,
 } from 'lucide-react'
 import Logo from './Logo'
 import { canViewDashboard, roleLabel } from '../utils/helpers'
@@ -21,7 +21,7 @@ const NAV = [
 export default function Sidebar({
   activePage, setActivePage,
   mobileOpen, onMobileClose,
-  storeInfo, currentUser, onOpenSettings, onLogout,
+  storeInfo, currentUser, onOpenSettings, onLogout, onOpenPassword,
 }) {
   const handleClick = (id) => {
     setActivePage(id)
@@ -129,6 +129,13 @@ export default function Sidebar({
         )}
 
         {/* Owner: tombol Pengaturan; Staff: tombol Logout (no Settings) */}
+        {onOpenPassword && <button
+          onClick={() => { onOpenPassword(); onMobileClose?.() }}
+          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left mb-2"
+          style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+          <KeyRound size={16} />
+          <span className="text-sm font-semibold">Ubah Password</span>
+        </button>}
         {isOwner ? (
           <button
             onClick={() => { onOpenSettings?.(); onMobileClose?.() }}
