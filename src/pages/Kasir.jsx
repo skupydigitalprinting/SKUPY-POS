@@ -130,7 +130,8 @@ function QtyInput({ qty, allowDecimal, onChange, onCommit }) {
   )
 }
 
-export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy, currentUser, setProductFavorite, addCustomer, admins = [] }) {
+export default function Kasir({ products, customers = [], addTransaction, storeInfo, busy, currentUser, setProductFavorite, addCustomer, admins = [],
+  checkoutWorkflow, pendingCheckout, checkoutRevision }) {
   const { categories } = useCategories()
   const categoryFilters = [ALL_CATEGORY, ...categories]
   const canEditFav = currentUser?.role === 'owner' || currentUser?.role === 'admin'
@@ -143,6 +144,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const [discount, setDiscount] = useState('')
   const [discountType, setDiscountType] = useState('nominal')
   const [paymentMethod, setPaymentMethod] = useState('transfer')
+  const [receiptMethod, setReceiptMethod] = useState('transfer')
   const [customerName, setCustomerName] = useState('')
   const [customerId, setCustomerId] = useState('')
   const [addCustOpen, setAddCustOpen] = useState(false)
@@ -157,6 +159,11 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const [cartOpen, setCartOpen] = useState(false)
   const [checkingOut, setCheckingOut] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
+  useEffect(() => {
+    if (checkoutWorkflow && checkoutRevision > 0) {
+      setCart([]); setDiscount(''); setDp(''); setCustomerName(''); setCustomerId(''); setCheckoutError(''); setCartOpen(false)
+    }
+  }, [checkoutRevision])
   const [customerSearch, setCustomerSearch] = useState('')
 
   const filtered = useMemo(() => {
@@ -239,7 +246,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const removeItem = (productId) =>
     setCart((prev) => prev.filter((i) => i.productId !== productId))
 
-  const subtotal = cart.reduce((s, i) => s + i.price * i.qty, 0)
+  const subtotal = checkoutWorkflow
+    ? Math.round(cart.reduce((s, i) => s + i.price * Math.round(i.qty * 100), 0) / 100)
+    : cart.reduce((s, i) => s + i.price * i.qty, 0)
   const discountAmount =
     discountType === 'persen'
       ? Math.round((subtotal * Number(discount || 0)) / 100)
@@ -251,7 +260,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
   const remaining = Math.max(0, total - dpAmount)
 
   const handleCheckout = async () => {
-    if (cart.length === 0 || checkingOut) return
+    if (cart.length === 0 || checkingOut || pendingCheckout) return
 
     // Validation — only block on actually-missing requirements
     const isHutang = paymentMethod === 'hutang'
@@ -264,7 +273,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
       return
     }
 
-    if (isHutang) {
+    if (isHutang || (checkoutWorkflow && dpAmount > 0 && remaining > 0)) {
       if (!customerId) {
         setCheckoutError('Tolong pilih customer terlebih dahulu')
         return
@@ -305,8 +314,9 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         dp: paidAmt,
         remaining: remainingAmt,
         paymentMethod,
+        receiptMethod,
         status: remainingAmt > 0 ? 'pending' : 'lunas',
-        dueDate: isHutang ? dueDate : null,
+        dueDate: isHutang || (checkoutWorkflow && remainingAmt > 0) ? dueDate : null,
         // Workflow status — hutang starts as menunggu pembayaran
         orderStatus: 'menunggu',
       }
@@ -321,6 +331,10 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         return
       }
 
+      if (result?.abandoned) {
+        setCheckoutError('Checkout sebelumnya dibatalkan. Periksa keranjang sebelum membuat nota baru.')
+        return
+      }
       if (!result || !result.ok) {
         const errMsg = result?.error || 'Gagal memproses transaksi (cek koneksi Supabase)'
         // eslint-disable-next-line no-console
@@ -800,7 +814,14 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
         </div>
 
         {/* Hutang due-date picker — compact inline */}
-        {paymentMethod === 'hutang' && (
+        {checkoutWorkflow && paymentMethod === 'hutang' && dpAmount > 0 && <label className="flex items-center gap-2 text-xs">
+          <span>Metode DP</span>
+          <select aria-label="Metode DP" value={receiptMethod} onChange={event => setReceiptMethod(event.target.value)}
+            className="min-w-0 flex-1 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+            <option value="transfer">Transfer</option><option value="cash">Tunai</option><option value="qris">QRIS</option>
+          </select>
+        </label>}
+        {(paymentMethod === 'hutang' || (checkoutWorkflow && dpAmount > 0 && remaining > 0)) && (
           <div className="rounded-xl px-3 py-2 animate-fadeIn flex items-center gap-2"
             style={{
               background: 'rgba(245,158,11,0.06)',
@@ -847,7 +868,7 @@ export default function Kasir({ products, customers = [], addTransaction, storeI
             size="md"
             className="flex-1"
             onClick={handleCheckout}
-            disabled={cart.length === 0 || checkingOut}
+            disabled={cart.length === 0 || checkingOut || !!pendingCheckout}
           >
             {checkingOut ? (
               <>

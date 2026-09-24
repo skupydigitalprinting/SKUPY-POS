@@ -5,6 +5,7 @@ import { PRODUCT_PUBLIC_COLUMNS, attachProductCosts, saveSecureProduct } from '.
 import { createInvoiceChangeClient } from '../lib/invoiceChangeClient'
 import { createInvoiceWorkflow } from '../lib/invoiceWorkflow'
 import { createPaymentClient } from '../lib/paymentClient'
+import { createCheckoutClient } from '../lib/checkoutClient'
 
 // Session persistence — "Ingat saya / Tetap login".
 //   • Ingat saya ON  → localStorage, berlaku 30 hari (auto-hapus bila lewat).
@@ -339,6 +340,19 @@ export function useStore(verifiedSession = null) {
   const [paymentRefreshPending, setPaymentRefreshPending] = useState(false)
   const paymentRefreshNeeded = useRef(false)
   const secureFifoBlocks = useRef(new Set())
+  const [pendingCheckout, setPendingCheckout] = useState(null)
+  const [checkoutRevision, setCheckoutRevision] = useState(0)
+  const checkoutClient = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createCheckoutClient({
+    client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '', actorId: verifiedSession.user.authUserId,
+    isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
+    storage: { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) },
+    draftStorage: { getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value), removeItem: key => sessionStorage.removeItem(key) },
+  }) : null, [bookGeneration])
+  const refreshCheckoutIntent = () => {
+    if (!invoiceSessionCurrent()) return
+    try { setPendingCheckout(checkoutClient?.pending() || null) } catch { /* no dispatch without durable operation metadata */ }
+  }
+  useEffect(() => { refreshCheckoutIntent() }, [checkoutClient, checkoutRevision])
   const paymentClient = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createPaymentClient({
     client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '', actorId: verifiedSession.user.authUserId,
     isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
@@ -669,6 +683,33 @@ export function useStore(verifiedSession = null) {
       },
     }
   }, [invoiceWorkflow, paymentClient])
+
+  const checkoutWorkflow = useMemo(() => {
+    const available = () => checkoutClient && invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration
+    const finish = async result => {
+      if (!available()) return { ok: false, needsReconciliation: true, error: 'Sesi berubah. Periksa checkout dengan akun semula.' }
+      refreshCheckoutIntent()
+      if (!result.ok || result.abandoned) return result
+      financialReadEpoch.current++
+      setInvoiceRevision(value => value + 1)
+      setCheckoutRevision(value => value + 1)
+      paymentRefreshNeeded.current = true; setPaymentRefreshPending(true)
+      const refreshed = await invoiceWorkflow.refresh()
+      if (!available()) return { ok: false, committed: true, needsRefresh: true,
+        error: 'Checkout sudah tersimpan. Sesi atau Book berubah; periksa daftar invoice pada akun semula.' }
+      if (refreshed.ok) settlePaymentRefresh()
+      return { ok: true, committed: true, needsRefresh: !refreshed.ok, data: trxFromDB(result.data) }
+    }
+    const run = async action => !available() ? { ok: false, error: 'Checkout terverifikasi belum tersedia pada sesi ini.' } : finish(await action())
+    return {
+      submit: request => paymentRefreshNeeded.current
+        ? Promise.resolve({ ok: false, needsRefresh: true, error: 'Muat hasil transaksi tersimpan sebelum checkout berikutnya.' })
+        : run(() => checkoutClient.submit(request)),
+      reconcile: () => run(() => checkoutClient.reconcile()),
+      resume: () => run(() => checkoutClient.resume()),
+      abandon: () => run(() => checkoutClient.abandon()),
+    }
+  }, [invoiceWorkflow, checkoutClient])
 
   // Cari 1 transaksi by invoiceNo untuk PREVIEW invoice (klik nomor invoice di
   // mana pun). Cari di state dulu; kalau tidak ada (mis. transaksi lama di luar
@@ -1562,6 +1603,12 @@ export function useStore(verifiedSession = null) {
   // tidak ada drift antar tabel (trigger DB hanya menambah saat INSERT, tidak
   // mengurangi saat DELETE).
   const addTransaction = useCallback(async (trx) => wrap(async () => {
+    if (secureAuthEnabled) return checkoutWorkflow.submit({
+      bookId: writeBookId, customerId: trx.customerId || null, customerName: trx.customer,
+      items: trx.items, discount: trx.discount, paid: trx.paid,
+      method: trx.paymentMethod === 'hutang' && trx.paid > 0 ? trx.receiptMethod : trx.paymentMethod,
+      dueDate: trx.dueDate || null, notes: trx.notes || '',
+    })
     let writeDispatched = false
     try {
       const cashier = currentUser?.name || currentUser?.username || ''
@@ -1750,7 +1797,7 @@ export function useStore(verifiedSession = null) {
     } catch (err) {
       return writeDispatched ? incompleteTransactionSync() : { ok: false, error: err.message || String(err) }
     }
-  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin, invoiceProfileForAdmin])
+  }), [products, customers, currentUser, wrap, nextInvoiceNumber, nextOrderNumber, refreshCustomers, refreshDebts, recalculateCustomerSummary, bankAccountForAdmin, invoiceProfileForAdmin, checkoutWorkflow, writeBookId])
 
   // ---------- SYNC DEBT ↔ TRANSACTION ↔ CUSTOMER ----------
   // syncDebtPaymentStatus(invoiceNo)
@@ -2453,6 +2500,7 @@ export function useStore(verifiedSession = null) {
     addProduct, updateProduct, deleteProduct, setProductFavorite,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
     invoiceWorkflow, invoiceRevision, pendingInvoiceChanges, paymentWorkflow, pendingPayments, paymentRefreshPending,
+    checkoutWorkflow, pendingCheckout, checkoutRevision,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword, reassignAdminCustomers,

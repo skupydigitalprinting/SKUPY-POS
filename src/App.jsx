@@ -6,6 +6,7 @@ import BookSplash from './components/BookSplash'
 import { InvoicePreviewProvider } from './components/InvoicePreview'
 import BottomNav from './components/BottomNav'
 import PaymentRecoveryPanel from './components/PaymentRecoveryPanel'
+import CheckoutRecoveryPanel from './components/CheckoutRecoveryPanel'
 import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
 import Logo from './components/Logo'
@@ -302,6 +303,9 @@ function AppShell({ verifiedSession = null }) {
       products={store.products}
       customers={scopedCustomers}
       addTransaction={store.addTransaction}
+      checkoutWorkflow={verifiedSession ? store.checkoutWorkflow : undefined}
+      pendingCheckout={store.pendingCheckout}
+      checkoutRevision={store.checkoutRevision}
       addCustomer={store.addCustomer}
       admins={store.admins}
       storeInfo={store.storeInfo}
@@ -429,6 +433,8 @@ function AppShell({ verifiedSession = null }) {
         />
         {verifiedSession && <PaymentRecoveryPanel key={store.activeBookId || 'all'}
           pending={store.pendingPayments} workflow={store.paymentWorkflow} refreshRequired={store.paymentRefreshPending} />}
+        {verifiedSession && <CheckoutRecoveryPanel key={`checkout:${store.activeBookId || 'all'}`}
+          pending={store.pendingCheckout} workflow={store.checkoutWorkflow} />}
         <div
           className="flex-1 overflow-hidden flex flex-col"
           style={{

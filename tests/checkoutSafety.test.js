@@ -8,26 +8,14 @@ const checkout = { items: [], total: 100000, paid: 20000, customerId: 'customer'
 const failure = { data: null, error: { code: '42501', message: 'Synthetic failure' }, status: 403 }
 const writes = calls => calls.filter(c => ['insert', 'update', 'delete'].includes(c.method))
 
-test('secure checkout never retries with ownership, book or snapshot fields stripped', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
-    for (const column of ['due_date', 'cashier_role', 'owner_user_id', 'book_id', 'bank_account_id', 'store_name_snapshot']) {
-      calls.length = 0
-      script.push({ data: null, error: { code: 'PGRST204', message: `Could not find the '${column}' column` }, status: 400 })
-      const result = await store.addTransaction(checkout)
-      assert.equal(result.ok, false)
-      assert.equal(writes(calls).length, 1)
-      assert.equal(script.length, 0)
-    }
-  })
-})
-
-test('failed debt persistence after checkout is explicitly uncertain and never retried in secure mode', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
-    script.push(ok(row), { data: null, error: { code: 'PGRST204', message: "Could not find the 'book_id' column" } })
+// Verified checkout now uses one RPC, covered by checkoutStore, checkoutClient
+// and SQL checkout suites. Sequential behavior remains covered only for legacy.
+test('secure checkout without verified identity cannot dispatch any legacy write', async () => {
+  await storeFixture(true, async (store, { calls, requests }) => {
     const result = await store.addTransaction(checkout)
     assert.equal(result.ok, false)
-    assert.equal(result.needsReconciliation, true)
-    assert.deepEqual(writes(calls).map(c => c.table), ['transactions', 'debts'])
+    assert.equal(calls.length, 0)
+    assert.equal(requests.length, 0)
   })
 })
 
@@ -45,7 +33,7 @@ test('checkout reports failed summary reads or writes after the order is persist
 })
 
 test('checkout transport failure after dispatch or missing inserted row requires reconciliation', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
+  await storeFixture(false, async (store, { calls, script }) => {
     for (const responses of [[new Error('Synthetic lost response')], [ok(null)], [ok(row), new Error('Synthetic debt disconnect')]]) {
       calls.length = 0; script.push(...responses)
       const result = await store.addTransaction(checkout)
@@ -56,12 +44,12 @@ test('checkout transport failure after dispatch or missing inserted row requires
   })
 })
 
-test('successful secure checkout retains its amounts and creates one linked debt', async () => {
-  await storeFixture(true, async (store, { calls, script, outcome }) => {
+test('successful legacy checkout retains its amounts and creates one linked debt', async () => {
+  await storeFixture(false, async (store, { calls, script, outcome }) => {
     outcome.data = []
-    script.push(ok(row), ok(null))
+    script.push(ok(row), ok(null), ok([]), ok([row]), ok([]), { data: { id: 'customer' }, error: null, count: 1 })
     assert.equal((await store.addTransaction(checkout)).ok, true)
-    assert.equal(writes(calls).length, 2)
+    assert.deepEqual(writes(calls).map(call => call.table), ['transactions', 'debts', 'customers'])
     const debt = writes(calls).find(c => c.table === 'debts').args[0]
     assert.equal(debt.transaction_id, row.id)
     assert.equal(debt.total_debt, 100000)
@@ -71,7 +59,7 @@ test('successful secure checkout retains its amounts and creates one linked debt
 })
 
 test('returned transport or representation errors after insert require reconciliation without another write', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
+  await storeFixture(false, async (store, { calls, script }) => {
     for (const response of [
       { data: null, error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 },
       { data: null, error: { code: 'PGRST116', message: 'Cannot coerce the result to a single JSON object' }, status: 406 },
@@ -90,7 +78,7 @@ test('returned transport or representation errors after insert require reconcili
 })
 
 test('confirmed permission rejection stops checkout without suggesting it already persisted', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
+  await storeFixture(false, async (store, { calls, script }) => {
     script.push(failure)
     const result = await store.addTransaction(checkout)
     assert.equal(result.ok, false)
@@ -99,8 +87,8 @@ test('confirmed permission rejection stops checkout without suggesting it alread
   })
 })
 
-test('secure checkout retries only a confirmed unique rejection and preserves the full payload', async () => {
-  await storeFixture(true, async (store, { calls, script }) => {
+test('legacy checkout retries only a confirmed unique rejection and preserves the full payload', async () => {
+  await storeFixture(false, async (store, { calls, script }) => {
     script.push({ data: null, error: { code: '23505', message: 'Synthetic duplicate key' }, status: 409 }, ok(row))
     assert.equal((await store.addTransaction({ ...checkout, customerId: null, paymentMethod: 'cash' })).ok, true)
     const inserts = writes(calls)

@@ -19,6 +19,7 @@ export async function storeFixture(secure, run, initialTransactions, options = {
         for (const state of states.reverse()) {
           let expression = code.slice(state.init.start, state.init.end)
           if (state.id.elements[0]?.name === 'transactions' && initialTransactions !== undefined) expression = `useState(${JSON.stringify(initialTransactions)})`
+          if (state.id.elements[0]?.name === 'activeBookId' && options.initialBookId !== undefined) expression = `useState(${JSON.stringify(options.initialBookId)})`
           if (options.observe) expression = `observeState('${state.id.elements[0].name}',${expression})`
           code = code.slice(0, state.init.start) + expression + code.slice(state.init.end)
         }
