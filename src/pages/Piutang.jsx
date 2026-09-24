@@ -1,4 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
+import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
@@ -39,6 +41,7 @@ export default function Piutang({
   debts, customers, transactions, admins = [], currentUser,
   payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
   reassignReceivableCustomer, getReceivableCustomerChanges,
+  paymentWorkflow, pendingPayments = [], invoiceRevision,
 }) {
   const toast = useToast()
   const { openInvoice } = useInvoicePreview()
@@ -80,6 +83,8 @@ export default function Piutang({
   const paymentPending = useRef(false)
   const [paymentIssues, setPaymentIssues] = useState({})
   const paymentIssue = payTarget && paymentIssues[payTarget.key]
+  useEffect(() => { if (paymentWorkflow) setPayTarget(null) }, [invoiceRevision, paymentWorkflow])
+  useEffect(() => { if (paymentWorkflow) setPaymentIssues(prev => retainUnresolvedPaymentIssues(prev, pendingPayments)) }, [invoiceRevision, pendingPayments, paymentWorkflow])
   const [deleteIssues, setDeleteIssues] = useState({})
   const [deleting, setDeleting] = useState(false)
   const deletionPending = useRef(false)
@@ -265,7 +270,7 @@ export default function Piutang({
       } else {
         const issue = {
           error: res?.error || 'Hasil pembayaran belum terkonfirmasi.',
-          needsReconciliation: res?.ok !== false || !!res?.needsReconciliation,
+          needsReconciliation: res?.ok !== false || !!res?.needsReconciliation, invoiceNo: res?.invoiceNo,
           paid: res?.paid ?? paid, amount: payAmount, method: payMethod,
         }
         setPaymentIssues(prev => ({ ...prev, [payTarget.key]: issue }))
@@ -740,7 +745,9 @@ export default function Piutang({
               {/* Total sisa */}
               {paymentIssue && <div role="alert" className="p-3 text-sm rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
                 {paymentIssue.error}
-                {paymentIssue.needsReconciliation && <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>}
+                {paymentIssue.needsReconciliation && (paymentWorkflow
+                  ? <PaymentRecoveryPanel workflow={paymentWorkflow} pending={pendingPayments} />
+                  : <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>)}
                 {paymentIssue.paid > 0 && <p className="mt-2">Alokasi terkonfirmasi: {formatRupiah(paymentIssue.paid)}. Sisa alokasi belum terkonfirmasi.</p>}
               </div>}
               <div className="rounded-xl p-4 flex justify-between items-center"

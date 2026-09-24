@@ -5,6 +5,7 @@ import Header from './components/Header'
 import BookSplash from './components/BookSplash'
 import { InvoicePreviewProvider } from './components/InvoicePreview'
 import BottomNav from './components/BottomNav'
+import PaymentRecoveryPanel from './components/PaymentRecoveryPanel'
 import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
 import Logo from './components/Logo'
@@ -246,7 +247,7 @@ function AppShell({ verifiedSession = null }) {
   }, [canSeeDashboard, activePage])
 
   if (store.loading) return <LoadingSplash />
-  if (store.error) return <ErrorScreen error={store.error} onRetry={store.refreshAll} />
+  if (store.error) return <ErrorScreen error={store.error} onRetry={store.paymentRefreshPending ? store.paymentWorkflow.refresh : store.refreshAll} />
   if (!store.currentUser) {
     return <Login login={store.login} storeInfo={store.storeInfo} busy={store.busy} />
   }
@@ -330,6 +331,8 @@ function AppShell({ verifiedSession = null }) {
       invoiceWorkflow={verifiedSession ? store.invoiceWorkflow : undefined}
       invoiceRevision={store.invoiceRevision}
       pendingInvoiceChanges={store.pendingInvoiceChanges}
+      paymentWorkflow={verifiedSession ? store.paymentWorkflow : undefined}
+      pendingPayments={store.pendingPayments}
       reassignOrderCustomer={store.reassignOrderCustomer}
       getOrderCustomerChanges={store.getOrderCustomerChanges}
       busy={store.busy}
@@ -353,6 +356,9 @@ function AppShell({ verifiedSession = null }) {
       payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}
+      paymentWorkflow={verifiedSession ? store.paymentWorkflow : undefined}
+      pendingPayments={store.pendingPayments}
+      invoiceRevision={store.invoiceRevision}
       reassignReceivableCustomer={store.reassignReceivableCustomer}
       getReceivableCustomerChanges={store.getReceivableCustomerChanges}
     />,
@@ -421,6 +427,8 @@ function AppShell({ verifiedSession = null }) {
           onSelectBook={store.setActiveBook}
           onAddBook={store.addBook}
         />
+        {verifiedSession && <PaymentRecoveryPanel key={store.activeBookId || 'all'}
+          pending={store.pendingPayments} workflow={store.paymentWorkflow} refreshRequired={store.paymentRefreshPending} />}
         <div
           className="flex-1 overflow-hidden flex flex-col"
           style={{

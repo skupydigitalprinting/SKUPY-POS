@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react'
+import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
@@ -107,6 +109,7 @@ const ORDER_TABLE_COLUMNS = 'minmax(0,1.5fr) minmax(0,1.6fr) minmax(0,1.2fr) min
 export default function Order({
   transactions, storeInfo, busy, products = [], customers = [], admins = [], currentUser,
   updateTransactionStatus, updateTransactionPayment, deleteTransaction, invoiceWorkflow, invoiceRevision, pendingInvoiceChanges = [],
+  paymentWorkflow, pendingPayments = [],
   updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
   // ─── PIC (admin pembuat) + filter tanggal ───
@@ -258,6 +261,7 @@ export default function Order({
   const [delConfirm, setDelConfirm] = useState(null)
   const [invoiceAction, setInvoiceAction] = useState(null)
   useEffect(() => { setViewTrx(null); setPrintTrx(null); setPayTrx(null); setMenuFor(null) }, [invoiceRevision, invoiceWorkflow])
+  useEffect(() => { if (paymentWorkflow) setPaymentIssues(prev => retainUnresolvedPaymentIssues(prev, pendingPayments)) }, [invoiceRevision, pendingPayments, paymentWorkflow])
 
   // --- Export to Excel state ---
   const [exportOpen, setExportOpen] = useState(false)
@@ -463,13 +467,13 @@ export default function Order({
         setPaymentIssues(prev => ({ ...prev, [payTrx.id]: {
           error: result?.error || 'Hasil pembayaran belum terkonfirmasi.',
           needsReconciliation: result?.ok !== false || !!result?.needsReconciliation,
-          amount: payAmount, method: payMethod,
+          amount: payAmount, method: payMethod, invoiceNo: payTrx.invoiceNo,
         } }))
       }
     } catch {
       setPaymentIssues(prev => ({ ...prev, [payTrx.id]: {
         error: 'Koneksi terputus. Pembayaran mungkin sudah tersimpan.',
-        needsReconciliation: true, amount: payAmount, method: payMethod,
+        needsReconciliation: true, amount: payAmount, method: payMethod, invoiceNo: payTrx.invoiceNo,
       } }))
     } finally {
       paymentPending.current = false
@@ -1203,7 +1207,9 @@ export default function Order({
               {/* TOP CARD */}
               {paymentIssue && <div role="alert" className="p-3 text-sm rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
                 {paymentIssue.error}
-                {paymentIssue.needsReconciliation && <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>}
+                {paymentIssue.needsReconciliation && (paymentWorkflow
+                  ? <PaymentRecoveryPanel workflow={paymentWorkflow} pending={pendingPayments.filter(item => item.invoiceNo === payTrx.invoiceNo)} />
+                  : <p className="mt-2 font-semibold">Perlu rekonsiliasi. Jangan ulang pembayaran, termasuk setelah muat ulang halaman. Minta owner memeriksa invoice, piutang, dan riwayat pembayaran.</p>)}
               </div>}
               <div className="rounded-xl p-4 space-y-2"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>

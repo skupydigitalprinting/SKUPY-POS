@@ -56,4 +56,5 @@ function Preview() {
   </main>
 }
 if (new URLSearchParams(location.search).get('view') === 'order') import('./order-preview.jsx')
+else if (new URLSearchParams(location.search).get('view') === 'payment') import('./payment-preview.jsx')
 else createRoot(document.getElementById('root')).render(<Preview />)

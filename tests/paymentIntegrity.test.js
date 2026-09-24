@@ -139,6 +139,20 @@ function balances(db, paid, remaining) {
 
 for (const secure of [false, true]) {
   const mode = secure ? 'secure' : 'legacy'
+  // Secure payments no longer use this sequential-write fixture. Its former
+  // simulated secure baselines are superseded by invoiceStore and real SQL
+  // recovery/ledger tests; every legacy behavior below stays covered.
+  if (secure) {
+    test('secure installment without a verified identity never dispatches or falls back', () => audit({ secure }, async ({ store, db, events, transport }) => {
+      const before = clone(db)
+      const result = await pay(store)
+      assert.equal(result.ok, false)
+      assert.equal(transport.requests.length, 0)
+      assert.deepEqual(db, before)
+      assert.equal(events.length, 0)
+    }))
+    continue
+  }
   for (const debtOnly of [false, true]) {
     const path = debtOnly ? 'debt-only' : 'linked'
     for (const amount of [30000, 80000]) {

@@ -62,3 +62,70 @@ test('book switch fences each pending financial collection read', async () => is
     assert.equal(transport.stateWrites.filter(write => write.name === collection).length, 0)
   }
 }))
+
+test('full refresh from a previous book cannot publish or settle payment recovery', async () => isolated(async (store, transport) => {
+  store.setActiveBook('another-book')
+  await store.refreshAll()
+  assert.equal(transport.requests.length, 0)
+  assert.equal(transport.stateWrites.some(write => write.name === 'paymentRefreshPending'), false)
+}))
+
+test('verified installment uses one atomic RPC and refreshes without direct table writes', async () => isolated(async (store, transport) => {
+  transport.rpcScript.push((name, args) => {
+    assert.equal(name, 'pos_submit_payment')
+    return ok({ state: 'complete', operationId: args.p_operation_id,
+      request: { invoiceNo: 'TEST', amount: 100000, method: 'cash', notes: '' },
+      result: { invoice_no: 'TEST', amount: 100000, paid: 300000, remaining: 200000, status: 'aktif' } })
+  })
+  transport.script.push(ok([{ ...row, paid: 300000, remaining: 200000 }]), ok([]), ok([]), ok([]))
+  const result = await store.processDebtPayment({ invoice_no: 'TEST', paymentAmount: 100000 })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.data.paidAfter, 300000)
+  assert.equal(result.data.paidBefore, 200000)
+  assert.equal(transport.calls.some(call => ['insert', 'update', 'delete'].includes(call.method)), false)
+  assert.equal(transport.stateWrites.filter(write => write.name === 'transactions').length, 1)
+}))
+
+test('verified payment rejection cannot fall back to sequential legacy writes', async () => isolated(async (store, transport) => {
+  transport.rpcScript.push(() => ({ error: { code: '22023' } }))
+  const result = await store.processDebtPayment({ invoice_no: 'TEST', paymentAmount: 100000 })
+  assert.equal(result.ok, false)
+  assert.equal(transport.requests.length, 1)
+  assert.equal(transport.requests[0].rpc, 'pos_submit_payment')
+  assert.equal(transport.calls.length, 0)
+}))
+
+test('payment refresh failure is committed, recoverable by reload and never claims a failed payment', async () => isolated(async (store, transport) => {
+  transport.rpcScript.push((name, args) => ok({ state: 'complete', operationId: args.p_operation_id,
+    request: { invoiceNo: 'TEST', amount: 100000, method: 'cash', notes: '' },
+    result: { invoice_no: 'TEST', amount: 100000, paid: 300000, remaining: 200000, status: 'aktif' } }))
+  transport.script.push({ data: null, error: { message: 'offline' } }, ok([]), ok([]), ok([]))
+  const result = await store.processDebtPayment({ invoice_no: 'TEST', paymentAmount: 100000 })
+  assert.equal(result.ok, false)
+  assert.equal(result.committed, true)
+  assert.equal(result.needsRefresh, true)
+  assert.equal(transport.stateWrites.filter(write => write.name === 'transactions').length, 0)
+  assert.equal(transport.stateWrites.filter(write => write.name === 'paymentRefreshPending').at(-1)?.value, true)
+  transport.script.push(ok([]), ok([]), ok([]), ok([]))
+  assert.equal((await store.paymentWorkflow.refresh()).ok, true)
+  assert.equal(transport.stateWrites.filter(write => write.name === 'paymentRefreshPending').at(-1)?.value, false)
+}))
+
+test('recovered FIFO payment releases its customer block only after confirmed status and fresh balances', async () => isolated(async (store, transport) => {
+  const debt = { id: 'debt', customer_id: 'customer', invoice_no: 'TEST', total_debt: 500000, paid: 200000, remaining: 300000 }
+  transport.script.push(ok([debt]))
+  transport.rpcScript.push(() => { throw new Error('Lost response') })
+  const first = await store.payCustomerDebtsFIFO({ customerId: 'customer', amount: 100000 })
+  assert.equal(first.needsReconciliation, true)
+  transport.rpcScript.push((name, args) => ok({ state: 'complete', operationId: args.p_operation_id,
+    request: { invoiceNo: 'TEST', amount: 100000, method: 'cash', notes: 'Pembayaran gabungan (FIFO)' },
+    result: { invoice_no: 'TEST', amount: 100000, paid: 300000, remaining: 200000, status: 'aktif' } }))
+  transport.script.push(ok([]), ok([]), ok([]), ok([]))
+  assert.equal((await store.paymentWorkflow.reconcile('TEST')).ok, true)
+  transport.script.push(ok([{ ...debt, paid: 300000, remaining: 200000 }]), ok([]), ok([]), ok([]), ok([]), ok([]), ok([]), ok([]), ok([]))
+  transport.rpcScript.push((name, args) => ok({ state: 'complete', operationId: args.p_operation_id,
+    request: { invoiceNo: 'TEST', amount: 50000, method: 'cash', notes: 'Pembayaran gabungan (FIFO)' },
+    result: { invoice_no: 'TEST', amount: 50000, paid: 350000, remaining: 150000, status: 'aktif' } }))
+  const second = await store.payCustomerDebtsFIFO({ customerId: 'customer', amount: 50000 })
+  assert.equal(second.ok, true, JSON.stringify(second))
+}))

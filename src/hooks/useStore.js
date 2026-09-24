@@ -4,6 +4,7 @@ import { ADMIN_PROFILE_COLUMNS, adminProfileFromDB as adminFromDB } from '../uti
 import { PRODUCT_PUBLIC_COLUMNS, attachProductCosts, saveSecureProduct } from '../lib/productAccess'
 import { createInvoiceChangeClient } from '../lib/invoiceChangeClient'
 import { createInvoiceWorkflow } from '../lib/invoiceWorkflow'
+import { createPaymentClient } from '../lib/paymentClient'
 
 // Session persistence — "Ingat saya / Tetap login".
 //   • Ingat saya ON  → localStorage, berlaku 30 hari (auto-hapus bila lewat).
@@ -334,6 +335,27 @@ export function useStore(verifiedSession = null) {
   if (invoiceBook.current.id !== activeBookId) invoiceBook.current = { id: activeBookId, generation: invoiceBook.current.generation + 1 }
   const bookGeneration = invoiceBook.current.generation
   const [pendingInvoiceChanges, setPendingInvoiceChanges] = useState([])
+  const [pendingPayments, setPendingPayments] = useState([])
+  const [paymentRefreshPending, setPaymentRefreshPending] = useState(false)
+  const paymentRefreshNeeded = useRef(false)
+  const secureFifoBlocks = useRef(new Set())
+  const paymentClient = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createPaymentClient({
+    client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '', actorId: verifiedSession.user.authUserId,
+    isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
+    storage: { get length() { return localStorage.length }, key: index => localStorage.key(index),
+      getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) },
+    draftStorage: { getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value), removeItem: key => sessionStorage.removeItem(key) },
+  }) : null, [bookGeneration])
+  const refreshPaymentIntents = () => {
+    if (!invoiceSessionCurrent()) return
+    try { setPendingPayments(paymentClient?.pending() || []) } catch { /* client refuses writes without durable storage */ }
+  }
+  const settlePaymentRefresh = () => {
+    paymentRefreshNeeded.current = false
+    setPaymentRefreshPending(false)
+    if (paymentClient && paymentClient.pending().length === 0) secureFifoBlocks.current.clear()
+  }
+  useEffect(() => { refreshPaymentIntents() }, [paymentClient, invoiceRevision])
   const invoiceOperations = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createInvoiceChangeClient({
     client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '',
     actorId: verifiedSession?.user?.authUserId,
@@ -393,6 +415,7 @@ export function useStore(verifiedSession = null) {
   }, [])
 
   const refreshAll = useCallback(async () => {
+    if (secureAuthEnabled && (!invoiceSessionCurrent() || invoiceBook.current.generation !== bookGeneration)) return
     const issued = financialReadEpoch.current
     setLoading(true); setError(null)
     try {
@@ -443,7 +466,8 @@ export function useStore(verifiedSession = null) {
           .is('deleted_at', null).order('transaction_date', { ascending: false }).limit(2000))
         if (!cb.error && mounted.current) setCredibookIncome(cb.data || [])
       } catch { /* tabel credibook_income belum ada — abaikan */ }
-      for (const r of [s, a, p, t, c, d]) if (r.error) throw r.error
+      for (const r of [s, a, p, t, c, d, ...(secureAuthEnabled ? [dp] : [])]) if (r.error) throw r.error
+      if (secureAuthEnabled && [t, c, d, dp].some(r => !Array.isArray(r.data))) throw new Error('Data keuangan belum lengkap')
       const productRows = secureAuthEnabled
         ? await attachProductCosts(supabase, p.data || [], currentUser?.role)
         : p.data || []
@@ -471,6 +495,7 @@ export function useStore(verifiedSession = null) {
       setDebts((d.data || []).map(debtFromDB))
       // debt_payments dipakai dashboard owner; kalau query gagal, biarkan kosong.
       if (!dp.error) setDebtPayments(dp.data || [])
+      if (secureAuthEnabled) settlePaymentRefresh()
 
       // NOTE: Legacy "auto-fix stale=lunas" sync DIHAPUS karena bisa
       // mem-issue UPDATE bulk ke ratusan baris saat startup → potensi
@@ -486,7 +511,7 @@ export function useStore(verifiedSession = null) {
       if (mounted.current && issued === financialReadEpoch.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [bookGeneration])
 
   useEffect(() => { refreshAll() }, [refreshAll])
 
@@ -608,6 +633,42 @@ export function useStore(verifiedSession = null) {
       setDebtPayments(results[3].data)
     },
   }), [activeBookId, invoiceOperations])
+
+  const paymentWorkflow = useMemo(() => {
+    const available = () => paymentClient && invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration
+    const unavailable = () => ({ ok: false, error: 'Pembayaran terverifikasi belum tersedia pada sesi ini.' })
+    const refreshRequired = data => ({ ok: false, committed: true, needsRefresh: true, data,
+      error: 'Pembayaran sudah tersimpan. Muat ulang data sebelum mencatat pembayaran berikutnya.' })
+    const finish = async result => {
+      if (!available()) return { ok: false, needsReconciliation: true, error: 'Sesi berubah. Periksa status dengan akun semula.' }
+      refreshPaymentIntents()
+      if (!result.ok) return result
+      financialReadEpoch.current++
+      setInvoiceRevision(value => value + 1)
+      const data = { ...result.data, paidAfter: result.data.paid, remainingAfter: result.data.remaining,
+        paidBefore: result.data.paid - result.data.amount, remainingBefore: result.data.remaining + result.data.amount,
+        status: result.data.remaining === 0 ? 'lunas' : 'pending' }
+      paymentRefreshNeeded.current = true
+      setPaymentRefreshPending(true)
+      const refreshed = await invoiceWorkflow.refresh()
+      if (!refreshed.ok || !available()) return refreshRequired(data)
+      settlePaymentRefresh()
+      return { ok: true, data }
+    }
+    return {
+      pending: () => available() ? paymentClient.pending() : [],
+      submit: async request => !available() ? unavailable() : paymentRefreshNeeded.current ? refreshRequired()
+        : finish(await paymentClient.submit(request)),
+      reconcile: async invoiceNo => !available() ? unavailable() : finish(await paymentClient.reconcile(invoiceNo)),
+      resume: async invoiceNo => !available() ? unavailable() : finish(await paymentClient.resume(invoiceNo)),
+      refresh: async () => {
+        if (!available()) return unavailable()
+        const result = await invoiceWorkflow.refresh()
+        if (result.ok && available()) { settlePaymentRefresh(); setError(null); setInvoiceRevision(value => value + 1) }
+        return result
+      },
+    }
+  }, [invoiceWorkflow, paymentClient])
 
   // Cari 1 transaksi by invoiceNo untuk PREVIEW invoice (klik nomor invoice di
   // mana pun). Cari di state dulu; kalau tidak ada (mis. transaksi lama di luar
@@ -1867,12 +1928,14 @@ export function useStore(verifiedSession = null) {
     })
   }), [transactions, wrap, containPayment, refreshDebts, refreshCustomers])
 
-  // Shared Order/Piutang installment flow. Preflight rejects missing debts and
-  // inconsistent balances. Writes are sequential, NOT atomic: any unconfirmed
-  // dispatch requires reconciliation and blocks repeat in this hook instance.
+  // Verified sessions use one atomic server operation. Legacy sessions retain
+  // their guarded sequential path until the coordinated production cutover.
   const processDebtPayment = useCallback(async ({
     invoice_no, paymentAmount, paymentMethod = 'cash', notes = '', skipRefresh = false,
-  }) => wrap(() => containPayment([invoice_no && `invoice:${invoice_no}`], async ({ guard, write }) => {
+  }) => {
+    if (secureAuthEnabled) return wrap(async () => ({ ...await paymentWorkflow.submit({ invoiceNo: invoice_no,
+      amount: paymentAmount, method: paymentMethod, notes }), invoiceNo: invoice_no }))
+    return wrap(() => containPayment([invoice_no && `invoice:${invoice_no}`], async ({ guard, write }) => {
     const amount = paymentMoney(paymentAmount)
     if (amount <= 0) {
       return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
@@ -1942,7 +2005,8 @@ export function useStore(verifiedSession = null) {
       await Promise.all([refreshTransactions(), refreshDebts(), refreshCustomers(), refreshDebtPayments()])
     }
     return { ok: true, data: { paidAfter, remainingAfter, status, remainingBefore: total - paidBefore, paidBefore } }
-  })), [wrap, containPayment, activeBookId, currentUser, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, recalculateCustomerSummary])
+  }))
+  }, [wrap, containPayment, activeBookId, currentUser, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, recalculateCustomerSummary, paymentWorkflow])
 
   // updateTransactionPayment (Order) — DELEGATE ke processDebtPayment.
   // Tidak ada wrap() outer karena processDebtPayment sudah pakai wrap sendiri.
@@ -2084,7 +2148,12 @@ export function useStore(verifiedSession = null) {
     let paid = 0
     const stop = (result) => {
       const needsReconciliation = paid > 0 || !!result.needsReconciliation
-      if (needsReconciliation) paymentOperations.current.blocked.add(`customer:${customerId}`)
+      if (needsReconciliation) {
+        if (secureAuthEnabled) {
+          secureFifoBlocks.current.add(customerId)
+          if (paid > 0 || result.committed) { paymentRefreshNeeded.current = true; setPaymentRefreshPending(true) }
+        } else paymentOperations.current.blocked.add(`customer:${customerId}`)
+      }
       return { ...result, ...(needsReconciliation ? incompleteTransactionSync() : {}),
         ok: false, needsReconciliation, paid, results }
     }
@@ -2092,7 +2161,7 @@ export function useStore(verifiedSession = null) {
       let pay = paymentMoney(amount)
       if (pay <= 0) return stop({ error: 'Nominal pembayaran harus lebih dari 0' })
       if (!customerId) return stop({ error: 'Customer tidak valid' })
-      if (paymentOperations.current.blocked.has(`customer:${customerId}`)) return stop(incompleteTransactionSync())
+      if (secureAuthEnabled ? secureFifoBlocks.current.has(customerId) : paymentOperations.current.blocked.has(`customer:${customerId}`)) return stop(incompleteTransactionSync())
       // Fresh balances and ordering, not the potentially stale page snapshot.
       const rows = paymentRead(await applyBook(supabase.from('debts').select('*')
         .eq('customer_id', customerId).is('deleted_at', null).order('created_at', { ascending: true })))
@@ -2383,7 +2452,7 @@ export function useStore(verifiedSession = null) {
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct, setProductFavorite,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
-    invoiceWorkflow, invoiceRevision, pendingInvoiceChanges,
+    invoiceWorkflow, invoiceRevision, pendingInvoiceChanges, paymentWorkflow, pendingPayments, paymentRefreshPending,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword, reassignAdminCustomers,
