@@ -37,6 +37,25 @@ test('production and unconfigured deployments cannot enable username login', asy
   }
 })
 
+test('production login enables only for the exact configured SKUPY origin and database', async () => {
+  const valid = { ...previewEnv, VERCEL_ENV: 'production', POS_AUTH_TEST_PROJECT_REF: undefined,
+    SUPABASE_URL: 'https://ejqfttivgovhqhzkrncx.supabase.co', POS_APP_ORIGIN: 'https://pos.skupy.id' }
+  const response = res()
+  await createPreviewLoginHandler(valid)({ method: 'GET', headers: {} }, response)
+  assert.equal(response.code, 405)
+  for (const patch of [
+    { POS_APP_ORIGIN: 'https://preview.example.test' },
+    { SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co' },
+    { VERCEL_ENV: 'preview' },
+    { POS_USERNAME_LOGIN_ENABLED: undefined },
+    { SUPABASE_SERVICE_ROLE_KEY: '' },
+  ]) {
+    const rejected = res()
+    await createPreviewLoginHandler({ ...valid, ...patch })({ method: 'GET', headers: {} }, rejected)
+    assert.equal(rejected.code, 503)
+  }
+})
+
 test('production Supabase target is rejected even in preview', async () => {
   const response = res()
   await createPreviewLoginHandler({

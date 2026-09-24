@@ -47,3 +47,16 @@ test('requested secure mode fails closed for production, invalid configuration a
   assert.equal(resolveAuthMode({ ...local, DEV: false }, 'http://127.0.0.1:5182'), 'blocked')
   assert.equal(resolveAuthMode(local, 'https://test.vercel.app'), 'blocked')
 })
+
+test('production secure mode requires its exact origin, database and production build', () => {
+  const valid = { VITE_POS_AUTH_MODE: 'production', PROD: true,
+    VITE_SUPABASE_URL: 'https://ejqfttivgovhqhzkrncx.supabase.co', VITE_SUPABASE_ANON_KEY: 'public-key' }
+  assert.equal(resolveAuthMode(valid, 'https://pos.skupy.id'), 'secure')
+  for (const [env, origin] of [
+    [{ ...valid, PROD: false }, 'https://pos.skupy.id'],
+    [{ ...valid, VITE_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co' }, 'https://pos.skupy.id'],
+    [{ ...valid, VITE_SUPABASE_ANON_KEY: '' }, 'https://pos.skupy.id'],
+    [valid, 'https://preview.example.test'],
+    [valid, 'http://pos.skupy.id'],
+  ]) assert.equal(resolveAuthMode(env, origin), 'blocked')
+})
