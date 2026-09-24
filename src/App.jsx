@@ -292,6 +292,8 @@ function AppShell({ verifiedSession = null }) {
       setActivePage={setActivePage}
       deleteTransaction={store.deleteTransaction}
       editTransaction={store.editTransaction}
+      invoiceWorkflow={verifiedSession ? store.invoiceWorkflow : undefined}
+      invoiceRevision={store.invoiceRevision}
       editDebtPayment={store.editDebtPayment}
       deleteDebtPayment={store.deleteDebtPayment}
     />,
@@ -325,6 +327,9 @@ function AppShell({ verifiedSession = null }) {
       updateTransactionPayment={store.updateTransactionPayment}
       updateOrderStatus={store.updateOrderStatus}
       deleteTransaction={store.deleteTransaction}
+      invoiceWorkflow={verifiedSession ? store.invoiceWorkflow : undefined}
+      invoiceRevision={store.invoiceRevision}
+      pendingInvoiceChanges={store.pendingInvoiceChanges}
       reassignOrderCustomer={store.reassignOrderCustomer}
       getOrderCustomerChanges={store.getOrderCustomerChanges}
       busy={store.busy}
@@ -378,7 +383,7 @@ function AppShell({ verifiedSession = null }) {
   }
 
   return (
-    <InvoicePreviewProvider resolve={store.getTransactionByInvoice} storeInfo={store.storeInfo}>
+    <InvoicePreviewProvider resolve={store.getTransactionByInvoice} storeInfo={store.storeInfo} revision={store.invoiceRevision}>
     <div
       className="flex w-screen overflow-hidden"
       style={{
@@ -502,7 +507,9 @@ function AuthenticatedApp() {
   if (session.phase === 'blocked') return <ErrorScreen error={session.error || 'Sesi belum dapat dibersihkan.'} onRetry={() => authSession.signOut()} />
   if (session.phase !== 'ready') return <Login login={authSession.signIn} storeInfo={null} busy={session.phase === 'checking'} />
   return <ToastProvider key={session.epoch}><ConfirmProvider>
-    <AppShell verifiedSession={{ user: session.user, logout: authSession.signOut }} />
+    <AppShell verifiedSession={{ user: session.user, logout: authSession.signOut,
+      isCurrent: () => { const current = authSession.getSnapshot(); return current.phase === 'ready' && current.epoch === session.epoch
+        && current.user?.authUserId === session.user.authUserId && current.user?.authSessionId === session.user.authSessionId } }} />
   </ConfirmProvider></ToastProvider>
 }
 

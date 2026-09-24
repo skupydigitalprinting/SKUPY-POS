@@ -8,9 +8,16 @@ const server = await createServer({ root, configFile: false, envFile: false,
   optimizeDeps: { entries: ['tools/invoice-preview/index.html'] },
   plugins: [{ name: 'synthetic-invoice-only', enforce: 'pre',
     resolveId(id) {
+      if (/(^|\/)lib\/supabase(?:\.js)?$/.test(id)) return '\0invoice-preview-flags'
       if (/(supabase|useStore|posAuth)/i.test(id)) return '\0invoice-data-blocked'
     },
     load(id) {
+      if (id === '\0invoice-preview-flags') return `export const secureAuthEnabled = true;
+        export const isSupabaseConfigured = false;
+        export const isDataSessionActive = () => false;
+        export const onDataSessionReset = () => () => {};
+        export const getDataClient = () => { throw new Error('No data client in synthetic preview') };
+        export const uploadInvoiceImage = () => { throw new Error('No production upload in synthetic preview') };`
       // Tailwind resolves watched files without importing them. Block execution,
       // while allowing its CSS dependency tracking to resolve safely.
       if (id === '\0invoice-data-blocked') return "throw new Error('Production data client forbidden in invoice preview')"

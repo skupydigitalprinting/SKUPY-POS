@@ -9,9 +9,10 @@ const request = { invoiceId, expectedVersion: 0, kind: 'edit', payload: { reason
 const receipt = { operationId, invoiceId, invoiceNo: 'TEST', version: 1, state: 'active', total: 400000, paid: 200000, remaining: 200000, refundDue: 0 }
 
 function setup() {
-  const values = new Map(), held = new Set(), calls = []
+  const values = new Map(), drafts = new Map(), held = new Set(), calls = []
   let active = true, actorId = 'actor-a'
-  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
+  const storage = { get length() { return values.size }, key: index => [...values.keys()][index], getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
+  const draftStorage = { getItem: key => drafts.get(key) ?? null, setItem: (key, value) => drafts.set(key, value), removeItem: key => drafts.delete(key) }
   const locks = { request: async (key, options, run) => {
     if (held.has(key)) return run(null)
     held.add(key)
@@ -22,10 +23,39 @@ function setup() {
   const make = (scope = 'https://synthetic.supabase.co') => {
     const boundActor = actorId
     return createInvoiceChangeClient({ client: { rpc }, scope, actorId: boundActor, isCurrent: () => active && actorId === boundActor,
-      storage, locks, crypto: { subtle: webcrypto.subtle, randomUUID: () => operationId } })
+      storage, draftStorage, locks, crypto: { subtle: webcrypto.subtle, randomUUID: () => operationId } })
   }
-  return { make, values, calls, storage, locks, respond: fn => { respond = fn }, invalidate: () => { active = false }, switchActor: () => { actorId = 'actor-b' } }
+  return { make, values, drafts, calls, storage, locks, respond: fn => { respond = fn }, invalidate: () => { active = false }, switchActor: () => { actorId = 'actor-b' } }
 }
+
+test('reload lists pending changes and resumes the exact draft from tab-only storage', async () => {
+  const h = setup()
+  h.respond(async () => { throw new Error('Lost before dispatch') })
+  await h.make().change(request)
+  assert.deepEqual(h.make().pending().map(row => row.invoiceId), [invoiceId])
+  assert.equal(h.drafts.size, 1)
+  assert.equal([...h.values.values()].some(value => value.includes('Private customer')), false)
+  h.respond(async name => ({ data: name === 'pos_invoice_change_status' ? { state: 'unknown' } : receipt, error: null }))
+  assert.equal((await h.make().resume(invoiceId)).ok, true)
+  assert.deepEqual(h.calls.at(-1).payload.p_payload, request.payload)
+  assert.equal(h.values.size, 0)
+  assert.equal(h.drafts.size, 0)
+})
+
+test('resume cannot create a fresh operation when pending identity is absent', async () => {
+  const h = setup()
+  assert.equal((await h.make().resume(invoiceId)).ok, false)
+  assert.equal(h.calls.length, 0)
+})
+
+test('scope invalidation during fingerprinting prevents dispatch', async () => {
+  const h = setup()
+  const client = createInvoiceChangeClient({ client: { rpc: async () => { assert.fail('Old book must not dispatch') } },
+    scope: 'test', actorId: 'a', isCurrent: (() => { let checks = 0; return () => ++checks < 3 })(),
+    storage: h.storage, locks: h.locks, crypto: webcrypto })
+  assert.equal((await client.change(request)).ok, false)
+  assert.equal(h.values.size, 0)
+})
 
 test('persists operation identity before sending, without customer payload or credentials', async () => {
   const h = setup()

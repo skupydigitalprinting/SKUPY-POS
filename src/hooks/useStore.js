@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { getDataClient, secureAuthEnabled, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
 import { ADMIN_PROFILE_COLUMNS, adminProfileFromDB as adminFromDB } from '../utils/adminProfile'
 import { PRODUCT_PUBLIC_COLUMNS, attachProductCosts, saveSecureProduct } from '../lib/productAccess'
+import { createInvoiceChangeClient } from '../lib/invoiceChangeClient'
+import { createInvoiceWorkflow } from '../lib/invoiceWorkflow'
 
 // Session persistence — "Ingat saya / Tetap login".
 //   • Ingat saya ON  → localStorage, berlaku 30 hari (auto-hapus bila lewat).
@@ -188,6 +190,7 @@ const productToDB = (p) => ({
 
 const trxFromDB = (r) => ({
   id: r.id,
+  version: Number.isSafeInteger(Number(r.version)) && r.version != null ? Number(r.version) : null,
   invoiceNo: r.invoice_no,
   orderNo: r.order_no || '',
   customer: r.customer,
@@ -323,6 +326,27 @@ export function useStore(verifiedSession = null) {
   // book_id untuk WRITE (transaksi/customer baru) — book aktif atau default.
   const writeBookId = activeBookId || defaultBookId
   const mounted = useRef(true)
+  const financialReadEpoch = useRef(0)
+  const [invoiceRevision, setInvoiceRevision] = useState(0)
+  const invoiceSessionCurrent = () => mounted.current && secureAuthEnabled
+    && !!verifiedSession?.user?.authUserId && verifiedSession?.isCurrent?.() === true
+  const invoiceBook = useRef({ id: activeBookId, generation: 0 })
+  if (invoiceBook.current.id !== activeBookId) invoiceBook.current = { id: activeBookId, generation: invoiceBook.current.generation + 1 }
+  const bookGeneration = invoiceBook.current.generation
+  const [pendingInvoiceChanges, setPendingInvoiceChanges] = useState([])
+  const invoiceOperations = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createInvoiceChangeClient({
+    client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '',
+    actorId: verifiedSession?.user?.authUserId,
+    isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
+    storage: { get length() { return localStorage.length }, key: index => localStorage.key(index),
+      getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) },
+    draftStorage: { getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value), removeItem: key => sessionStorage.removeItem(key) },
+  }) : null, [bookGeneration])
+  const refreshInvoiceIntents = () => {
+    if (!invoiceSessionCurrent()) return
+    try { setPendingInvoiceChanges(invoiceOperations?.pending() || []) } catch { /* writes fail closed if storage is unavailable */ }
+  }
+  useEffect(() => { refreshInvoiceIntents() }, [invoiceOperations, invoiceRevision])
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
@@ -369,6 +393,7 @@ export function useStore(verifiedSession = null) {
   }, [])
 
   const refreshAll = useCallback(async () => {
+    const issued = financialReadEpoch.current
     setLoading(true); setError(null)
     try {
       const [s, a, p, t, c, d, dp] = await Promise.all([
@@ -422,7 +447,7 @@ export function useStore(verifiedSession = null) {
       const productRows = secureAuthEnabled
         ? await attachProductCosts(supabase, p.data || [], currentUser?.role)
         : p.data || []
-      if (!mounted.current) return
+      if (!mounted.current || issued !== financialReadEpoch.current) return
       setStoreInfo(settingsFromDB(s.data) || {
         name: 'Skupy Printing', tagline: '', address: '', phone: '', email: '',
         bank: { name: '', number: '', holder: '' },
@@ -452,13 +477,13 @@ export function useStore(verifiedSession = null) {
       // statement timeout. Sinkronisasi sekarang dikerjakan oleh
       // syncDebtPaymentStatus per invoice saat aksi user terjadi.
     } catch (e) {
-      if (mounted.current) setError(
+      if (mounted.current && issued === financialReadEpoch.current) setError(
         isSupabaseConfigured
           ? `Gagal terhubung ke Supabase: ${e.message || e}`
           : 'Supabase belum dikonfigurasi. Buat file .env dari .env.example.'
       )
     } finally {
-      if (mounted.current) setLoading(false)
+      if (mounted.current && issued === financialReadEpoch.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -475,6 +500,8 @@ export function useStore(verifiedSession = null) {
 
   // Ganti book aktif (null = Semua Book). Persist pilihan.
   const setActiveBook = useCallback((id) => {
+    financialReadEpoch.current++
+    invoiceBook.current = { id: id || null, generation: invoiceBook.current.generation + 1 }
     if (!secureAuthEnabled) {
       try { if (id) localStorage.setItem('skupy_active_book', id); else localStorage.removeItem('skupy_active_book') } catch { /* ignore */ }
     }
@@ -512,40 +539,75 @@ export function useStore(verifiedSession = null) {
 
   // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
   const refreshCustomers = useCallback(async () => {
+    const issued = financialReadEpoch.current
     const { data, error: e } = await applyBook(supabase
       .from('customers').select('*')
       .order('created_at', { ascending: false })
       .limit(1000))
-    if (!e && mounted.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
+    if (!e && mounted.current && issued === financialReadEpoch.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
   }, [activeBookId])
 
   const refreshDebtPayments = useCallback(async () => {
+    const issued = financialReadEpoch.current
     const { data, error: e } = await applyBook(supabase
       .from('debt_payments')
       .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at')
       .is('deleted_at', null)
       .order('paid_at', { ascending: false })
       .limit(2000))
-    if (!e && mounted.current) setDebtPayments(data || [])
+    if (!e && mounted.current && issued === financialReadEpoch.current) setDebtPayments(data || [])
   }, [activeBookId])
 
   const refreshDebts = useCallback(async () => {
+    const issued = financialReadEpoch.current
     const { data, error: e } = await applyBook(supabase
       .from('debts').select('*')
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(500))
-    if (!e && mounted.current) setDebts((data || []).map(debtFromDB))
+    if (!e && mounted.current && issued === financialReadEpoch.current) setDebts((data || []).map(debtFromDB))
   }, [activeBookId])
 
   const refreshTransactions = useCallback(async () => {
+    const issued = financialReadEpoch.current
     const { data, error: e } = await applyBook(supabase
       .from('transactions').select('*')
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(500))
-    if (!e && mounted.current) setTransactions((data || []).map(trxFromDB))
+    if (!e && mounted.current && issued === financialReadEpoch.current) setTransactions((data || []).map(trxFromDB))
   }, [activeBookId])
+
+  const invoiceWorkflow = useMemo(() => createInvoiceWorkflow({
+    enabled: secureAuthEnabled && !!verifiedSession?.user?.authUserId,
+    isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
+    operations: invoiceOperations,
+    onSettled: refreshInvoiceIntents,
+    readInvoice: async id => {
+      const result = await applyBook(supabase.from('transactions').select('*').eq('id', id).is('deleted_at', null)).maybeSingle()
+      if (result.error) throw result.error
+      return result.data ? trxFromDB(result.data) : null
+    },
+    invalidate: () => { financialReadEpoch.current++; setInvoiceRevision(value => value + 1) },
+    refresh: async () => {
+      const issued = financialReadEpoch.current
+      // Publish the related collections together, only after every read succeeds.
+      const results = await Promise.all([
+        applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)),
+        applyBook(supabase.from('debts').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)),
+        applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false }).limit(1000)),
+        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
+      ])
+      if (!invoiceSessionCurrent() || invoiceBook.current.generation !== bookGeneration || issued !== financialReadEpoch.current || results.some(result => result.error || !Array.isArray(result.data))) {
+        if (invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration && issued === financialReadEpoch.current) setError('Perubahan invoice sudah tersimpan, tetapi data terbaru belum dapat dimuat. Muat ulang sebelum melanjutkan.')
+        throw new Error('Invoice refresh incomplete')
+      }
+      setTransactions(results[0].data.map(trxFromDB))
+      setDebts(results[1].data.map(debtFromDB))
+      setCustomers(results[2].data.map(customerFromDB).filter(row => !row.deletedAt))
+      setDebtPayments(results[3].data)
+    },
+  }), [activeBookId, invoiceOperations])
 
   // Cari 1 transaksi by invoiceNo untuk PREVIEW invoice (klik nomor invoice di
   // mana pun). Cari di state dulu; kalau tidak ada (mis. transaksi lama di luar
@@ -1902,6 +1964,7 @@ export function useStore(verifiedSession = null) {
   // paymentMethod, dueDate. remaining + status dihitung ulang (integer).
   // Debt terkait di-mirror + customer di-recalc + refresh semua.
   const editTransaction = useCallback(async (id, fields) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Gunakan Edit Invoice untuk mengubah barang. Pembayaran yang sudah diterima tidak dapat ditimpa.' }
     const cur = transactions.find(t => t.id === id)
     if (!cur) return { ok: false, error: 'Transaksi tidak ditemukan' }
     const total = fields.total != null ? Math.round(Number(fields.total) || 0) : Math.round(+cur.total || 0)
@@ -1957,6 +2020,7 @@ export function useStore(verifiedSession = null) {
   }), [transactions, wrap, recalculateCustomerSummary, refreshTransactions, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const deleteTransaction = useCallback(async (id) => wrap(async () => {
+    if (secureAuthEnabled) return { ok: false, error: 'Gunakan Hapus Invoice dan pilih alasan penghapusan.' }
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
     return containPayment([`transaction:${id}`, current.invoiceNo && `invoice:${current.invoiceNo}`], async ({ guard, write }) => {
@@ -2319,6 +2383,7 @@ export function useStore(verifiedSession = null) {
     syncDebtPaymentStatus, recalculateCustomerSummary, processDebtPayment,
     addProduct, updateProduct, deleteProduct, setProductFavorite,
     addTransaction, updateTransactionStatus, updateTransactionPayment, deleteTransaction, editTransaction,
+    invoiceWorkflow, invoiceRevision, pendingInvoiceChanges,
     updateOrderStatus,
     updateStoreInfo, updateLogo,
     login, logout, addAdmin, updateAdmin, deleteAdmin, changePassword, reassignAdminCustomers,

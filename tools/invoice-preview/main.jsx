@@ -55,4 +55,5 @@ function Preview() {
     {invoice && view === 'delete' && <InvoiceDeleteDialog invoice={invoice} onClose={() => setView(null)} onConfirm={remove} />}
   </main>
 }
-createRoot(document.getElementById('root')).render(<Preview />)
+if (new URLSearchParams(location.search).get('view') === 'order') import('./order-preview.jsx')
+else createRoot(document.getElementById('root')).render(<Preview />)

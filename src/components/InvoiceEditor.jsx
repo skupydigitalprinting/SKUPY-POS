@@ -1,18 +1,18 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { Plus, Save, Trash2 } from 'lucide-react'
 import Modal from './Modal'
 import { Button, Input, Textarea } from './ui'
 import { formatCurrency } from '../utils/helpers'
 import { createInvoiceDraft, quoteInvoiceDraft, validateInvoiceDraft } from '../utils/invoiceDraft'
+import { useInvoiceSubmission } from '../hooks/useInvoiceSubmission'
+import InvoiceRecovery from './InvoiceRecovery'
 
 // Mount with key={invoice.id + ':' + invoice.version} when refreshing a stale form.
-export default function InvoiceEditor({ invoice, products = [], onClose, onSave }) {
+export default function InvoiceEditor({ invoice, products = [], onClose, onSave, onReconcile, onRefresh }) {
   const [draft, setDraft] = useState(() => createInvoiceDraft(invoice))
   const [productId, setProductId] = useState('')
-  const [error, setError] = useState('')
-  const [pending, setPending] = useState(false)
-  const [uncertain, setUncertain] = useState(false)
-  const submitting = useRef(false)
+  const submission = useInvoiceSubmission({ onClose, onReconcile, onRefresh })
+  const { error, setError, pending, locked, close } = submission
   const quote = useMemo(() => {
     try { return { value: quoteInvoiceDraft(invoice, draft) } }
     catch (error) { return { error: error.message } }
@@ -20,7 +20,6 @@ export default function InvoiceEditor({ invoice, products = [], onClose, onSave 
   const set = (field, value) => setDraft(current => ({ ...current, [field]: value }))
   const editLine = (index, field, value) => setDraft(current => ({ ...current,
     items: current.items.map((item, i) => i === index ? { ...item, [field]: value } : item) }))
-  const close = () => { if (!submitting.current) onClose?.() }
   function addProduct() {
     const product = products.find(item => String(item.id) === productId)
     if (!product) return
@@ -31,23 +30,12 @@ export default function InvoiceEditor({ invoice, products = [], onClose, onSave 
   }
   async function submit(event) {
     event.preventDefault()
-    if (submitting.current || uncertain || !onSave) return
+    if (locked || !onSave) return
     let payload
     try { payload = validateInvoiceDraft(invoice, draft).payload }
     catch (error) { setError(error.message); return }
-    submitting.current = true; setPending(true); setError('')
-    try {
-      const result = await onSave(payload)
-      if (result?.ok !== true) {
-        setUncertain(result?.needsReconciliation === true || !result)
-        setError(result?.error || 'Hasil penyimpanan belum terkonfirmasi. Periksa status sebelum mengulangi.')
-      } else onClose?.()
-    } catch {
-      setUncertain(true)
-      setError('Hasil penyimpanan belum terkonfirmasi. Periksa status sebelum mengulangi.')
-    } finally { submitting.current = false; setPending(false) }
+    await submission.submit(() => onSave(payload))
   }
-  const locked = pending || uncertain
   return <Modal open title="Edit Invoice" subtitle={invoice.invoiceNo} onClose={close} size="lg" mobileFull lockClose={pending}>
     <form onSubmit={submit} aria-label="Edit Invoice" className="space-y-4" style={{ color: 'var(--text-primary)' }}>
       <fieldset disabled={locked} className="space-y-4 min-w-0">
@@ -94,6 +82,7 @@ export default function InvoiceEditor({ invoice, products = [], onClose, onSave 
           <div key={label} className="flex justify-between gap-3 flex-wrap"><dt>{label}</dt><dd className="font-semibold">Rp{formatCurrency(value) || '0'}</dd></div>)}
       </dl>}
       {(error || quote.error) && <p role="alert" className="text-sm" style={{ color: 'var(--red)' }}>{error || quote.error}</p>}
+      <InvoiceRecovery result={submission.result} pending={pending} onCheck={submission.check} onRetry={submission.retry} onRefresh={submission.refresh} />
       <div className="flex justify-end gap-2 flex-wrap">
         <Button type="button" variant="secondary" onClick={close} disabled={pending}>Batal</Button>
         <Button type="submit" disabled={locked || !!quote.error || !onSave}><Save size={16} />{pending ? 'Menyimpan...' : 'Simpan Perubahan'}</Button>

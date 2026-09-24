@@ -22,7 +22,7 @@ export default function DashboardCardDetail({
   open, onClose, title, rows = [], total = 0, isCount = false,
   onEdit, onDelete, showDue = false, onManage, manageLabel = 'Kelola',
   paymentMode = false, admins = [], onSavePaymentRow, onDeletePaymentRow, subtitle,
-  onInvoiceClick,
+  onInvoiceClick, onInvoiceAction,
 }) {
   const toast = useToast()
   const [editRow, setEditRow] = useState(null)
@@ -34,6 +34,7 @@ export default function DashboardCardDetail({
   const colCount = (showDue ? 11 : 10)
 
   const startEdit = (r) => {
+    if (onInvoiceAction && (!paymentMode || r.kind !== 'payment')) { onInvoiceAction(r, 'edit'); return }
     setErr('')
     setEditRow(r)
     if (paymentMode) {
@@ -102,7 +103,7 @@ export default function DashboardCardDetail({
   const th = { color: 'var(--text-muted)', fontFamily: 'Syne', fontSize: 10, letterSpacing: '0.06em' }
   const inp = { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 
-  const canAct = (r) => r.editable !== false && (paymentMode ? (onSavePaymentRow && onDeletePaymentRow) : (onEdit && onDelete))
+  const canAct = (r) => r.editable !== false && ((onInvoiceAction && (!paymentMode || r.kind !== 'payment')) || (paymentMode ? (onSavePaymentRow && onDeletePaymentRow) : (onEdit && onDelete)))
 
   return (
     <Modal open={open} onClose={onClose} title={`Detail Sumber Data: ${title}`}
@@ -242,7 +243,7 @@ export default function DashboardCardDetail({
                           style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-light)', border: '1px solid rgba(139,92,246,0.2)' }}>
                           <Pencil size={12} />
                         </button>
-                        <button onClick={() => setDelRow(r)} title="Hapus"
+                        <button onClick={() => onInvoiceAction && (!paymentMode || r.kind !== 'payment') ? onInvoiceAction(r, 'delete') : setDelRow(r)} title="Hapus"
                           className="w-7 h-7 rounded-lg inline-flex items-center justify-center"
                           style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.15)' }}>
                           <Trash2 size={12} />

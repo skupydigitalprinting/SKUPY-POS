@@ -29,8 +29,10 @@ function validReceipt(data, intent) {
 
 // The caller supplies a session-bound data client; local identity is never sent as authority.
 export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, storage = globalThis.localStorage,
-  locks = globalThis.navigator?.locks, crypto = globalThis.crypto }) {
-  const keyFor = id => `skupy:invoice-operation:v1:${encodeURIComponent(scope)}:${encodeURIComponent(actorId)}:${id}`
+  draftStorage = globalThis.sessionStorage, locks = globalThis.navigator?.locks, crypto = globalThis.crypto }) {
+  const prefix = `skupy:invoice-operation:v1:${encodeURIComponent(scope)}:${encodeURIComponent(actorId)}:`
+  const keyFor = id => `${prefix}${id}`
+  const clear = key => { draftStorage?.removeItem(key); storage.removeItem(key) }
   const assertCurrent = () => {
     if (typeof scope !== 'string' || !scope || !actorId || !isCurrent()) throw new Error('Sesi berubah. Masuk kembali sebelum melanjutkan.')
   }
@@ -46,7 +48,7 @@ export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, s
   const complete = (key, intent, data) => {
     assertCurrent()
     if (!validReceipt(data, intent)) return uncertain(intent.operationId)
-    storage.removeItem(key)
+    clear(key)
     if (storage.getItem(key) !== null) return uncertain(intent.operationId)
     return { ok: true, data }
   }
@@ -77,10 +79,7 @@ export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, s
       return intent ? uncertain(intent.operationId) : { ok: false, error: error?.message || 'Permintaan tidak dapat diproses.' }
     }
   }
-  return {
-    reconcile: invoiceId => locked(invoiceId, (key, intent) => intent
-      ? status(key, intent) : { ok: false, pending: false, error: 'Tidak ada permintaan tertunda pada akun ini.' }),
-    change: request => locked(request?.invoiceId, async (key, existing, track) => {
+  const changeRequest = async (request, key, existing, track) => {
       const { invoiceId, expectedVersion, kind, payload } = request
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0 || expectedVersion === Number.MAX_SAFE_INTEGER
         || !kinds.includes(kind) || !payload || Array.isArray(payload) || typeof payload !== 'object') {
@@ -99,6 +98,12 @@ export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, s
       }
       const intent = existing || { actorId, invoiceId, expectedVersion, kind, fingerprint, operationId: crypto.randomUUID() }
       if (!uuid.test(intent.operationId)) throw new Error('Identitas permintaan tidak valid.')
+      // Exact replay survives reload in this tab; shared localStorage has no customer payload.
+      if (draftStorage) {
+        const draft = JSON.stringify({ operationId: intent.operationId, request: snapshot })
+        draftStorage.setItem(key, draft)
+        if (draftStorage.getItem(key) !== draft) throw new Error('Draft pemulihan belum dapat disimpan.')
+      }
       storage.setItem(key, JSON.stringify(intent))
       track(intent)
       if (storage.getItem(key) !== JSON.stringify(intent)) return uncertain(intent.operationId)
@@ -112,7 +117,7 @@ export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, s
         const rejectedRevision = response.error.code === '40001' && response.error.hint === 'invoice_revision_conflict'
           && response.error.details === intent.operationId
         if ((!existing && rollbackCodes.has(response.error.code)) || rejectedRevision) {
-          storage.removeItem(key)
+          clear(key)
           if (storage.getItem(key) !== null) return uncertain(intent.operationId)
           return { ok: false, needsRefresh: response.error.code === '40001', error: response.error.code === '40001'
             ? 'Invoice sudah berubah. Muat ulang sebelum mengedit lagi.' : 'Perubahan ditolak dan tidak disimpan. Periksa data serta akses invoice.' }
@@ -120,6 +125,33 @@ export function createInvoiceChangeClient({ client, scope, actorId, isCurrent, s
         return uncertain(intent.operationId)
       }
       return complete(key, intent, response?.data)
+  }
+  return {
+    pending: () => {
+      assertCurrent()
+      const rows = []
+      for (let index = 0; index < storage.length; index++) {
+        const key = storage.key(index)
+        if (key?.startsWith(prefix)) {
+          const invoiceId = key.slice(prefix.length)
+          const intent = read(key, invoiceId)
+          if (intent) rows.push({ invoiceId, kind: intent.kind, operationId: intent.operationId })
+        }
+      }
+      return rows
+    },
+    reconcile: invoiceId => locked(invoiceId, (key, intent) => intent
+      ? status(key, intent) : { ok: false, pending: false, error: 'Tidak ada permintaan tertunda pada akun ini.' }),
+    change: request => locked(request?.invoiceId, (key, existing, track) => changeRequest(request, key, existing, track)),
+    resume: invoiceId => locked(invoiceId, async (key, existing, track) => {
+      if (!existing) return { ok: false, pending: false, error: 'Tidak ada permintaan tertunda pada akun ini.' }
+      const result = await status(key, existing)
+      if (!result.unknown) return result
+      const saved = JSON.parse(draftStorage?.getItem(key) || 'null')
+      if (!saved || saved.operationId !== existing.operationId || saved.request?.invoiceId !== invoiceId) {
+        return { ...result, unknown: false, error: 'Draft asli tidak tersedia di tab ini. Buka tab asal untuk mengulang; status tetap dapat diperiksa.' }
+      }
+      return changeRequest(saved.request, key, existing, track)
     }),
   }
 }

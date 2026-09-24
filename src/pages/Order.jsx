@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
   Download, FileSpreadsheet, Calendar, X, MessageCircle,
-  AlertTriangle, Loader2, UserCog, Check, MoreVertical,
+  AlertTriangle, Loader2, UserCog, Check, MoreVertical, Pencil,
 } from 'lucide-react'
 import { buildWaLink, isValidWA, TEMPLATES } from '../utils/whatsapp'
 import {
@@ -13,6 +13,7 @@ import {
 import { exportTransactionsXLSX } from '../utils/excelExport'
 import { Badge, Button, Input, ProductImage, EmptyState, CustomerPicker } from '../components/ui'
 import Modal from '../components/Modal'
+import InvoiceWorkflowDialog from '../components/InvoiceWorkflowDialog'
 const Invoice = React.lazy(() => import('../components/Invoice'))
 import { ORDER_STATUS } from '../data/dummyData'
 import { secureAuthEnabled } from '../lib/supabase'
@@ -105,7 +106,7 @@ const ORDER_TABLE_COLUMNS = 'minmax(0,1.5fr) minmax(0,1.6fr) minmax(0,1.2fr) min
 
 export default function Order({
   transactions, storeInfo, busy, products = [], customers = [], admins = [], currentUser,
-  updateTransactionStatus, updateTransactionPayment, deleteTransaction,
+  updateTransactionStatus, updateTransactionPayment, deleteTransaction, invoiceWorkflow, invoiceRevision, pendingInvoiceChanges = [],
   updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
   // ─── PIC (admin pembuat) + filter tanggal ───
@@ -173,11 +174,12 @@ export default function Order({
     // Satu sumber daftar aksi — dipakai dropdown maupun bottom sheet.
     const actions = [
       { icon: Eye, label: 'Lihat Detail', onClick: () => setViewTrx(t) },
+      ...(invoiceWorkflow ? [{ icon: Pencil, label: 'Edit Invoice', onClick: () => setInvoiceAction({ id: t.id, mode: 'edit' }) }] : []),
       ...(t.remaining > 0 ? [{ icon: Wallet, label: 'Bayar', color: '#10d98a', onClick: () => openPay(t) }] : []),
       ...(canEditOrderCustomer(t) ? [{ icon: UserCog, label: 'Edit Customer', color: '#38BDF8', onClick: () => { setReassignTrx(t); setReassignNewId('') } }] : []),
       { icon: Printer, label: 'Cetak Invoice', onClick: () => setPrintTrx(t) },
       { icon: MessageCircle, label: 'WhatsApp', color: '#25d366', onClick: () => window.open(buildWaLink(phone, waText), '_blank', 'noopener,noreferrer') },
-      { icon: Trash2, label: 'Hapus / Batalkan', color: 'var(--red)', onClick: () => setDelConfirm(t) },
+      { icon: Trash2, label: 'Hapus / Batalkan', color: 'var(--red)', onClick: () => invoiceWorkflow ? setInvoiceAction({ id: t.id, mode: 'delete' }) : setDelConfirm(t) },
     ]
     if (sheet) {
       // ===== BOTTOM SHEET (mobile portrait) =====
@@ -254,6 +256,8 @@ export default function Order({
   const [pendingAction, setPendingAction] = useState(null)
   const actionPending = useRef(false)
   const [delConfirm, setDelConfirm] = useState(null)
+  const [invoiceAction, setInvoiceAction] = useState(null)
+  useEffect(() => { setViewTrx(null); setPrintTrx(null); setPayTrx(null); setMenuFor(null) }, [invoiceRevision, invoiceWorkflow])
 
   // --- Export to Excel state ---
   const [exportOpen, setExportOpen] = useState(false)
@@ -837,7 +841,7 @@ export default function Order({
                   <div className="px-1.5 min-w-0" style={{ borderRight: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                     {updateOrderStatus ? (
                       <select value={t.orderStatus || 'menunggu'} disabled={!!pendingAction || !!actionIssues[`status:${t.id}`]?.needsReconciliation}
-                        onChange={(e) => { const status = e.target.value; runOrderAction(`status:${t.id}`, () => updateOrderStatus(t.id, status)) }}
+                        onChange={(e) => { const status = e.target.value; if (status === 'dibatalkan' && invoiceWorkflow) setInvoiceAction({ id: t.id, mode: 'delete' }); else runOrderAction(`status:${t.id}`, () => updateOrderStatus(t.id, status)) }}
                         className="text-[10px] px-1 py-1 rounded-lg border-0 outline-none cursor-pointer w-full text-center"
                         style={{ background: 'transparent', color: wf.color, fontWeight: 700, fontFamily: 'Syne' }}>
                         {ORDER_WORKFLOW.map((st) => (
@@ -1405,6 +1409,15 @@ export default function Order({
       </Modal>
 
       {/* Delete Confirm */}
+      {invoiceWorkflow && pendingInvoiceChanges.length > 0 && <section className="space-y-2 border-t pt-3" aria-label="Permintaan invoice tertunda">
+        <h3 className="text-sm font-semibold">Permintaan invoice tertunda</h3>
+        {pendingInvoiceChanges.map(intent => <Button key={intent.operationId} variant="secondary"
+          onClick={() => setInvoiceAction({ id: intent.invoiceId, mode: intent.kind === 'edit' ? 'edit' : 'delete' })}>
+          Periksa Status Invoice {intent.invoiceId.slice(0, 8)}
+        </Button>)}
+      </section>}
+      {invoiceAction && invoiceWorkflow && <InvoiceWorkflowDialog invoiceId={invoiceAction.id} mode={invoiceAction.mode}
+        workflow={invoiceWorkflow} products={products} onClose={() => setInvoiceAction(null)} />}
       <Modal open={!!delConfirm} onClose={() => setDelConfirm(null)} title="Hapus Transaksi" size="sm">
         <div className="text-center py-2">
           <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"

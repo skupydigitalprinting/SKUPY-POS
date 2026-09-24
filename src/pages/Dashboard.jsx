@@ -14,6 +14,7 @@ import { formatRupiah, formatCompact, formatDateTime, timeAgo, STATUS_MAP, roleL
 import { Badge, ProductImage, RangeChips } from '../components/ui'
 import { getCatLabel, useCategories } from '../hooks/useCategories'
 import DashboardCardDetail from '../components/DashboardCardDetail'
+import InvoiceWorkflowDialog from '../components/InvoiceWorkflowDialog'
 import { useInvoicePreview } from '../components/InvoicePreview'
 import Modal from '../components/Modal'
 import { useAccounting } from '../hooks/useAccounting'
@@ -133,7 +134,8 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction, editDebtPayment, deleteDebtPayment }) {
+export default function Dashboard({ stats, transactions, products = [], debts = [], debtPayments = [], admins = [], setActivePage, storeInfo, currentUser, deleteTransaction, editTransaction, editDebtPayment, deleteDebtPayment, invoiceWorkflow, invoiceRevision }) {
+  const [invoiceAction, setInvoiceAction] = useState(null)
   const [supabase] = useState(getDataClient)
   const isOwner = currentUser?.role === 'owner'
   const { openInvoice } = useInvoicePreview()
@@ -195,6 +197,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   // Ini yang membuat Total Omset benar untuk "All Time" & semua preset.
   const [labaReport, setLabaReport] = useState(null)
   const [accBump, setAccBump] = useState(0) // dipicu setelah edit/hapus → refresh card
+  useEffect(() => { setAccBump(value => value + 1) }, [invoiceRevision])
   const accFrom = labaFrom || '2000-01-01'
   const accTo = labaTo || _ymd(new Date())
   const labaState = periodReportState(labaReport, accFrom, accTo)
@@ -667,7 +670,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
                 <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-muted)' }}><span>{new Date(t.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span><span className="px-1.5 py-0.5 rounded" style={{ background: `${s.hex}22`, color: s.hex, fontSize: 9 }}>{s.label}</span></div>
               </div>
               <div className="text-sm font-bold whitespace-nowrap" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums', fontSize: 'clamp(12px,3.4vw,15px)' }}>{formatRupiah(t.total)}</div>
-              <button onClick={async () => { if (!(await confirm({ title: 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.' }))) return; await deleteTransaction?.(t.id) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }}><Trash2 size={12} /></button>
+              <button onClick={async () => { if (invoiceWorkflow) { setInvoiceAction({ id: t.id, mode: 'delete' }); return }; if (!(await confirm({ title: 'Yakin ingin menghapus transaksi ini? Data asli juga akan ikut terhapus.' }))) return; await deleteTransaction?.(t.id) }} className="w-8 h-8 rounded-lg inline-flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)' }} title="Hapus Invoice"><Trash2 size={12} /></button>
             </div>
           )
         })}
@@ -1608,6 +1611,8 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
       </div>
 
       {/* Detail sumber data tiap kartu — OWNER ONLY */}
+      {invoiceAction && invoiceWorkflow && <InvoiceWorkflowDialog invoiceId={invoiceAction.id} mode={invoiceAction.mode}
+        workflow={invoiceWorkflow} products={products} onClose={() => setInvoiceAction(null)} />}
       {isOwner && detailCard && (
         <DashboardCardDetail
           open
@@ -1621,6 +1626,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
           paymentMode={!!detailCard.payment}
           admins={admins}
           onInvoiceClick={openInvoice}
+          onInvoiceAction={invoiceWorkflow ? (row, mode) => { setDetailKey(null); setInvoiceAction({ id: row.transactionId || row.id, mode }) } : undefined}
           onManage={detailCard.manage ? () => { setDetailKey(null); setActivePage('piutang') } : undefined}
           manageLabel="Bayar / Kelola di Piutang"
           onEdit={async (id, fields) => editTransaction?.(id, fields)}

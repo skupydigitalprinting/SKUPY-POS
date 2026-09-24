@@ -1,36 +1,25 @@
-import React, { useRef, useState } from 'react'
+import React, { useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import Modal from './Modal'
 import { Button, Textarea } from './ui'
 import { formatCurrency } from '../utils/helpers'
 import { validateInvoiceRemoval } from '../utils/invoiceDraft'
+import { useInvoiceSubmission } from '../hooks/useInvoiceSubmission'
+import InvoiceRecovery from './InvoiceRecovery'
 
-export default function InvoiceDeleteDialog({ invoice, onClose, onConfirm }) {
+export default function InvoiceDeleteDialog({ invoice, onClose, onConfirm, onReconcile, onRefresh }) {
   const [kind, setKind] = useState('cancel')
   const [reason, setReason] = useState('')
   const [noRealMoney, setNoRealMoney] = useState(false)
-  const [pending, setPending] = useState(false)
-  const [uncertain, setUncertain] = useState(false)
-  const [error, setError] = useState('')
-  const submitting = useRef(false)
-  const close = () => { if (!submitting.current) onClose?.() }
+  const submission = useInvoiceSubmission({ onClose, onReconcile, onRefresh })
+  const { error, setError, pending, locked, close } = submission
   async function submit(event) {
     event.preventDefault()
-    if (submitting.current || uncertain || !onConfirm) return
+    if (locked || !onConfirm) return
     let payload
     try { payload = validateInvoiceRemoval(invoice, kind, reason, noRealMoney) }
     catch (error) { setError(error.message); return }
-    submitting.current = true; setPending(true); setError('')
-    try {
-      const result = await onConfirm(kind, payload)
-      if (result?.ok !== true) {
-        setUncertain(result?.needsReconciliation === true || !result)
-        setError(result?.error || 'Hasil penghapusan belum terkonfirmasi. Periksa status sebelum mengulangi.')
-      } else onClose?.()
-    } catch {
-      setUncertain(true)
-      setError('Hasil penghapusan belum terkonfirmasi. Periksa status sebelum mengulangi.')
-    } finally { submitting.current = false; setPending(false) }
+    await submission.submit(() => onConfirm(kind, payload))
   }
   return <Modal open title="Hapus Invoice" subtitle={invoice.invoiceNo} onClose={close} lockClose={pending}>
     <form onSubmit={submit} aria-label="Hapus Invoice" className="space-y-4" style={{ color: 'var(--text-primary)' }}>
@@ -38,7 +27,7 @@ export default function InvoiceDeleteDialog({ invoice, onClose, onConfirm }) {
         {[[ 'Total invoice', invoice.total ], [ 'Pembayaran diterima', invoice.paid ], [ 'Sisa tagihan', invoice.remaining ]].map(([label, value]) =>
           <div key={label} className="flex justify-between flex-wrap gap-2"><dt>{label}</dt><dd>Rp{formatCurrency(value) || '0'}</dd></div>)}
       </dl>
-      <fieldset disabled={pending || uncertain} className="space-y-3 min-w-0">
+      <fieldset disabled={locked} className="space-y-3 min-w-0">
         <legend className="text-sm font-semibold mb-2">Jenis penghapusan</legend>
         <label className="flex gap-2 items-start text-sm"><input type="radio" name="removal-kind" checked={kind === 'cancel'} onChange={() => setKind('cancel')} />Pesanan tidak jadi</label>
         <label className="flex gap-2 items-start text-sm"><input type="radio" name="removal-kind" checked={kind === 'void_error'} onChange={() => setKind('void_error')} />Salah input / duplikat</label>
@@ -49,9 +38,10 @@ export default function InvoiceDeleteDialog({ invoice, onClose, onConfirm }) {
       </fieldset>
       <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Invoice dikeluarkan dari daftar dan omzet aktif. Nomor invoice tidak dipakai ulang.</p>
       {error && <p role="alert" className="text-sm" style={{ color: 'var(--red)' }}>{error}</p>}
+      <InvoiceRecovery result={submission.result} pending={pending} onCheck={submission.check} onRetry={submission.retry} onRefresh={submission.refresh} />
       <div className="flex justify-end gap-2 flex-wrap">
         <Button type="button" variant="secondary" onClick={close} disabled={pending}>Batal</Button>
-        <Button type="submit" variant="danger" disabled={pending || uncertain || !onConfirm}><Trash2 size={16} />{pending ? 'Menghapus...' : 'Hapus Invoice'}</Button>
+        <Button type="submit" variant="danger" disabled={locked || !onConfirm}><Trash2 size={16} />{pending ? 'Menghapus...' : 'Hapus Invoice'}</Button>
       </div>
     </form>
   </Modal>

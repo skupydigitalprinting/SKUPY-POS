@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react'
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
 import Invoice from './Invoice'
 
@@ -11,7 +11,7 @@ export const useInvoicePreview = () => useContext(InvoicePreviewCtx)
  * Jika string, dipakai `resolve(invoiceNo)` (async) untuk ambil transaksi dari store
  * (cari lokal, fallback fetch). Tidak membuat invoice baru — hanya PREVIEW (baca).
  */
-export function InvoicePreviewProvider({ children, resolve, storeInfo }) {
+export function InvoicePreviewProvider({ children, resolve, storeInfo, revision }) {
   const [tx, setTx] = useState(null)
   const [loading, setLoading] = useState(false)
   const reqId = useRef(0)
@@ -31,6 +31,7 @@ export function InvoicePreviewProvider({ children, resolve, storeInfo }) {
   }, [resolve])
 
   const close = useCallback(() => { reqId.current++; setTx(null); setLoading(false) }, [])
+  useEffect(close, [revision, close])
 
   return (
     <InvoicePreviewCtx.Provider value={{ openInvoice }}>
