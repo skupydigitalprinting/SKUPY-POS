@@ -113,13 +113,13 @@ export default function Order({
   updateOrderStatus, reassignOrderCustomer, getOrderCustomerChanges,
 }) {
   // ─── PIC (admin pembuat) + filter tanggal ───
-  const canSeeAllPic = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const canSeeAllPic = currentUser?.role === 'owner' || currentUser?.role === 'admin' || (secureAuthEnabled && currentUser?.role === 'staff')
   const myId = currentUser?.id
   const picName = (id, t) => {
     const a = (admins || []).find(x => x.id === id)
     return a ? (a.name || a.username || 'PIC') : (t?.cashier || 'Tanpa PIC')
   }
-  // Kasir: paksa hanya order miliknya (data sudah disaring di App, ini untuk UI).
+  // Pada login lama kasir tetap melihat order miliknya; login terverifikasi mengikuti akses book dari server.
   const [filterPic, setFilterPic] = useState(canSeeAllPic ? 'all' : (myId || 'all'))
   useEffect(() => { if (!canSeeAllPic && myId) setFilterPic(myId) }, [canSeeAllPic, myId])
   const [dateRange, setDateRange] = useState('month') // default Bulan Ini

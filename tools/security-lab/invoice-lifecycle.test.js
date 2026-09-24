@@ -67,6 +67,20 @@ test('anonymous, foreign, inactive and supplied authority fields are rejected', 
   assert.deepEqual(await snapshot(db), before)
 })
 
+test('another cashier can correct an invoice in an assigned book, but not outside it', async t => {
+  const allowed = await fixture(t)
+  await allowed.query('INSERT INTO admin_book_access(admin_id,book_id) VALUES ($1,$2)', [actors.foreign.admin, book])
+  const revised = await change(allowed, { actor: 'foreign', op: id(505) })
+  assert.equal(revised.total, 400000)
+  assert.equal((await allowed.query('SELECT cashier_id FROM transactions WHERE id=$1', [order])).rows[0].cashier_id, actors.cashier.admin)
+
+  const denied = await fixture(t)
+  const otherBook = id(101)
+  await denied.query('INSERT INTO books(id,name) VALUES ($1,$2)', [otherBook, 'Other book'])
+  await denied.query('INSERT INTO admin_book_access(admin_id,book_id) VALUES ($1,$2)', [actors.foreign.admin, otherBook])
+  await assert.rejects(change(denied, { actor: 'foreign', op: id(506) }), { code: '42501' })
+})
+
 test('stored row suppression rolls back invoice, debt, journal and operation', async t => {
   const db = await fixture(t)
   const before = await snapshot(db)
@@ -188,6 +202,46 @@ test('historical installments cannot be replaced by an aggregate initial receipt
   const before = await snapshot(db)
   await assert.rejects(change(db), { code: '23514' })
   assert.deepEqual(await snapshot(db), before)
+})
+
+test('legacy aggregate receipt with hutang label remains editable without counting historical installments twice', async t => {
+  const db = await fixture(t, { paid: 300000, mutate: db => db.exec(`
+    UPDATE transactions SET payment_method='hutang';
+    ALTER TABLE debt_payments DISABLE TRIGGER USER;
+    INSERT INTO debt_payments(id,debt_id,invoice_no,amount,payment_method,paid_at,customer_id,book_id,cashier_id)
+      VALUES('${id(580)}','${debt}','INV-LIFE',100000,'cash','2026-08-21T10:00:00Z','${customer}','${book}','${actors.cashier.admin}');
+    ALTER TABLE debt_payments ENABLE TRIGGER USER;`) })
+  const revised = await change(db)
+  assert.equal(revised.paid, 300000)
+  assert.equal(revised.remaining, 100000)
+  assert.equal((await db.query('SELECT initial_paid FROM pos_security.payment_baselines')).rows[0].initial_paid, '300000')
+  await as(db, 'cashier', 'SELECT pos_record_payment($1,$2,$3,$4,$5)', [id(581), 'INV-LIFE', 50000, 'transfer', ''])
+  assert.deepEqual((await db.query('SELECT paid::int,remaining::int FROM transactions')).rows, [{ paid: 350000, remaining: 50000 }])
+  assert.equal(Number((await db.query("SELECT sum(CASE WHEN direction='in' THEN amount ELSE -amount END) amount FROM cash_movements WHERE invoice_no='INV-LIFE'")).rows[0].amount), 350000)
+})
+
+test('fully paid legacy aggregate uses only revenue and cash journal rows', async t => {
+  const db = await fixture(t, { paid: 500000, mutate: db => db.exec(`
+    UPDATE transactions SET payment_method='hutang';
+    ALTER TABLE debt_payments DISABLE TRIGGER USER;
+    INSERT INTO debt_payments(id,debt_id,invoice_no,amount,payment_method,paid_at)
+      VALUES('${id(584)}','${debt}','INV-LIFE',100000,'cash','2026-08-21T10:00:00Z');
+    ALTER TABLE debt_payments ENABLE TRIGGER USER;`) })
+  const revised = await change(db, { op: id(585) })
+  assert.equal(revised.paid, 500000)
+  assert.equal(revised.refundDue, 100000)
+})
+
+test('legacy installment may omit copied customer and book fields when invoice and debt still match', async t => {
+  const db = await fixture(t, { paid: 300000, mutate: db => db.exec(`
+    UPDATE transactions SET payment_method='hutang';
+    ALTER TABLE debt_payments DISABLE TRIGGER USER;
+    INSERT INTO debt_payments(id,debt_id,invoice_no,amount,payment_method,paid_at)
+      VALUES('${id(582)}','${debt}','INV-LIFE',100000,'transfer','2026-08-21T10:00:00Z');
+    ALTER TABLE debt_payments ENABLE TRIGGER USER;`) })
+  const revised = await change(db, { op: id(583) })
+  assert.equal(revised.paid, 300000)
+  assert.equal(revised.remaining, 100000)
 })
 
 test('suppressed payment baseline rolls back successful-looking invoice revision', async t => {

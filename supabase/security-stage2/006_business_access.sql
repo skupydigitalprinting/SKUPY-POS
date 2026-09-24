@@ -40,8 +40,7 @@ CREATE FUNCTION pos_security.business_order(p_order uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
   SELECT pos_security.business_manager() OR EXISTS (
     SELECT 1 FROM public.transactions t WHERE t.id=p_order
-      AND t.cashier_id=pos_security.business_admin_id()
-      AND t.deleted_at IS NULL AND pos_security.business_book(t.book_id)
+      AND t.cashier_id IS NOT NULL AND t.deleted_at IS NULL AND pos_security.business_book(t.book_id)
   )
 $$;
 CREATE FUNCTION pos_security.business_debt(p_debt uuid) RETURNS boolean
@@ -144,7 +143,7 @@ $$;
 
 GRANT SELECT,INSERT,UPDATE,DELETE ON public.transactions,public.customers,public.debts,public.debt_payments TO authenticated;
 CREATE POLICY business_orders ON public.transactions FOR SELECT TO authenticated USING (
-  pos_security.business_manager() OR (cashier_id=pos_security.business_admin_id() AND deleted_at IS NULL AND pos_security.business_book(book_id)));
+  pos_security.business_manager() OR (cashier_id IS NOT NULL AND deleted_at IS NULL AND pos_security.business_book(book_id)));
 CREATE POLICY business_orders_insert ON public.transactions FOR INSERT TO authenticated WITH CHECK (
   pos_security.business_manager() OR (cashier_id=pos_security.business_admin_id() AND deleted_at IS NULL
     AND pos_security.business_book(book_id) AND (customer_id IS NULL OR pos_security.business_customer(customer_id))));
@@ -297,8 +296,9 @@ BEGIN
       OR EXISTS (SELECT 1 FROM public.debt_payments p JOIN public.debts x ON x.id=p.debt_id
         WHERE (p.invoice_no=NEW.invoice_no OR x.transaction_id=NEW.id) AND
           (x.transaction_id IS DISTINCT FROM NEW.id OR x.invoice_no IS DISTINCT FROM NEW.invoice_no
-            OR p.invoice_no IS DISTINCT FROM NEW.invoice_no OR p.customer_id IS DISTINCT FROM NEW.customer_id
-            OR p.book_id IS DISTINCT FROM NEW.book_id)) THEN
+            OR p.invoice_no IS DISTINCT FROM NEW.invoice_no
+            OR (p.customer_id IS NOT NULL AND p.customer_id IS DISTINCT FROM NEW.customer_id)
+            OR (p.book_id IS NOT NULL AND p.book_id IS DISTINCT FROM NEW.book_id))) THEN
       RAISE EXCEPTION 'inconsistent invoice binding' USING ERRCODE='42501';
     END IF;
     RETURN NEW;
@@ -334,8 +334,9 @@ BEGIN
   IF EXISTS (SELECT 1 FROM public.debts x WHERE x.id<>d.id AND
     (x.invoice_no=canonical OR (d.transaction_id IS NOT NULL AND x.transaction_id=d.transaction_id)))
     OR EXISTS (SELECT 1 FROM public.debt_payments p WHERE p.debt_id=d.id AND
-      (p.invoice_no IS DISTINCT FROM canonical OR p.customer_id IS DISTINCT FROM d.customer_id
-        OR p.book_id IS DISTINCT FROM d.book_id)) THEN
+      (p.invoice_no IS DISTINCT FROM canonical
+        OR (p.customer_id IS NOT NULL AND p.customer_id IS DISTINCT FROM d.customer_id)
+        OR (p.book_id IS NOT NULL AND p.book_id IS DISTINCT FROM d.book_id))) THEN
     RAISE EXCEPTION 'inconsistent invoice binding' USING ERRCODE='42501';
   END IF;
   IF TG_TABLE_NAME='debts' THEN

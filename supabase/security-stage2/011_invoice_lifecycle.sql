@@ -165,7 +165,9 @@ BEGIN
   IF cash IS DISTINCT FROM p_paid OR revenue IS DISTINCT FROM p_revenue OR receivable IS DISTINCT FROM p_remaining
     OR liability IS DISTINCT FROM p_refund THEN RAISE EXCEPTION 'invoice balances require reconciliation' USING ERRCODE='23514'; END IF;
   IF EXISTS(SELECT 1 FROM public.cash_movements m WHERE m.invoice_no=t.invoice_no AND
-    (m.direction IS NULL OR m.direction NOT IN ('in','out') OR m.method IS NULL OR m.method NOT IN ('cash','transfer','qris')
+    (m.direction IS NULL OR m.direction NOT IN ('in','out') OR m.method IS NULL OR
+      (m.method NOT IN ('cash','transfer','qris') AND NOT
+        (m.method='hutang' AND m.source_type='sale' AND m.source_id=t.id AND t.payment_method='hutang'))
       OR m.amount IS NULL OR m.amount<0 OR m.amount::text IN ('NaN','Infinity','-Infinity'))) THEN
     RAISE EXCEPTION 'invoice cash history mismatch' USING ERRCODE='23514'; END IF;
   IF (SELECT coalesce(sum(CASE WHEN direction='in' THEN amount ELSE -amount END),0)
@@ -192,9 +194,50 @@ END $$;
 
 CREATE FUNCTION pos_security.invoice_verify_original_receipts(p_order uuid,p_debt uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
-DECLARE t public.transactions; expected jsonb; actual jsonb;
+DECLARE t public.transactions; expected jsonb; actual jsonb; expected_postings integer; expected_cash integer;
 BEGIN
   SELECT * INTO STRICT t FROM public.transactions WHERE id=p_order;
+  -- Legacy installments were folded into the sale's paid/DP fields. The
+  -- historical payment rows carry context, but have no separate cash posting.
+  IF t.payment_method='hutang' AND t.dp=t.paid THEN
+    expected_cash:=CASE WHEN t.paid>0 THEN 1 ELSE 0 END;
+    expected_postings:=(CASE WHEN t.total>0 THEN 1 ELSE 0 END)
+      +(CASE WHEN t.remaining>0 THEN 1 ELSE 0 END)
+      +(CASE WHEN t.paid>0 THEN 1 ELSE 0 END);
+    IF t.created_at IS NULL OR t.paid IS NULL OR t.paid<0 OR t.paid>t.total OR
+      EXISTS(SELECT 1 FROM public.debt_payments p WHERE (p.invoice_no=t.invoice_no OR p.debt_id=p_debt)
+        AND (p.invoice_no=t.invoice_no AND p.debt_id=p_debt
+          AND (p.customer_id IS NULL OR p.customer_id IS NOT DISTINCT FROM t.customer_id)
+          AND (p.book_id IS NULL OR p.book_id IS NOT DISTINCT FROM t.book_id)
+          AND p.deleted_at IS NULL AND p.paid_at IS NOT NULL
+          AND p.amount>0 AND p.amount=trunc(p.amount) AND p.amount::text NOT IN ('NaN','Infinity','-Infinity')
+          AND p.payment_method IN ('cash','transfer','qris')) IS NOT TRUE) THEN
+      RAISE EXCEPTION 'historical aggregate metadata mismatch' USING ERRCODE='23514'; END IF;
+    IF (SELECT count(*) FROM public.cash_movements m WHERE m.invoice_no=t.invoice_no OR m.source_id=t.id OR
+      m.source_id IN (SELECT p.id FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=p_debt))
+      <> expected_cash OR
+      EXISTS(SELECT 1 FROM public.cash_movements m WHERE (m.invoice_no=t.invoice_no OR m.source_id=t.id OR
+        m.source_id IN (SELECT p.id FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=p_debt))
+        AND (m.source_type='sale' AND m.source_id=t.id AND m.invoice_no=t.invoice_no
+          AND m.moved_at=t.created_at AND m.direction='in' AND m.method='hutang' AND m.amount=t.paid
+          AND m.cashier_id IS NOT DISTINCT FROM t.cashier_id) IS NOT TRUE) THEN
+      RAISE EXCEPTION 'historical aggregate cash mismatch' USING ERRCODE='23514'; END IF;
+    IF (SELECT count(*) FROM public.accounting_entries e WHERE e.invoice_no=t.invoice_no OR e.source_id=t.id OR
+      e.source_id IN (SELECT p.id FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=p_debt))
+      <> expected_postings OR
+      EXISTS(SELECT 1 FROM public.accounting_entries e WHERE (e.invoice_no=t.invoice_no OR e.source_id=t.id OR
+        e.source_id IN (SELECT p.id FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=p_debt))
+        AND (e.source_type='sale' AND e.source_id=t.id AND e.invoice_no=t.invoice_no
+          AND e.cashier_id IS NOT DISTINCT FROM t.cashier_id AND
+          ((t.total>0 AND e.account_code='4000' AND e.debit=0 AND e.credit=t.total)
+            OR (t.remaining>0 AND e.account_code='1200' AND e.debit=t.remaining AND e.credit=0)
+            OR (t.paid>0 AND e.account_code='1000' AND e.debit=t.paid AND e.credit=0))) IS NOT TRUE) THEN
+      RAISE EXCEPTION 'historical aggregate journal mismatch' USING ERRCODE='23514'; END IF;
+    IF (SELECT count(DISTINCT e.account_code) FROM public.accounting_entries e
+      WHERE e.source_type='sale' AND e.source_id=t.id) <> expected_postings THEN
+      RAISE EXCEPTION 'historical aggregate journal mismatch' USING ERRCODE='23514'; END IF;
+    RETURN;
+  END IF;
   IF t.created_at IS NULL OR t.dp IS NULL OR t.dp<0 OR t.dp<>trunc(t.dp) OR t.dp>t.total
     OR (t.dp>0 AND (t.payment_method IN ('cash','transfer','qris')) IS NOT TRUE)
     OR EXISTS(SELECT 1 FROM public.debt_payments p WHERE (p.invoice_no=t.invoice_no OR p.debt_id=p_debt) AND
@@ -277,7 +320,7 @@ BEGIN
   IF current_setting('transaction_isolation')<>'read committed' THEN RAISE EXCEPTION 'isolation unsupported' USING ERRCODE='25000'; END IF;
   PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('skupy:business-invoice-binding:v1',0));
   SELECT * INTO t FROM public.transactions WHERE id=p_invoice_id FOR UPDATE;
-  IF NOT FOUND OR (pos_security.business_manager() OR (t.cashier_id=actor.id AND pos_security.business_book(t.book_id))) IS NOT TRUE THEN
+  IF NOT FOUND OR (pos_security.business_manager() OR (t.cashier_id IS NOT NULL AND pos_security.business_book(t.book_id))) IS NOT TRUE THEN
     RAISE EXCEPTION 'invoice access denied' USING ERRCODE='42501'; END IF;
   IF op.result IS NOT NULL THEN RETURN op.result; END IF;
   IF t.version<>p_expected_version THEN RAISE EXCEPTION 'invoice changed; refresh before retry'
@@ -310,7 +353,8 @@ BEGIN
   IF s.order_id IS NULL THEN
     IF t.remaining<>greatest(0,t.total-t.paid) OR t.paid>t.total OR t.dp IS NULL
       OR EXISTS(SELECT 1 FROM public.debt_payments p WHERE (p.invoice_no=t.invoice_no OR p.debt_id=d.id) AND p.deleted_at IS NOT NULL)
-      OR t.dp+coalesce((SELECT sum(p.amount) FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=d.id),0)<>t.paid THEN
+      OR (t.payment_method<>'hutang' AND t.dp+coalesce((SELECT sum(p.amount) FROM public.debt_payments p WHERE p.invoice_no=t.invoice_no OR p.debt_id=d.id),0)<>t.paid)
+      OR (t.payment_method='hutang' AND t.dp<>t.paid) THEN
       RAISE EXCEPTION 'historical receipt totals mismatch' USING ERRCODE='23514'; END IF;
     PERFORM pos_security.invoice_verify_original_receipts(t.id,d.id);
     INSERT INTO pos_security.invoice_states(order_id,invoice_no,original_snapshot) VALUES(t.id,t.invoice_no,to_jsonb(t)) RETURNING * INTO s;

@@ -334,11 +334,12 @@ test('invalid sessions see no rows in all 41 business tables; owner JWT does not
   await denied(as(db, 'owner', `INSERT INTO public.products(name) VALUES ('no session')`, [], { session_id: null }))
 })
 
-test('customer PIC can read assigned debt but cannot acquire another cashiers order or reparent records', async t => {
+test('book cashier can read a coworkers order but cannot claim it or reparent records', async t => {
   const db = await setup(t)
   await db.exec(`UPDATE public.transactions SET cashier_id='${users.other.id}' WHERE id='${order}'`)
-  assert.deepEqual(await ids(db, 'staff', 'transactions'), [])
+  assert.deepEqual(await ids(db, 'staff', 'transactions'), [order])
   assert.deepEqual(await ids(db, 'staff', 'debts'), [debt])
+  await denied(as(db, 'staff', 'UPDATE public.transactions SET cashier_id=$1 WHERE id=$2', [users.staff.id, order]))
   await as(db, 'staff', 'INSERT INTO public.debt_payments(debt_id,amount) VALUES ($1,10)', [debt])
   const payment = (await ids(db, 'staff', 'debt_payments'))[0]
   assert.ok(payment)
