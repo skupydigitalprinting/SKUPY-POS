@@ -72,3 +72,23 @@ test('logout requests local session revocation and reports failure', async () =>
   const failed = createPosAuth({ auth: { signOut: async () => ({ error: new Error('offline') }) } })
   assert.equal((await failed.signOut()).ok, false)
 })
+
+test('a signed-out tab does not broadcast another sign-out while restoring or logging in', async () => {
+  let signOutCalls = 0
+  const service = createPosAuth({ auth: {
+    getSession: async () => ({ data: { session: null }, error: null }),
+    signOut: async () => { signOutCalls++; return { error: null } },
+  } }, { bindSession: true })
+  assert.deepEqual(await service.signOut(), { ok: true })
+  assert.equal(signOutCalls, 0)
+})
+
+test('a bound tab with an active session still revokes its local refresh token', async () => {
+  const calls = []
+  const service = createPosAuth({ auth: {
+    getSession: async () => ({ data: { session: { access_token: 'test-token' } }, error: null }),
+    signOut: async options => { calls.push(options); return { error: null } },
+  } }, { bindSession: true })
+  assert.deepEqual(await service.signOut(), { ok: true })
+  assert.deepEqual(calls, [{ scope: 'local' }])
+})

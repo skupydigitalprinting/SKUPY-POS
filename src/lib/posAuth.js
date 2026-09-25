@@ -12,6 +12,11 @@ export function createPosAuth(client, { fetchImpl = globalThis.fetch, bindSessio
 
   async function signOut() {
     try {
+      if (bindSession) {
+        const current = await client.auth.getSession()
+        if (current.error) return { ok: false, error: 'Keluar akun belum berhasil. Silakan coba lagi.' }
+        if (!current.data?.session?.access_token) return { ok: true }
+      }
       const { error } = await client.auth.signOut({ scope: 'local' })
       return error ? { ok: false, error: 'Keluar akun belum berhasil. Silakan coba lagi.' } : { ok: true }
     } catch {
