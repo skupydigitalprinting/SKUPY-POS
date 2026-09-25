@@ -427,6 +427,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
   const [payId, setPayId] = useState(null); const [payVal, setPayVal] = useState(''); const [payMethod, setPayMethod] = useState('transfer'); const [payNote, setPayNote] = useState('')
   // Hutang Supplier dikelompokkan per supplier
   const [supDetailName, setSupDetailName] = useState(null) // nama supplier (buka modal detail)
+  const [supDetailTab, setSupDetailTab] = useState('notes')
   const [supHist, setSupHist] = useState([]); const [supHistLoading, setSupHistLoading] = useState(false)
   const [expandNote, setExpandNote] = useState(null) // id nota yang riwayatnya dibuka
   const [fifoSup, setFifoSup] = useState(null) // nama supplier (buka modal Bayar FIFO)
@@ -877,7 +878,7 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
     const r = await acc.listSupplierPaymentsBySupplier(name)
     setSupHist(r.ok ? r.data : []); setSupHistLoading(false)
   }
-  const openSupDetail = (name) => { setSupDetailName(name); setSupHist([]); loadSupHist(name) }
+  const openSupDetail = (name) => { setSupDetailTab('notes'); setSupDetailName(name); setSupHist([]); loadSupHist(name) }
   const refreshSupAll = async (name) => { await loadSupDebts(); await loadDashboard(); if (name) loadSupHist(name) }
   // Preview distribusi FIFO untuk modal Bayar Gabungan
   const fifoPreview = useMemo(() => {
@@ -3022,12 +3023,25 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
         {supDetail && (
           <div className="space-y-3">
             {/* Ringkasan */}
+            <div className="sticky -top-5 z-10 -mt-5 pt-5 pb-3 space-y-3" style={{ background: 'var(--bg-elevated)' }}>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Total Hutang</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{fmt(supDetail.total)}</div></div>
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sudah Bayar</div><div className="text-sm font-bold truncate" style={{ color: '#10d98a' }}>{fmt(supDetail.paid)}</div></div>
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Sisa</div><div className="text-sm font-bold truncate" style={{ color: supDetail.remaining > 0 ? '#ef4444' : '#10d98a' }}>{fmt(supDetail.remaining)}</div></div>
               <div className="rounded-xl p-3 min-w-0" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}><div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>Jumlah Nota</div><div className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{supDetail.count}</div></div>
             </div>
+            <div role="tablist" aria-label="Detail hutang supplier" className="grid grid-cols-2 gap-2" style={{ borderBottom: '1px solid var(--border)' }}>
+              {[['notes', 'Daftar Hutang'], ['payments', 'Riwayat Pembayaran']].map(([id, label]) => (
+                <button key={id} id={`supplier-tab-${id}`} role="tab" aria-selected={supDetailTab === id} aria-controls={`supplier-panel-${id}`}
+                  onClick={event => { setSupDetailTab(id); event.currentTarget.closest('.overflow-y-auto')?.scrollTo({ top: 0 }) }}
+                  className="min-w-0 py-3 text-xs font-semibold"
+                  style={{ color: supDetailTab === id ? 'var(--accent-light)' : 'var(--text-secondary)', borderBottom: `2px solid ${supDetailTab === id ? 'var(--accent-light)' : 'transparent'}` }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            </div>
+            <div id="supplier-panel-notes" role="tabpanel" aria-labelledby="supplier-tab-notes" hidden={supDetailTab !== 'notes'} className="space-y-3">
             {supDetail.remaining > 0 && (
               <button onClick={() => { setSupDetailName(null); openFifo(supDetail.supplier) }} className="w-full h-10 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-1.5 btn-press" style={{ background: 'linear-gradient(135deg,#10d98a,#059669)', color: '#fff', fontFamily: 'Syne' }}><Wallet size={15} /> Bayar Gabungan FIFO</button>
             )}
@@ -3090,7 +3104,8 @@ export default function Accounting({ admins = [], currentUser, setActivePage, in
             </div>
 
             {/* Riwayat pembayaran (gabungan semua nota) */}
-            <div>
+            </div>
+            <div id="supplier-panel-payments" role="tabpanel" aria-labelledby="supplier-tab-payments" hidden={supDetailTab !== 'payments'}>
               <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pembayaran</div>
               {supHistLoading ? <div className="flex justify-center py-4"><Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
               : supHist.length === 0 ? <p className="text-[11px] text-center py-3" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran</p>
