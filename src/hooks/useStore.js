@@ -2273,10 +2273,16 @@ export function useStore(verifiedSession = null) {
   }), [debts, activeBookId, wrap, containPayment, destructivePaymentCheck, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const getDebtPayments = useCallback(async (debtId) => {
-    const { data, error: e } = await supabase
-      .from('debt_payments').select('*').eq('debt_id', debtId).is('deleted_at', null).order('paid_at', { ascending: true })
-    if (e) return { ok: false, error: e.message, data: [] }
-    return { ok: true, data: data || [] }
+    const rows = []
+    const pageSize = 500
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error: e } = await supabase
+        .from('debt_payments').select('*').eq('debt_id', debtId).is('deleted_at', null)
+        .order('paid_at', { ascending: true }).order('id', { ascending: true }).range(offset, offset + pageSize - 1)
+      if (e) return { ok: false, error: e.message, data: [] }
+      rows.push(...(data || []))
+      if (!data || data.length < pageSize) return { ok: true, data: rows }
+    }
   }, [])
 
   // Preflight every linked balance before changing history. Delta preserves the

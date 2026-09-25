@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
 import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import ReceivablePaymentHistory from '../components/ReceivablePaymentHistory'
 import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
@@ -76,6 +77,8 @@ export default function Piutang({
   const canSeeAllPics = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [selectedPicKey, setSelectedPicKey] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null)  // group
+  const [detailTab, setDetailTab] = useState('invoices')
+  useEffect(() => { setDetailTab('invoices') }, [detailTarget])
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('transfer')
@@ -640,6 +643,15 @@ export default function Piutang({
           const g = liveGroup(detailTarget)
           return (
             <div className="space-y-4">
+              <div role="tablist" aria-label="Detail piutang" className="flex gap-4" style={{ borderBottom: '1px solid var(--border)' }}>
+                {[['invoices', 'Daftar Nota'], ['payments', 'Riwayat Pembayaran']].map(([id, label]) => <button
+                  key={id} role="tab" aria-selected={detailTab === id} aria-controls={`receivable-${id}`} id={`receivable-tab-${id}`}
+                  onClick={() => setDetailTab(id)} className="py-3 text-sm font-semibold"
+                  style={{ color: detailTab === id ? 'var(--accent-light)' : 'var(--text-secondary)', borderBottom: `2px solid ${detailTab === id ? 'var(--accent-light)' : 'transparent'}` }}>{label}</button>)}
+              </div>
+              {detailTab === 'payments' ? <div role="tabpanel" id="receivable-payments" aria-labelledby="receivable-tab-payments">
+                <ReceivablePaymentHistory invoices={g.invoices} getDebtPayments={getDebtPayments} openInvoice={openInvoice} />
+              </div> : <div role="tabpanel" id="receivable-invoices" aria-labelledby="receivable-tab-invoices" className="space-y-4">
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
                   <thead>
@@ -717,6 +729,7 @@ export default function Piutang({
                   <Wallet size={14} /> Bayar Gabungan
                 </Button>
               )}
+              </div>}
             </div>
           )
         })()}

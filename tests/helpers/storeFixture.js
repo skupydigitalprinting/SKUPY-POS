@@ -56,7 +56,7 @@ export async function storeFixture(secure, run, initialTransactions, options = {
               if (script.length) response = script.shift();
               return (response instanceof Error ? Promise.reject(response) : Promise.resolve(response)).then(resolve, reject);
             } };
-            for (const method of ['select','insert','update','delete','eq','is','in','order','limit','single','maybeSingle']) {
+            for (const method of ['select','insert','update','delete','eq','is','in','order','limit','range','single','maybeSingle']) {
               query[method] = (...args) => { const step = { table, method, args }; calls.push(step); steps.push(step); return query };
             }
             return query;

@@ -92,6 +92,7 @@ async function audit(options, run) {
       for (const step of request.steps) {
         if (step.method === 'order') rows.sort((a, b) => String(a[step.args[0]]).localeCompare(String(b[step.args[0]])) * (step.args[1]?.ascending === false ? -1 : 1))
         if (step.method === 'limit') rows = rows.slice(0, step.args[0])
+        if (step.method === 'range') rows = rows.slice(step.args[0], step.args[1] + 1)
       }
       if (request.steps.some(s => ['single', 'maybeSingle'].includes(s.method))) {
         assert.ok(rows.length <= 1, 'Synthetic single-row lookup must not be ambiguous')
@@ -749,6 +750,16 @@ for (const action of ['payment', 'editDebtPayment', 'deleteDebtPayment', 'delete
     assert.deepEqual(db, before)
   }))
 }
+test('displayed debt history loads more than one page without writes', () => audit({ correction: true, prepare(db) {
+  const base = db.debt_payments[0]
+  db.debt_payments = Array.from({ length: 1001 }, (_, i) => ({ ...base, id: `p${String(i).padStart(4, '0')}` }))
+} }, async ({ store, events }) => {
+  const result = await store.getDebtPayments('d1')
+  assert.equal(result.ok, true)
+  assert.equal(result.data.length, 1001)
+  assert.equal(new Set(result.data.map(row => row.id)).size, 1001)
+  assert.equal(writes(events).length, 0)
+}))
 test('displayed debt history excludes soft-deleted receipts', () => audit({ correction: true, prepare(db) {
   db.debt_payments.push({ ...db.debt_payments[0], id: 'deleted', amount: 90000, deleted_at: '2026-09-01' })
 } }, async ({ store, events }) => {
