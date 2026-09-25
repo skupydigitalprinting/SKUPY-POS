@@ -1,6 +1,5 @@
 import React, { useState } from 'react'
 import { LogIn, User, Lock, Eye, EyeOff, AlertCircle, Check } from 'lucide-react'
-import Logo from '../components/Logo'
 
 export default function Login({ login, storeInfo, busy, authError = '' }) {
   const [username, setUsername] = useState('')
@@ -54,7 +53,14 @@ export default function Login({ login, storeInfo, busy, authError = '' }) {
         >
           {/* Logo */}
           <div className="flex flex-col items-center mb-6">
-            <Logo size={72} customSrc={storeInfo?.frontLogo} />
+            <img
+              src="/skupy-login-logo.png"
+              alt="Skupy"
+              width={240}
+              height={104}
+              className="max-w-full rounded-lg object-cover"
+              style={{ width: 240, height: 'auto', aspectRatio: '240 / 104' }}
+            />
             <h1
               className="font-bold text-2xl mt-4 text-center"
               style={{ fontFamily: 'Syne', color: 'var(--text-primary)' }}
