@@ -303,7 +303,7 @@ test('events raised by an owned verification do not create a revalidation loop',
   assert.equal(controller.getSnapshot().phase, 'ready')
 })
 
-test('external sign-out immediately disables data, defers SDK cleanup, and ignores its own sign-out events', async () => {
+test('external sign-out immediately disables data and clears credentials without echoing logout', async () => {
   for (const event of ['SIGNED_OUT', 'SIGN_OUT']) {
     let logouts = 0
     let locked = false
@@ -335,7 +335,7 @@ test('external sign-out immediately disables data, defers SDK cleanup, and ignor
     locked = false
     await nextTurn()
     await nextTurn()
-    assert.equal(logouts, 1)
+    assert.equal(logouts, 0)
     assert.equal(clears, 1)
     assert.equal(controller.getSnapshot().phase, 'signedOut')
   }
@@ -516,9 +516,38 @@ test('cross-tab SIGNED_OUT broadcasts stop once both tabs finish cleanup', async
     for (const index of deliveries.splice(0)) tabs[index].handleAuthEvent('SIGNED_OUT')
     await nextTurn()
   }
-  assert.deepEqual(logouts, [1, 1])
+  assert.deepEqual(logouts, [1, 0])
   assert.deepEqual(deliveries, [])
   assert.ok(tabs.every(tab => tab.getSnapshot().phase === 'signedOut'))
+})
+
+test('a second tab does not echo sign-out into another tab signing in', async () => {
+  const deliveries = []
+  const loginStarted = deferred()
+  const loginGate = deferred()
+  const logouts = [0, 0]
+  const tabs = [0, 1].map(index => createAuthSessionController({
+    auth: {
+      restore: async () => verified(staff),
+      signInUsername: async () => { loginStarted.resolve(); return loginGate.promise },
+      signOut: async () => {
+        logouts[index]++
+        deliveries.push(1 - index)
+        return { ok: true }
+      },
+    },
+  }))
+  await tabs[1].restore()
+  const login = tabs[0].signIn('kasir', 'password')
+  await loginStarted.promise
+  for (const index of deliveries.splice(0)) tabs[index].handleAuthEvent('SIGNED_OUT')
+  await nextTurn()
+  for (const index of deliveries.splice(0)) tabs[index].handleAuthEvent('SIGNED_OUT')
+  loginGate.resolve(verified(staff))
+  assert.equal((await login).ok, true)
+  assert.equal(tabs[0].getSnapshot().phase, 'ready')
+  assert.equal(tabs[1].getSnapshot().phase, 'signedOut')
+  assert.deepEqual(logouts, [1, 0])
 })
 
 test('redundant external sign-outs preserve the settled signed-out snapshot and error', async () => {
@@ -539,7 +568,7 @@ test('external sign-out still cleans up from initial checking before restore sta
   assert.equal(controller.getSnapshot().phase, 'signedOut')
   assert.deepEqual(calls, [['invalidate']])
   await nextTurn()
-  assert.deepEqual(calls, [['invalidate'], ['logout'], ['clear']])
+  assert.deepEqual(calls, [['invalidate'], ['clear']])
 })
 
 test('external sign-out cancels pending verification even from a signed-out snapshot', async () => {
@@ -610,7 +639,7 @@ test('real adapter 401 preserves credential denial despite its internal SDK sign
   assert.equal(phases.includes('ready'), false)
   assert.equal(tokens, null)
   assert.equal(clears, 2)
-  assert.equal(logouts, 3)
+  assert.equal(logouts, 2)
   assert.equal(controller.getSnapshot().phase, 'signedOut')
   assert.equal(controller.getSnapshot().user, null)
 })

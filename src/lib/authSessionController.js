@@ -56,11 +56,11 @@ export function createAuthSessionController({
     return next
   }
 
-  async function cleanup() {
-    let result
+  async function cleanup(external = false) {
+    let result = { ok: true }
     signingOut = true
     try {
-      result = await auth.signOut()
+      if (!external) result = await auth.signOut()
     } catch {
       result = failure(null, CLEANUP_ERROR)
     } finally {
@@ -164,9 +164,9 @@ export function createAuthSessionController({
     return current
   }
 
-  function completeSignOut(current) {
+  function completeSignOut(current, external = false) {
     return enqueue(async () => {
-      const cleaned = await cleanup()
+      const cleaned = await cleanup(external)
       if (!cleaned.ok) return block(cleaned)
       if (current !== generation) return cancelled()
       cleanupRequired = false
@@ -191,7 +191,7 @@ export function createAuthSessionController({
       const current = beginSignOut()
       eventTimer = setTimeout(() => {
         eventTimer = null
-        if (current === generation) void completeSignOut(current)
+        if (current === generation) void completeSignOut(current, true)
       }, 0)
       return
     }
