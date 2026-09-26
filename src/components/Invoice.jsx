@@ -870,7 +870,7 @@ export default function Invoice({ transaction: t, onClose, storeInfo, autoShare 
                           whiteSpace: 'nowrap',
                           fontVariantNumeric: 'tabular-nums',
                         }}>
-                          {formatRupiah(t.dp || t.paid || 0)}
+                          {formatRupiah(t.paid ?? t.dp ?? 0)}
                         </span>
                       </div>
 
