@@ -14,6 +14,9 @@ test('login never advertises shared default credentials and remember-me is opt-i
     assert.equal(html.includes('Default Login'), false)
     assert.equal(html.includes('aria-checked="false"'), true)
     assert.ok(html.includes('MASUK'))
+    assert.match(html, /src="\/skupy-login-mark.png"/)
+    assert.match(html, /width="104" height="128" class="max-w-full object-contain"/)
+    assert.equal(html.includes('/skupy-login-logo.png'), false)
   } finally { await vite.close() }
 })
 

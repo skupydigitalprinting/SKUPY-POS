@@ -54,12 +54,12 @@ export default function Login({ login, storeInfo, busy, authError = '' }) {
           {/* Logo */}
           <div className="flex flex-col items-center mb-6">
             <img
-              src="/skupy-login-logo.png"
+              src="/skupy-login-mark.png"
               alt="Skupy"
-              width={240}
-              height={104}
-              className="max-w-full rounded-lg object-cover"
-              style={{ width: 240, height: 'auto', aspectRatio: '240 / 104' }}
+              width={104}
+              height={128}
+              className="max-w-full object-contain"
+              style={{ width: 104, height: 128 }}
             />
             <h1
               className="font-bold text-2xl mt-4 text-center"
