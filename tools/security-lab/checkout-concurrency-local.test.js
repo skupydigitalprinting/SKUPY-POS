@@ -7,7 +7,7 @@ const options = { skip: process.env.SKUPY_RUN_LOCAL_PAYMENT_TESTS !== '1', timeo
 async function checkout(run) {
   await fixture(async h => {
     h.sql("INSERT INTO accounts(code,name,type,normal) VALUES('2195','Synthetic customer refunds','liability','credit')")
-    for (const file of ['011_invoice_lifecycle.sql', '013_atomic_checkout.sql']) {
+    for (const file of ['011_invoice_lifecycle.sql', '013_atomic_checkout.sql', '015_daily_invoice_numbers.sql']) {
       h.sql(await readFile(new URL(`../../supabase/security-stage2/${file}`, import.meta.url), 'utf8'))
     }
     h.sql(`INSERT INTO pos_security.invoice_account_config VALUES(true,'2195');
@@ -38,6 +38,21 @@ test('checkout PostgreSQL: simultaneous same-ID submissions commit one sale and 
   assert.equal(h.sql(`SELECT sum(amount) FROM cash_movements WHERE source_id='${invoice.id}'`), '50000')
   const recovered = await h.asActor(cashier, 'recover', `SELECT pos_checkout_status('${op}');`)
   assert.deepEqual(JSON.parse(recovered.stdout), JSON.parse(results[0].stdout))
+}))
+
+test('checkout PostgreSQL: different concurrent sales receive distinct consecutive daily numbers', options, async () => checkout(async h => {
+  const results = await h.gate("SELECT pg_advisory_xact_lock(hashtextextended('skupy:business-invoice-binding:v1',0));", async () => {
+    const jobs = Array.from({ length: 6 }, (_, i) => h.submit(id(990 + i), `number_${i}`))
+    await h.waitBlocked(Array.from({ length: 6 }, (_, i) => `number_${i}`))
+    return jobs
+  })
+  results.forEach(result => assert.equal(result.ok, true, result.stderr))
+  const numbers = results.map(result => JSON.parse(result.stdout).result.invoice_no)
+  numbers.forEach(number => assert.match(number, /^SKP-INV-\d{8}-\d{4,}$/))
+  assert.equal(new Set(numbers).size, 6)
+  const suffixes = numbers.map(number => Number(number.split('-').at(-1))).sort((a,b) => a-b)
+  assert.deepEqual(suffixes, Array.from({ length: 6 }, (_, i) => suffixes[0] + i))
+  assert.equal(h.sql('SELECT count(*) FROM pos_security.checkout_operations'), '6')
 }))
 
 test('checkout PostgreSQL: competing payloads cannot replace a committed operation', options, async () => checkout(async h => {

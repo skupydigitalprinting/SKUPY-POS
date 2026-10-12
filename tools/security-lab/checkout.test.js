@@ -11,6 +11,7 @@ async function setup(t) {
   const db = await fixture(t, { paid: 0 })
   await db.query("INSERT INTO products(id,name,price,stock,unit) VALUES ($1,'Custom shirt',100000,0,'pcs')", [product])
   await db.exec(await readFile(new URL('../../supabase/security-stage2/013_atomic_checkout.sql', import.meta.url), 'utf8'))
+  await db.exec(await readFile(new URL('../../supabase/security-stage2/015_daily_invoice_numbers.sql', import.meta.url), 'utf8'))
   return db
 }
 const submit = async (db, request = draft(), op = operation, actor = 'cashier', role = 'authenticated') =>

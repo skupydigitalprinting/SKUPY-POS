@@ -9,6 +9,7 @@ async function setup(t, failure) {
   const db = await fixture(t, { paid: 0 })
   await db.query("INSERT INTO products(id,name,price,stock,unit) VALUES ($1,'Custom shirt',100000,0,'pcs')", [id(990)])
   await db.exec(await readFile(new URL('../../supabase/security-stage2/013_atomic_checkout.sql', import.meta.url), 'utf8'))
+  await db.exec(await readFile(new URL('../../supabase/security-stage2/015_daily_invoice_numbers.sql', import.meta.url), 'utf8'))
   const request = { bookId: book, customerId: customer, customerName: 'Synthetic customer',
     items: [{ productId: id(990), name: 'Custom shirt', price: 100000, qty: 2, unit: 'pcs' }],
     paid: 50000, discount: 0, method: 'transfer', notes: '', dueDate: '2026-10-01' }
