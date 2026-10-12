@@ -351,6 +351,9 @@ function AppShell({ verifiedSession = null }) {
       deleteCustomer={store.deleteCustomer}
     />,
     piutang: <Piutang
+      invoiceWorkflow={verifiedSession ? store.invoiceWorkflow : undefined}
+      pendingInvoiceChanges={store.pendingInvoiceChanges}
+      products={store.products}
       debts={scopedDebts}
       customers={scopedCustomers}
       transactions={scopedTransactions}

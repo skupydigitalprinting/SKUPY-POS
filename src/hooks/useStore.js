@@ -2247,6 +2247,10 @@ export function useStore(verifiedSession = null) {
   }), [activeBookId, processDebtPayment, refreshTransactions, refreshDebts, refreshCustomers, refreshDebtPayments, wrap])
 
   const deleteDebt = useCallback(async (id) => wrap(async () => {
+    if (secureAuthEnabled) return {
+      ok: false, code: 'INVOICE_WORKFLOW_REQUIRED',
+      error: 'Gunakan Hapus Invoice agar invoice dan piutang diperbarui bersama.',
+    }
     const debt = debts.find(d => d.id === id)
     return containPayment([`debt:${id}`, debt?.invoiceNo && `invoice:${debt.invoiceNo}`,
       debt?.customerId && `customer:${debt.customerId}`], async ({ guard, write }) => {

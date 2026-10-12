@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
 import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import InvoiceWorkflowDialog from '../components/InvoiceWorkflowDialog'
 import ReceivablePaymentHistory from '../components/ReceivablePaymentHistory'
 import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
@@ -43,6 +44,7 @@ export default function Piutang({
   payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
   reassignReceivableCustomer, getReceivableCustomerChanges,
   paymentWorkflow, pendingPayments = [], invoiceRevision,
+  invoiceWorkflow, pendingInvoiceChanges = [], products = [],
 }) {
   const toast = useToast()
   const { openInvoice } = useInvoicePreview()
@@ -92,6 +94,7 @@ export default function Piutang({
   const [deleting, setDeleting] = useState(false)
   const deletionPending = useRef(false)
   const [delTarget, setDelTarget] = useState(null)        // single debt
+  const [invoiceAction, setInvoiceAction] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null) // group
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -287,7 +290,23 @@ export default function Piutang({
     } finally { paymentPending.current = false; setPaying(false) }
   }
 
+  const openDelete = (debt) => {
+    if (invoiceWorkflow) {
+      const matches = transactions.filter(t => debt.invoiceNo && t.invoiceNo === debt.invoiceNo)
+      const invoiceId = debt.transactionId || (matches.length === 1 ? matches[0].id : null)
+      if (!invoiceId) {
+        toast.error('Piutang ini belum memiliki invoice terkait yang dapat dihapus. Periksa data invoice terlebih dahulu.')
+        return
+      }
+      setDetailTarget(null)
+      setInvoiceAction({ id: invoiceId, mode: 'delete' })
+    } else if (secureAuthEnabled) {
+      toast.error('Sesi invoice belum siap. Muat ulang halaman dan login kembali sebelum menghapus.')
+    } else setDelTarget(debt)
+  }
+
   const handleDelete = async () => {
+    if (invoiceWorkflow || secureAuthEnabled) return
     if (!delTarget || deletionPending.current || deleteIssues[delTarget.id]?.needsReconciliation) return
     deletionPending.current = true
     setDeleting(true)
@@ -692,7 +711,7 @@ export default function Piutang({
                             <Badge color={lunas ? 'green' : 'amber'}>{lunas ? 'Lunas' : 'Aktif'}</Badge>
                           </td>
                           <td className="px-2 py-2.5 text-right">
-                            <button onClick={() => setDelTarget(d)}
+                            <button onClick={() => openDelete(d)} aria-label={`Hapus invoice ${d.invoiceNo}`}
                               className="w-7 h-7 rounded-lg inline-flex items-center justify-center btn-press"
                               style={{ background: 'rgba(255,77,106,0.08)', color: 'var(--red)', border: '1px solid rgba(255,77,106,0.15)' }}
                               title="Hapus nota">
@@ -932,7 +951,20 @@ export default function Piutang({
       </Modal>
 
       {/* Delete confirm — single nota */}
-      <Modal open={!!delTarget} onClose={() => !deletionPending.current && setDelTarget(null)} title="Hapus Catatan Hutang" size="sm">
+      {invoiceWorkflow && pendingInvoiceChanges.length > 0 && <section className="space-y-2 border-t p-4" aria-label="Permintaan invoice tertunda">
+        <h3 className="text-sm font-semibold">Permintaan invoice tertunda</h3>
+        {pendingInvoiceChanges.map(intent => <Button key={intent.operationId} variant="secondary"
+          onClick={() => {
+            setDetailTarget(null)
+            setInvoiceAction({ id: intent.invoiceId, mode: intent.kind === 'edit' ? 'edit' : 'delete' })
+          }}>
+          Periksa Status Invoice {intent.invoiceId.slice(0, 8)}
+        </Button>)}
+      </section>}
+      {invoiceAction && invoiceWorkflow && <InvoiceWorkflowDialog invoiceId={invoiceAction.id} mode={invoiceAction.mode}
+        workflow={invoiceWorkflow} products={products} onClose={() => setInvoiceAction(null)}
+        onChanged={() => { setDetailTarget(null); setHistoryTarget(null); setPayTarget(null) }} />}
+      <Modal open={!invoiceWorkflow && !secureAuthEnabled && !!delTarget} onClose={() => !deletionPending.current && setDelTarget(null)} title="Hapus Catatan Hutang" size="sm">
         <div className="text-center py-2">
           <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
             style={{ background: 'rgba(255,77,106,0.12)', border: '2px solid rgba(255,77,106,0.3)' }}>
