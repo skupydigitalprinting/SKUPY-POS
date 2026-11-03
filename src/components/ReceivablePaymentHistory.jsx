@@ -6,19 +6,19 @@ import { groupPaymentDays, loadReceivableHistory } from '../utils/receivableHist
 const timeFormat = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' })
 const methods = { cash: 'Tunai', transfer: 'Transfer', qris: 'QRIS', debit: 'Debit', credit: 'Kartu Kredit' }
 
-export default function ReceivablePaymentHistory({ invoices, getDebtPayments, openInvoice }) {
+export default function ReceivablePaymentHistory({ invoices, getDebtPayments, getReceivablePayments, openInvoice }) {
   const [state, setState] = useState({ loading: true, rows: [], error: '' })
   const [attempt, setAttempt] = useState(0)
   const source = JSON.stringify(invoices.map(d => ({ id: d.id, invoiceNo: d.invoiceNo, paid: d.paid })))
   useEffect(() => {
     let active = true
     setState({ loading: true, rows: [], error: '' })
-    loadReceivableHistory(JSON.parse(source), getDebtPayments).then(
+    loadReceivableHistory(JSON.parse(source), getDebtPayments, getReceivablePayments).then(
       rows => { if (active) setState({ loading: false, rows, error: '' }) },
       () => { if (active) setState({ loading: false, rows: [], error: 'Riwayat pembayaran gagal dimuat.' }) },
     )
     return () => { active = false }
-  }, [source, getDebtPayments, attempt])
+  }, [source, getDebtPayments, getReceivablePayments, attempt])
   const days = useMemo(() => groupPaymentDays(state.rows), [state.rows])
   if (state.loading) return <div role="status" className="flex items-center justify-center gap-2 py-8"><Loader2 size={18} className="animate-spin" /> Memuat pembayaran...</div>
   if (state.error) return <div role="alert" className="py-4 space-y-3"><p style={{ color: 'var(--red)' }}>{state.error}</p><button className="inline-flex items-center gap-2" onClick={() => setAttempt(n => n + 1)}><RefreshCw size={16} /> Coba lagi</button></div>

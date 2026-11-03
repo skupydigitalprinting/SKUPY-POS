@@ -41,7 +41,7 @@ function allocateFIFO(invoicesAsc, amount) {
 
 export default function Piutang({
   debts, customers, transactions, admins = [], currentUser,
-  payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
+  payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments, getReceivablePayments,
   reassignReceivableCustomer, getReceivableCustomerChanges,
   paymentWorkflow, pendingPayments = [], invoiceRevision,
   invoiceWorkflow, pendingInvoiceChanges = [], products = [],
@@ -96,8 +96,6 @@ export default function Piutang({
   const [delTarget, setDelTarget] = useState(null)        // single debt
   const [invoiceAction, setInvoiceAction] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null) // group
-  const [history, setHistory] = useState([])
-  const [loadingHistory, setLoadingHistory] = useState(false)
 
   // Riwayat perubahan customer (audit) untuk grup yang dibuka di modal Riwayat.
   useEffect(() => {
@@ -325,18 +323,7 @@ export default function Piutang({
     } finally { deletionPending.current = false; setDeleting(false) }
   }
 
-  const openHistory = async (g) => {
-    setHistoryTarget(g)
-    setLoadingHistory(true)
-    const all = []
-    for (const inv of g.invoices) {
-      const res = await getDebtPayments(inv.id)
-      ;(res.data || []).forEach(p => all.push({ ...p, _invoiceNo: inv.invoiceNo }))
-    }
-    all.sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime())
-    setHistory(all)
-    setLoadingHistory(false)
-  }
+  const openHistory = g => setHistoryTarget(g)
 
   return (
     <div className="flex-1 overflow-y-auto mesh-bg">
@@ -669,7 +656,7 @@ export default function Piutang({
                   style={{ color: detailTab === id ? 'var(--accent-light)' : 'var(--text-secondary)', borderBottom: `2px solid ${detailTab === id ? 'var(--accent-light)' : 'transparent'}` }}>{label}</button>)}
               </div>
               {detailTab === 'payments' ? <div role="tabpanel" id="receivable-payments" aria-labelledby="receivable-tab-payments">
-                <ReceivablePaymentHistory invoices={g.invoices} getDebtPayments={getDebtPayments} openInvoice={openInvoice} />
+                <ReceivablePaymentHistory invoices={g.invoices} getDebtPayments={getDebtPayments} getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} />
               </div> : <div role="tabpanel" id="receivable-invoices" aria-labelledby="receivable-tab-invoices" className="space-y-4">
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
@@ -921,33 +908,10 @@ export default function Piutang({
             </div>
           </div>
         )}
-        {loadingHistory ? (
-          <div className="flex items-center justify-center py-10">
-            <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-light)' }} />
-          </div>
-        ) : history.length === 0 ? (
-          <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pembayaran</p>
-        ) : (
-          <div className="space-y-2">
-            {history.map(p => (
-              <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl"
-                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-                <CheckCircle2 size={14} style={{ color: '#10d98a' }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    {formatRupiah(p.amount)} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· </span>
-                    {p._invoiceNo
-                      ? <button onClick={() => openInvoice(p._invoiceNo)} className="underline decoration-dotted" style={{ color: 'var(--accent-light)', fontWeight: 600 }}>{p._invoiceNo}</button>
-                      : <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>—</span>}
-                  </p>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {timeAgo(p.paid_at)} · {p.payment_method} · oleh {p.cashier || '-'}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {historyTarget && <ReceivablePaymentHistory key={historyTarget.key}
+          invoices={liveGroup(historyTarget).invoices} getDebtPayments={getDebtPayments}
+          getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} />}
+
       </Modal>
 
       {/* Delete confirm — single nota */}

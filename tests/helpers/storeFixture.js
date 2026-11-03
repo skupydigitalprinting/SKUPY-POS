@@ -42,7 +42,7 @@ export async function storeFixture(secure, run, initialTransactions, options = {
             pair[1](value);
           }];
           export const rpcScript = [];
-          export const outcome = { data: { id: 'customer', name: 'Uji' }, error: null, count: 0, tables: {} };
+          export const outcome = { data: { id: 'customer', name: 'Uji' }, error: null, count: null, tables: {} };
           export const uploadLogo = () => { throw new Error('Unexpected upload') };
           export const deleteLogo = uploadLogo;
           export const getDataClient = () => ({ rpc: async (name, args) => {

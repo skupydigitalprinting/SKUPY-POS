@@ -2,7 +2,14 @@ const dayFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', y
 const labelFormat = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'long', year: 'numeric' })
 const timestamp = p => p.paid_at ? new Date(p.paid_at).getTime() : NaN
 
-export async function loadReceivableHistory(invoices, getDebtPayments) {
+export async function loadReceivableHistory(invoices, getDebtPayments, getReceivablePayments) {
+  if (getReceivablePayments) {
+    const notes = new Map(invoices.map(invoice => [invoice.id, invoice.invoiceNo]))
+    const result = await getReceivablePayments([...notes.keys()])
+    if (!result?.ok || !Array.isArray(result.data)) throw new Error('Riwayat pembayaran gagal dimuat. Silakan coba lagi.')
+    return [...new Map(result.data.filter(payment => !payment.deleted_at && notes.has(payment.debt_id))
+      .map(payment => [payment.id, { ...payment, _invoiceNo: notes.get(payment.debt_id) || payment.invoice_no }])).values()]
+  }
   const payments = new Map()
   for (const invoice of invoices) {
     const result = await getDebtPayments(invoice.id)

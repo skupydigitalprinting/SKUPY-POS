@@ -32,3 +32,17 @@ test('empty history and unknown dates remain explicit', () => {
   assert.deepEqual(groupPaymentDays([]), [])
   assert.equal(groupPaymentDays([{ id: 'x', amount: 10, paid_at: null }])[0].label, 'Tanggal tidak tersedia')
 })
+
+test('batch history links legacy payments by debt ID and preserves all allocations', async () => {
+  const rows = await loadReceivableHistory([{ id: 'old', invoiceNo: 'OLD' }],
+    () => { throw new Error('Unexpected single-note read') },
+    async ids => ({ ok: true, data: ids.map(debt_id => ({ id: 'p', debt_id, customer_id: null, amount: 170000000 })) }))
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]._invoiceNo, 'OLD')
+  assert.equal(rows[0].amount, 170000000)
+})
+
+test('failed batch history is an error, never an empty or partial successful history', async () => {
+  await assert.rejects(loadReceivableHistory([{ id: 'old' }], async () => ({ ok: true, data: [] }),
+    async () => ({ ok: false, error: 'offline', data: [] })))
+})

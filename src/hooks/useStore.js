@@ -1,3 +1,4 @@
+import { readReceivables, readReceivablePayments } from '../lib/receivableReads'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { getDataClient, secureAuthEnabled, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
 import { ADMIN_PROFILE_COLUMNS, adminProfileFromDB as adminFromDB } from '../utils/adminProfile'
@@ -387,19 +388,9 @@ export function useStore(verifiedSession = null) {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   // ─── refreshAll: initial load + manual refresh ────────────────────
-  // CRITICAL: tabel `transactions` punya kolom JSONB `items` yang bisa
-  // sangat besar (base64 image per item × ribuan baris). SELECT * tanpa
-  // batas memicu "canceling statement due to statement timeout" di
-  // Supabase free/pro tier yang punya statement_timeout ~8 detik.
-  // Solusi: batasi ke 500 transaksi terakhir + 500 debt terakhir untuk
-  // initial paint dashboard. Detail tetap bisa diambil via fetch lazy.
-  // HEMAT EGRESS: batasi load awal transaksi (kolom items JSONB berat). Dashboard
-  // "Total Omzet (semua waktu)" & Produk Terlaris dihitung dari array ini — untuk
-  // angka all-time yang akurat gunakan tab Accounting (berbasis RPC). 200 transaksi
-  // terakhir cukup untuk operasional harian. DEBT_LIMIT tetap 500 (baris kecil +
-  // Piutang harus lengkap).
+  // Transaction items can contain large images; keep the dashboard bounded.
+  // Receivables are lightweight and must be complete for balances and history.
   const TRX_LIMIT = 200
-  const DEBT_LIMIT = 500
   // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
   // Tidak menyertakan is_favorite di sini supaya load awal TIDAK gagal bila
   // migrasi belum dijalankan. Favorit di-merge terpisah (resilient) setelahnya.
@@ -441,10 +432,10 @@ export function useStore(verifiedSession = null) {
         // bikin statement timeout saat boot. Kolom ringan dulu → app cepat
         // hidup, gambar di-hydrate di latar belakang (lihat bawah).
         supabase.from('products').select(PRODUCT_LIGHT_COLS).order('created_at', { ascending: false }).limit(500),
-        // Limit transactions + debts agar query selalu cepat. Difilter book aktif.
+        // Keep transaction payload bounded; paginate all book-scoped receivables.
         applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(TRX_LIMIT)),
         applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false })),
-        applyBook(supabase.from('debts').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(DEBT_LIMIT)),
+        readReceivables(supabase, activeBookId),
         // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
         applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
       ])
@@ -599,11 +590,7 @@ export function useStore(verifiedSession = null) {
 
   const refreshDebts = useCallback(async () => {
     const issued = financialReadEpoch.current
-    const { data, error: e } = await applyBook(supabase
-      .from('debts').select('*')
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(500))
+    const { data, error: e } = await readReceivables(supabase, activeBookId)
     if (!e && mounted.current && issued === financialReadEpoch.current) setDebts((data || []).map(debtFromDB))
   }, [activeBookId])
 
@@ -633,7 +620,7 @@ export function useStore(verifiedSession = null) {
       // Publish the related collections together, only after every read succeeds.
       const results = await Promise.all([
         applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)),
-        applyBook(supabase.from('debts').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)),
+        readReceivables(supabase, activeBookId),
         applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false }).limit(1000)),
         applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
       ])
@@ -2276,6 +2263,8 @@ export function useStore(verifiedSession = null) {
     })
   }), [debts, activeBookId, wrap, containPayment, destructivePaymentCheck, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
 
+  const getReceivablePayments = useCallback(debtIds => readReceivablePayments(supabase, debtIds), [])
+
   const getDebtPayments = useCallback(async (debtId) => {
     const rows = []
     const pageSize = 500
@@ -2517,7 +2506,7 @@ export function useStore(verifiedSession = null) {
     addCustomer, updateCustomer, deleteCustomer,
     reassignReceivableCustomer, reassignOrderCustomer,
     getOrderCustomerChanges, getReceivableCustomerChanges,
-    payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments,
+    payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments, getReceivablePayments,
     editDebtPayment, deleteDebtPayment,
   }
 }

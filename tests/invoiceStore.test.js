@@ -26,7 +26,10 @@ test('background read started before confirmed edit cannot overwrite its refresh
   await Promise.resolve()
   transport.rpcScript.push((name, args) => ok({ operationId: args.p_operation_id, invoiceId, invoiceNo: 'TEST', version: 1,
     state: 'active', total: 150000, paid: 200000, remaining: 0, refundDue: 50000 }))
-  transport.script.push(ok([{ ...row, version: 1, total: 150000, remaining: 0 }]), ok([]), ok([]), ok([]))
+  // Concurrent collection readers may start in any order. Bind responses to
+  // their tables; the already-dispatched old transaction read stays deferred.
+  transport.outcome.tables.transactions = ok([{ ...row, version: 1, total: 150000, remaining: 0 }])
+  for (const table of ['debts', 'customers', 'debt_payments']) transport.outcome.tables[table] = ok([])
   const result = await store.invoiceWorkflow.change(invoiceId, 0, 'edit', { reason: 'Test' })
   assert.equal(result.ok, true, JSON.stringify(result))
   release(ok([row])); await oldRead

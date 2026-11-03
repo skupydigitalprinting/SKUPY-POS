@@ -363,6 +363,7 @@ function AppShell({ verifiedSession = null }) {
       payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}
+      getReceivablePayments={store.getReceivablePayments}
       paymentWorkflow={verifiedSession ? store.paymentWorkflow : undefined}
       pendingPayments={store.pendingPayments}
       invoiceRevision={store.invoiceRevision}
