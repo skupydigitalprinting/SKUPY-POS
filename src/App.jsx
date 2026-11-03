@@ -351,6 +351,9 @@ function AppShell({ verifiedSession = null }) {
       deleteCustomer={store.deleteCustomer}
     />,
     piutang: <Piutang
+      storeInfo={store.storeInfo}
+      activeBookId={store.activeBookId}
+      bookName={store.activeBookId ? ((store.books || []).find(b => b.id === store.activeBookId)?.name || 'Book terpilih') : 'Semua Book'}
       invoiceWorkflow={verifiedSession ? store.invoiceWorkflow : undefined}
       pendingInvoiceChanges={store.pendingInvoiceChanges}
       products={store.products}

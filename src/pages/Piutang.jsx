@@ -6,7 +6,7 @@ import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
   CheckCircle2, History, Loader2, TrendingDown, ChevronRight,
-  Receipt, Layers, UserCog, Check, ArrowLeft, Users, UserCircle2,
+  Receipt, Layers, UserCog, Check, ArrowLeft, Users, UserCircle2, Download,
 } from 'lucide-react'
 import { Button, Badge, EmptyState, CustomerPicker } from '../components/ui'
 import Modal from '../components/Modal'
@@ -17,6 +17,7 @@ import { TEMPLATES } from '../utils/whatsapp'
 import { useToast } from '../components/Toast'
 import { useInvoicePreview } from '../components/InvoicePreview'
 import { secureAuthEnabled } from '../lib/supabase'
+import { buildReceivableReport } from '../utils/receivableReport'
 
 const STATUS_OPTIONS = [
   { id: 'all', label: 'Semua' },
@@ -45,6 +46,7 @@ export default function Piutang({
   reassignReceivableCustomer, getReceivableCustomerChanges,
   paymentWorkflow, pendingPayments = [], invoiceRevision,
   invoiceWorkflow, pendingInvoiceChanges = [], products = [],
+  storeInfo, activeBookId = null, bookName = 'Semua Book',
 }) {
   const toast = useToast()
   const { openInvoice } = useInvoicePreview()
@@ -77,6 +79,34 @@ export default function Piutang({
   // Owner & Staff Admin melihat overview semua PIC lalu klik untuk masuk detail.
   // Staff Kasir hanya melihat PIC dirinya → langsung daftar piutangnya.
   const canSeeAllPics = currentUser?.role === 'owner' || currentUser?.role === 'admin'
+  const [exporting, setExporting] = useState(false)
+  const exportPending = useRef(false)
+  const exportMounted = useRef(true)
+  const exportScope = useRef(null)
+  const scopeKey = `${currentUser?.id || ''}|${currentUser?.role || ''}|${activeBookId || 'all'}`
+  exportScope.current = scopeKey
+  useEffect(() => { exportMounted.current = true; return () => { exportMounted.current = false } }, [])
+  const handleDownloadPDF = async () => {
+    if (exportPending.current) return
+    exportPending.current = true
+    setExporting(true)
+    const issuedScope = scopeKey
+    try {
+      const report = buildReceivableReport(debts, customers, admins)
+      const options = { storeName: storeInfo?.name || 'SKUPY', bookName,
+        accountScope: canSeeAllPics ? 'Semua PIC' : `PIC: ${currentUser?.name || currentUser?.username || 'Saya'}`,
+        generatedAt: new Date() }
+      const { downloadReceivablePDF, loadReceivablePdfFont } = await import('../utils/receivablePdf')
+      options.fontData = await loadReceivablePdfFont(report, options)
+      if (!exportMounted.current || exportScope.current !== issuedScope) return
+      downloadReceivablePDF(report, options)
+    } catch (error) {
+      if (exportMounted.current && exportScope.current === issuedScope) toast.error(error.message || 'PDF gagal dibuat. Silakan coba lagi.')
+    } finally {
+      exportPending.current = false
+      if (exportMounted.current) setExporting(false)
+    }
+  }
   const [selectedPicKey, setSelectedPicKey] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null)  // group
   const [detailTab, setDetailTab] = useState('invoices')
@@ -329,7 +359,8 @@ export default function Piutang({
     <div className="flex-1 overflow-y-auto mesh-bg">
       <div className="p-4 sm:p-6 max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-5">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
           {showingList && canSeeAllPics && (
             <button onClick={() => setSelectedPicKey(null)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold btn-press mb-2"
@@ -353,6 +384,13 @@ export default function Piutang({
               {groups.length} customer · {scopedEnriched.length} nota hutang
             </div>
           )}
+          </div>
+          <Button variant="secondary" onClick={handleDownloadPDF} disabled={exporting || !debts.length}
+            title="Unduh seluruh piutang dalam Book ini sesuai akses akun" aria-label="Unduh semua piutang PDF"
+            className="shrink-0">
+            {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+            {exporting ? 'Menyiapkan PDF...' : 'Unduh PDF'}
+          </Button>
         </div>
 
         {/* ─── PIC OVERVIEW (Owner/Admin, sebelum pilih PIC) ─── */}
