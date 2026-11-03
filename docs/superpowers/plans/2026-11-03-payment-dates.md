@@ -13,7 +13,7 @@
 - [x] Add WIB date input to individual/FIFO payment forms and date correction to receipt detail rows.
 - [x] Display original recorded timestamp separately in history/PDF and preserve effective-day totals.
 - [x] Run full unit/build/SQL tests, independent review and desktop/mobile UI verification.
-- [ ] Inspect production schema, take targeted backup, apply tested compatible migration, verify catalog; commit/push and deploy; verify production asset and read-only views.
+- [x] Inspect production schema, take targeted backup, apply tested compatible migration, verify catalog; commit/push and deploy; verify production asset and read-only views.
 
 ## Constraints
 - No changes to amounts, allocation order, invoice numbering or user credentials.
@@ -30,3 +30,5 @@
 - Migration 016 applied to project ejqfttivgovhqhzkrncx. Targeted pre-migration backup retained privately outside Git.
 - Readback compared all 510 existing receipts and 173 payment events: no existing fields changed; recorded_at/effective_at backfill matched original timestamps. No test payments or date corrections were submitted to production.
 - Legacy restriction: 337 existing receipts lack distinct cash postings. Date corrections for such rows are refused until their postings are reconciled; the feature does not manufacture cash/journal entries or change historical balances.
+- Application commit e1a04dc pushed to main. Production deployment dpl_7dKhjrMayUNqaUmbGAaEDg8Gepzt is ready at https://pos.skupy.id/.
+- Production UI verified read-only: history shows original recorded time, correction form defaults to the existing receipt day, and new FIFO payment defaults to 2026-11-03 WIB. Both forms closed without saving. Production root returned HTTP 200.
