@@ -1,5 +1,6 @@
 import React from 'react'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { isModuleLoadError } from '../utils/chunkRecovery'
 
 /**
  * Error boundary — catches JS errors in any child component subtree
@@ -39,6 +40,8 @@ export default class ErrorBoundary extends React.Component {
 }
 
 function DefaultFallback({ error, reset, title = 'Halaman gagal dimuat' }) {
+  const moduleLoadFailed = isModuleLoadError(error)
+  const reload = () => window.location.reload()
   return (
     <div className="flex-1 overflow-y-auto mesh-bg">
       <div className="p-6 sm:p-8 max-w-2xl mx-auto">
@@ -67,26 +70,36 @@ function DefaultFallback({ error, reset, title = 'Halaman gagal dimuat' }) {
             {title}
           </h2>
           <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-            Terjadi kesalahan saat merender halaman ini. Data Anda aman — silakan coba muat ulang.
+            {moduleLoadFailed
+              ? 'Kode halaman tidak berhasil dimuat. Tab ini mungkin masih memakai versi lama setelah pembaruan, atau koneksi sedang terganggu.'
+              : 'Terjadi kesalahan saat menampilkan halaman ini. Silakan coba lagi.'}
           </p>
-          {error && (
-            <pre
-              className="text-xs p-3 rounded-xl overflow-x-auto mb-5"
-              style={{
-                background: 'rgba(0,0,0,0.3)',
-                color: '#ff4d6a',
-                border: '1px solid rgba(255,77,106,0.15)',
-                fontFamily: 'DM Mono, monospace',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {String(error?.message || error || 'Unknown error')}
-            </pre>
+          {moduleLoadFailed && (
+            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+              Muat versi terbaru untuk melanjutkan. Isian yang belum disimpan di tab ini akan hilang saat halaman dimuat ulang.
+            </p>
           )}
-          <div className="flex gap-2">
+          {error && (
+            <details className="mb-5 text-sm" style={{ color: 'var(--text-secondary)' }}>
+              <summary className="cursor-pointer mb-2">Detail kesalahan</summary>
+              <pre
+                className="text-xs p-3 rounded-xl overflow-x-auto"
+                style={{
+                  background: 'rgba(0,0,0,0.3)',
+                  color: '#ff4d6a',
+                  border: '1px solid rgba(255,77,106,0.15)',
+                  fontFamily: 'DM Mono, monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {String(error?.message || error || 'Unknown error')}
+              </pre>
+            </details>
+          )}
+          <div className="flex flex-wrap gap-2">
             <button
-              onClick={reset}
+              onClick={moduleLoadFailed ? reload : reset}
               className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold btn-press"
               style={{
                 background: 'linear-gradient(135deg, var(--accent), #6366f1)',
@@ -95,20 +108,22 @@ function DefaultFallback({ error, reset, title = 'Halaman gagal dimuat' }) {
                 fontFamily: 'Syne',
               }}
             >
-              <RefreshCw size={14} /> Coba Lagi
+              <RefreshCw size={14} className="shrink-0" /> {moduleLoadFailed ? 'Muat Versi Terbaru' : 'Coba Lagi'}
             </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold btn-press"
-              style={{
-                background: 'var(--bg-card)',
-                color: 'var(--text-secondary)',
-                border: '1px solid var(--border)',
-                fontFamily: 'Syne',
-              }}
-            >
-              Reload Halaman
-            </button>
+            {!moduleLoadFailed && (
+              <button
+                onClick={reload}
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold btn-press"
+                style={{
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  fontFamily: 'Syne',
+                }}
+              >
+                Reload Halaman
+              </button>
+            )}
           </div>
         </div>
       </div>
