@@ -49,7 +49,7 @@ function query(table) {
       count ??= rows.length
       rows = rows.slice(0, 1000) // Supabase's default response cap.
       const select = steps.find(s => s[0] === 'select')?.[1]
-      if (select && select !== '*') rows = rows.map(r => Object.fromEntries(select.split(',').map(s => s.trim()).map(k => [k, r[k]])))
+      if (select && select !== '*' && !select.startsWith('*,')) rows = rows.map(r => Object.fromEntries(select.split(',').map(s => s.trim()).map(k => [k, r[k]])))
       return Promise.resolve({ data: rows, error: null, count }).then(resolve, reject)
     } catch (error) { return Promise.reject(error).then(resolve, reject) }
   } }
@@ -136,6 +136,77 @@ function dashboard(rows = [], payments = [], state = {}, debts = []) {
   assert.ok(React.isValidElement(tree))
   return ctx.captured
 }
+
+test('Accounting filtered lists and journal export read beyond the API cap', async () => {
+  const cases = [
+    ['listExpensesByRange', 'expenses', { from: '2026-10-01', to: '2026-10-31' }],
+    ['listCredibookIncome', 'credibook_income', { bookId: 'a', from: '2026-10-01', to: '2026-10-31' }],
+    ['listSalaryExpenses', 'expenses', { from: '2026-10-01', to: '2026-10-31' }],
+    ['listSupplierDebts', 'supplier_debts'], ['listBankLoans', 'bank_loans'],
+    ['listAssets', 'assets'], ['listAssetSales', 'asset_sales'], ['listRents', 'prepaid_rents'],
+    ['listEmployeeAdvances', 'employee_cash_advances'], ['listMigrationDetails', 'migration_details'],
+    ['listCapitalEntries', 'migration_details'], ['listOpeningReceivables', 'debts'],
+    ['listOpeningKasbon', 'employee_cash_advances'],
+  ]
+  for (const [method, table, options] of cases) {
+    const rows = Array.from({ length: 1201 }, (_, i) => ({ id: `r${i}`, book_id: 'a', is_opening: true,
+      type: 'modal', category: 'Gaji', transaction_date: '2026-10-01', expense_date: '2026-10-31', amount: 100 }))
+    reset({ [table]: rows })
+    const result = await invoke(useAccounting)[method](options)
+    assert.equal(result.ok, true, `${method}: ${result.error}`)
+    assert.equal(result.data.length, 1201, method)
+    assert.equal(new Set(result.data.map(row => row.id)).size, 1201, method)
+    assert.equal(ctx.calls.filter(c => c.table === table).length, 3, method)
+    reset({ [table]: rows }, { [table]: steps => steps.some(s => s[0] === 'range' && s[1] > 0) ? 'Offline' : null })
+    const failed = await invoke(useAccounting)[method](options)
+    assert.equal(failed.ok, false, method)
+    assert.deepEqual(failed.data, [], method)
+  }
+  reset({ accounting_entries: Array.from({ length: 1201 }, (_, i) => ({ id: `e${i}`, entry_date: '2026-10-01' })) })
+  assert.equal((await invoke(useAccounting).fetchEntriesForExport('2026-10-01', '2026-10-31')).data.length, 1201)
+})
+
+test('Credibook and asset aggregates include every page and preserve Book scope', async () => {
+  const rows = Array.from({ length: 1201 }, (_, i) => ({ id: `r${i}`, book_id: 'a', total_debt: 100, paid: 20, amount: 100, expense_date: '2026-10-01', payment_date: '2026-10-01', payment_method: 'cash' }))
+  reset({ debts: [...rows, { id: 'other', book_id: 'b', total_debt: 999999 }], expenses: rows, asset_purchase_payments: rows })
+  const acc = invoke(useAccounting)
+  assert.equal(await acc.sumPiutangByBook({ bookId: 'a' }), 1201 * 80)
+  assert.equal(await acc.sumExpensesRange('2026-10-01', '2026-10-31'), 120100)
+  assert.equal((await acc.getAssetPaymentTotals('2026-10-31')).total, 120100)
+})
+
+test('Dashboard October filter includes first/last day and PIC after complete collection load', () => {
+  reset()
+  const rows = [invoice({ id: 'first', created_at: '2026-10-01T00:00:00+07:00', total: 1000000 }),
+    invoice({ id: 'last', created_at: '2026-10-31T23:59:59.999+07:00', total: 2000000 }),
+    invoice({ id: 'nov', created_at: '2026-11-01T00:00:00+07:00', total: 9000000 }),
+    invoice({ id: 'other', created_at: '2026-10-02T10:00:00+07:00', cashier_id: 'other', total: 99 })]
+  const d = dashboard(rows, [], { dateFrom: '2026-10-01', dateTo: '2026-10-31', adminFilter: 'admin' })
+  assert.equal(d.filteredTrx.length, 2)
+  assert.equal(d.buildCard('omzet').total, 3000000)
+  assert.equal(d.buildCard('omzet').rows.length, 2)
+})
+
+test('paginated transaction and installment dates include the entire WIB calendar period', async () => {
+  const dates = ['2026-09-30T23:59:59.999+07:00', '2026-10-01T00:00:00+07:00', '2026-10-31T23:59:59.999+07:00', '2026-11-01T00:00:00+07:00']
+  reset({ transactions: dates.map((created_at, i) => invoice({ id: `t${i}`, created_at })),
+    debt_payments: dates.map((paid_at, i) => payment({ id: `p${i}`, paid_at })) })
+  const acc = invoke(useAccounting)
+  const options = { from: '2026-10-01', to: '2026-10-31' }
+  assert.deepEqual((await acc.listTransactions(options)).data.map(r => r.id), ['t1', 't2'])
+  assert.deepEqual((await acc.listCicilan(options)).data.map(r => r.id), ['p1', 'p2'])
+})
+
+test('Accounting turnover drill-down is complete, including WIB first day and fractional end', async () => {
+  const rows = Array.from({ length: 1201 }, (_, i) => invoice({ id: `t${i}`, total: 100, created_at: i ? '2026-10-31T23:59:59.999+07:00' : '2026-10-01T00:00:00+07:00' }))
+  reset({ transactions: rows })
+  const result = await invoke(useAccounting).getCardDetail('penjualan', '2026-10-01', '2026-10-31')
+  assert.equal(result.ok, true)
+  assert.equal(result.rows.length, 1201)
+  assert.equal(result.total, 120100)
+  reset({ transactions: rows }, { transactions: steps => steps.some(s => s[0] === 'range' && s[1] > 0) ? 'Offline' : null })
+  assert.equal((await invoke(useAccounting).getCardDetail('penjualan', '2026-10-01', '2026-10-31')).ok, false)
+})
 
 test('Dashboard subtracts all matching events once, including a same-time initial split', () => {
   reset()

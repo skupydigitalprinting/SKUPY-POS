@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   TrendingUp, TrendingDown, Scale, Plus, Pencil, Trash2, Check, X, Loader2,
   Receipt, Wallet, Calendar, NotebookPen, ArrowRight,
@@ -18,7 +18,7 @@ const INCOME_TYPES = [
 ]
 const ITYPE_LABEL = Object.fromEntries(INCOME_TYPES.map(t => [t.id, t.label]))
 const ITYPE_COLOR = { omzet: '#10d98a', refund: '#3b82f6', capital: '#a78bfa', other: '#64748b' }
-const fmt = (n) => formatRupiah(Math.round(Number(n) || 0))
+const fmt = (n) => n == null ? 'Tidak tersedia' : formatRupiah(Math.round(Number(n) || 0))
 const dt = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 const todayISO = () => new Date().toISOString().slice(0, 10)
 // Format tanggal LOKAL (WIB-accurate, bukan UTC) untuk SEMUA preset.
@@ -89,6 +89,14 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
   const activeBook = books.find(b => b.id === bookId)
 
   const [rows, setRows] = useState([]); const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [loadedScope, setLoadedScope] = useState('')
+  const loadRequest = useRef(0)
+  const reload = useRef(null)
+  const scope = `${activeBookId || 'all'}|${range.from}|${range.to}`
+  const currentScope = useRef(scope)
+  currentScope.current = scope
+  const ready = loadedScope === scope && !loading && !loadError
   const [expTotal, setExpTotal] = useState(0)
   const [omsetInvoice, setOmsetInvoice] = useState(0) // omset dari invoice/kasir (per book)
   const [piutangBook, setPiutangBook] = useState(0)   // piutang aktif (per book)
@@ -100,26 +108,40 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
   const [edit, setEdit] = useState(null) // baris yang diedit inline
 
   const load = async () => {
+    if (scope !== currentScope.current) return
+    const request = ++loadRequest.current
     setLoading(true)
-    const r = await acc.listCredibookIncome({ bookId: activeBookId || undefined, from: range.from, to: range.to })
-    setRows(r.ok ? r.data : [])
-    const [exp, omset, piutang] = await Promise.all([
+    setLoadError('')
+    try {
+    const [r, exp, omset, piutang] = await Promise.all([
+      acc.listCredibookIncome({ bookId: activeBookId || undefined, from: range.from, to: range.to }),
       acc.sumExpensesRange(range.from, range.to),
       acc.sumOmsetByBook({ bookId: activeBookId || undefined, from: range.from, to: range.to }),
       acc.sumPiutangByBook({ bookId: activeBookId || undefined }),
     ])
+    if (request !== loadRequest.current || scope !== currentScope.current) return
+    const complete = r.ok && [exp, omset, piutang].every(value => Number.isFinite(value))
+    setRows(complete ? r.data : [])
+    setLoadError(complete ? '' : 'Data periode ini belum lengkap. Muat ulang sebelum menggunakan totalnya.')
     setExpTotal(exp); setOmsetInvoice(omset); setPiutangBook(piutang)
+    setLoadedScope(scope)
     setLoading(false)
+    } catch {
+      if (request !== loadRequest.current || scope !== currentScope.current) return
+      setLoadError('Data periode ini belum lengkap. Muat ulang sebelum menggunakan totalnya.')
+      setLoading(false)
+    }
   }
+  reload.current = load
   // Muat ulang saat range / book berubah (realtime saat pindah book).
-  useEffect(() => { load() /* eslint-disable-next-line */ }, [rangeId, activeBookId])
+  useEffect(() => { load(); return () => { loadRequest.current++ } /* eslint-disable-next-line */ }, [rangeId, activeBookId])
 
   // ── 6 angka dashboard (semua per Book aktif) ──
   const omsetCredibook = useMemo(() => rows.filter(x => (x.income_type || 'omzet') === 'omzet').reduce((s, x) => s + Math.round(x.amount || 0), 0), [rows])
-  const nonOmset = useMemo(() => rows.filter(x => (x.income_type || 'omzet') !== 'omzet').reduce((s, x) => s + Math.round(x.amount || 0), 0), [rows])
-  const omsetBook = omsetInvoice + omsetCredibook      // 1
-  const totalPemasukan = omsetBook + nonOmset          // 3
-  const saldoBook = totalPemasukan - expTotal          // 6
+  const nonOmset = useMemo(() => ready ? rows.filter(x => (x.income_type || 'omzet') !== 'omzet').reduce((s, x) => s + Math.round(x.amount || 0), 0) : null, [rows, ready])
+  const omsetBook = ready ? omsetInvoice + omsetCredibook : null
+  const totalPemasukan = ready ? omsetBook + nonOmset : null
+  const saldoBook = ready ? totalPemasukan - expTotal : null
   // kompat lama
   const totalMasuk = totalPemasukan
   const saldoBersih = saldoBook
@@ -137,17 +159,17 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
       incomeType: form.incomeType, bookId, createdBy: currentUser?.id, createdByName: currentUser?.name || currentUser?.username || '',
     })
     setSaving(false)
-    if (r.ok) { toast.success('Pemasukkan dicatat'); setForm(blank); setErr({}); load(); onChanged?.() } else toast.error(r.error)
+    if (r.ok) { toast.success('Pemasukkan dicatat'); setForm(blank); setErr({}); reload.current(); onChanged?.() } else toast.error(r.error)
   }
   const saveEdit = async () => {
     if (!(parseCurrency(edit.amount) > 0)) return toast.error('Nominal harus > 0')
     const r = await acc.updateCredibookIncome(edit.id, { name: edit.name, date: edit.date, amount: parseCurrency(edit.amount), method: edit.method, note: edit.note, incomeType: edit.incomeType })
-    if (r.ok) { toast.success('Diperbarui'); setEdit(null); load(); onChanged?.() } else toast.error(r.error)
+    if (r.ok) { toast.success('Diperbarui'); setEdit(null); reload.current(); onChanged?.() } else toast.error(r.error)
   }
   const del = async (row) => {
     if (!(await confirm({ title: 'Yakin ingin menghapus pemasukkan ini?', message: 'Data dihapus dari laporan & mengurangi Omset, Uang Masuk, dan Saldo (Kas & Bank).' }))) return
     const r = await acc.deleteCredibookIncome(row.id)
-    if (r.ok) { toast.success('Dihapus'); load(); onChanged?.() } else toast.error(r.error)
+    if (r.ok) { toast.success('Dihapus'); reload.current(); onChanged?.() } else toast.error(r.error)
   }
 
   const inpErr = (has) => has ? { ...inp, border: '1px solid #ef4444' } : inp
@@ -171,13 +193,14 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
           ))}
         </div>
 
+        {loadError && <p role="alert" className="text-sm mb-4" style={{ color: 'var(--red)' }}>{loadError}</p>}
         {/* Dashboard 6 card — semua mengikuti Book aktif */}
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
           <MiniCard icon={Receipt} label="Omset Book" value={omsetBook} color="#3b82f6" sub="Invoice kasir + Credibook (Omset)" />
           <MiniCard icon={TrendingUp} label="Pemasukkan Non Omset" value={nonOmset} color="#10d98a" sub="Refund / modal / lainnya" />
           <MiniCard icon={Wallet} label="Total Pemasukkan" value={totalPemasukan} color="#22c55e" sub="Omset + Non Omset" />
-          <MiniCard icon={TrendingDown} label="Total Pengeluaran" value={expTotal} color="#ef4444" sub="Dari Accounting (semua book)" />
-          <MiniCard icon={Calendar} label="Piutang Book" value={piutangBook} color="#f59e0b" sub="Piutang aktif (saldo berjalan)" />
+          <MiniCard icon={TrendingDown} label="Total Pengeluaran" value={ready ? expTotal : null} color="#ef4444" sub="Dari Accounting (semua book)" />
+          <MiniCard icon={Calendar} label="Piutang Book" value={ready ? piutangBook : null} color="#f59e0b" sub="Piutang aktif (saldo berjalan)" />
           <MiniCard icon={Scale} label="Saldo Book" value={saldoBook} color="#06b6d4" sub="Total Pemasukkan − Pengeluaran" highlight />
         </div>
 
@@ -227,7 +250,7 @@ export default function Credibook({ currentUser, activeBookId, defaultBookId, bo
 
         {/* Riwayat */}
         <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Pemasukkan</div>
-        {loading ? <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
+        {loadError ? null : !ready ? <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-light)' }} /></div>
           : rows.length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Belum ada pemasukkan pada periode ini</p>
           : <div className="space-y-2">
               {rows.map(x => edit && edit.id === x.id ? (

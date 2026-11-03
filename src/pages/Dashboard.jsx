@@ -661,7 +661,7 @@ export default function Dashboard({ stats, transactions, products = [], debts = 
   const renderOmsetTable = (rows) => (
     rows.length === 0 ? <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Tidak ada transaksi.</p>
     : <div className="space-y-2">
-        {rows.slice(0, 200).map(t => {
+        {rows.map(t => {
           const s = STATUS_MAP[t.status] || { label: t.status || '-', hex: '#8888a8' }
           return (
             <div key={t.id} className="flex items-center gap-3 p-3 rounded-xl min-w-0" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>

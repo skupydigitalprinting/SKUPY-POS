@@ -8,6 +8,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { getDataClient, secureAuthEnabled } from '../lib/supabase'
 import { assetPaymentState, normalizeAssetPayment } from '../utils/assetAccounting'
+import { readCompleteRows } from '../lib/completeReads'
 import { reportDayBounds, readReportRows, installmentTotals, initialTender, initialTenderMethod } from '../utils/financialReports'
 
 const PAGE_SIZE = 50
@@ -83,14 +84,17 @@ export function useAccounting() {
 
   // Detail transaksi POS (uang masuk) per metode — paginated.
   const listTransactions = useCallback(async ({ method, from, to, page = 0 } = {}) => {
+    const { start, end } = reportDayBounds(from, to)
     let q = supabase.from('transactions')
       .select('id, invoice_no, customer, cashier, cashier_id, payment_method, total, paid, remaining, status, order_status, created_at', { count: 'exact' })
       .neq('order_status', 'dibatalkan')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
     if (method) q = q.eq('payment_method', method)
-    if (from) q = q.gte('created_at', from)
-    if (to) q = q.lte('created_at', to + 'T23:59:59')
+    if (start) q = q.gte('created_at', start)
+    if (end) q = q.lt('created_at', end)
     const { data, error, count } = await q
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
     return { ok: true, data: data || [], count: count || 0 }
@@ -98,13 +102,16 @@ export function useAccounting() {
 
   // Detail pembayaran cicilan (debt_payments).
   const listCicilan = useCallback(async ({ method, from, to, page = 0 } = {}) => {
+    const { start, end } = reportDayBounds(from, to)
     let q = supabase.from('debt_payments')
       .select('id, invoice_no, amount, payment_method, paid_at, cashier, cashier_id', { count: 'exact' })
+      .is('deleted_at', null)
       .order('paid_at', { ascending: false })
+      .order('id', { ascending: true })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
     if (method) q = q.eq('payment_method', method)
-    if (from) q = q.gte('paid_at', from)
-    if (to) q = q.lte('paid_at', to + 'T23:59:59')
+    if (start) q = q.gte('paid_at', start)
+    if (end) q = q.lt('paid_at', end)
     const { data, error, count } = await q
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
     return { ok: true, data: data || [], count: count || 0 }
@@ -112,13 +119,15 @@ export function useAccounting() {
 
   // Mutasi kas/rekening (cash_movements) per channel.
   const listCashMovements = useCallback(async ({ channel = 'kas', to, page = 0 } = {}) => {
+    const { end } = reportDayBounds(null, to)
     const methods = channel === 'kas' ? ['cash'] : ['transfer', 'qris']
     let q = supabase.from('cash_movements')
       .select('id, moved_at, direction, method, amount, invoice_no, note', { count: 'exact' })
       .in('method', methods)
       .order('moved_at', { ascending: false })
+      .order('id', { ascending: true })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
-    if (to) q = q.lte('moved_at', to + 'T23:59:59')
+    if (end) q = q.lt('moved_at', end)
     const { data, error, count } = await q
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
     return { ok: true, data: data || [], count: count || 0 }
@@ -165,15 +174,16 @@ export function useAccounting() {
 
   // Riwayat pengeluaran MENGIKUTI filter waktu (from..to). expense_date dipakai
   // untuk periode; jam tetap dari created_at. Exclude deleted. Urut terbaru dulu
-  // (expense_date desc, lalu created_at desc). Cap tinggi = "tampilkan semua".
+  // (expense_date desc, lalu created_at desc), paginated sampai lengkap.
   const listExpensesByRange = useCallback(async ({ from, to } = {}) => {
+    const { data, error, count } = await readCompleteRows(() => {
     let q = supabase.from('expenses').select('*', { count: 'exact' }).is('deleted_at', null)
     if (from) q = q.gte('expense_date', from)
     if (to) q = q.lte('expense_date', to)
-    const { data, error, count } = await q
+    return q
       .order('expense_date', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(5000)
+    })
     if (error) return { ok: false, error: error.message, data: [], count: 0 }
     return { ok: true, data: data || [], count: count || 0 }
   }, [])
@@ -260,8 +270,8 @@ export function useAccounting() {
 
   // ── Hutang Supplier ──
   const listSupplierDebts = useCallback(async () => {
-    const { data, error } = await supabase.from('supplier_debts')
-      .select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(300)
+    const { data, error } = await readCompleteRows(() => supabase.from('supplier_debts')
+      .select('*', { count: 'exact' }).is('deleted_at', null).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -324,8 +334,8 @@ export function useAccounting() {
 
   // ── Riwayat pembayaran hutang supplier ──
   const listSupplierPayments = useCallback(async (debtId) => {
-    const { data, error } = await supabase.from('supplier_debt_payments')
-      .select('*').eq('supplier_debt_id', debtId).is('deleted_at', null).order('paid_at', { ascending: false })
+    const { data, error } = await readCompleteRows(() => supabase.from('supplier_debt_payments')
+      .select('*', { count: 'exact' }).eq('supplier_debt_id', debtId).is('deleted_at', null).order('paid_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -344,13 +354,20 @@ export function useAccounting() {
 
   // Semua pembayaran milik SATU supplier (gabungan semua nota) — untuk riwayat.
   const listSupplierPaymentsBySupplier = useCallback(async (supplier) => {
-    const { data: debts } = await supabase.from('supplier_debts').select('id,item').eq('supplier', supplier).is('deleted_at', null)
+    const { data: debts, error: debtError } = await readCompleteRows(() => supabase.from('supplier_debts').select('id,item', { count: 'exact' }).eq('supplier', supplier).is('deleted_at', null))
+    if (debtError) return { ok: false, error: debtError.message, data: [] }
     const ids = (debts || []).map(d => d.id)
     const itemById = {}; (debts || []).forEach(d => { itemById[d.id] = d.item })
     if (!ids.length) return { ok: true, data: [] }
-    const { data, error } = await supabase.from('supplier_debt_payments').select('*').in('supplier_debt_id', ids).is('deleted_at', null).order('paid_at', { ascending: false })
-    if (error) return { ok: false, error: error.message, data: [] }
-    return { ok: true, data: (data || []).map(p => ({ ...p, item: itemById[p.supplier_debt_id] || '' })) }
+    const payments = []
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      const { data, error } = await readCompleteRows(() => supabase.from('supplier_debt_payments').select('*', { count: 'exact' })
+        .in('supplier_debt_id', ids.slice(offset, offset + 100)).is('deleted_at', null).order('paid_at', { ascending: false }))
+      if (error) return { ok: false, error: error.message, data: [] }
+      payments.push(...data)
+    }
+    payments.sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at) || String(a.id).localeCompare(String(b.id)))
+    return { ok: true, data: payments.map(p => ({ ...p, item: itemById[p.supplier_debt_id] || '' })) }
   }, [])
 
   // PEMBAYARAN GABUNGAN FIFO — alokasikan pembayaran ke nota tertua dulu.
@@ -434,9 +451,11 @@ export function useAccounting() {
 
   // ── SUPPLIER MASTER ──
   const listSuppliers = useCallback(async (q = '') => {
-    let query = supabase.from('suppliers').select('*').is('deleted_at', null).order('name', { ascending: true }).limit(500)
+    const { data, error } = await readCompleteRows(() => {
+    let query = supabase.from('suppliers').select('*', { count: 'exact' }).is('deleted_at', null).order('name', { ascending: true })
     if (q) query = query.ilike('name', `%${q}%`)
-    const { data, error } = await query
+    return query
+    })
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -460,7 +479,7 @@ export function useAccounting() {
 
   // ── HUTANG BANK ──
   const listBankLoans = useCallback(async () => {
-    const { data, error } = await supabase.from('bank_loans').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(200)
+    const { data, error } = await readCompleteRows(() => supabase.from('bank_loans').select('*', { count: 'exact' }).is('deleted_at', null).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -501,8 +520,8 @@ export function useAccounting() {
 
   // ── Riwayat pembayaran cicilan bank ──
   const listBankPayments = useCallback(async (loanId) => {
-    const { data, error } = await supabase.from('bank_loan_payments')
-      .select('*').eq('loan_id', loanId).is('deleted_at', null).order('paid_at', { ascending: false })
+    const { data, error } = await readCompleteRows(() => supabase.from('bank_loan_payments')
+      .select('*', { count: 'exact' }).eq('loan_id', loanId).is('deleted_at', null).order('paid_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -797,65 +816,65 @@ export function useAccounting() {
   // Total cash-out sewa SEMUA WAKTU (non-deleted, non-cancelled). Query ringan
   // (hanya kolom total_amount) untuk card "Total Pengeluaran All Time".
   const sumRentsCashOut = useCallback(async () => {
-    const { data, error } = await supabase.from('prepaid_rents').select('total_amount,status').is('deleted_at', null)
+    const { data, error } = await readCompleteRows(() => supabase.from('prepaid_rents').select('id,total_amount,status', { count: 'exact' }).is('deleted_at', null))
     if (error) return { ok: false, total: 0 }
     const total = (data || []).filter(r => String(r.status || '').toLowerCase() !== 'cancelled').reduce((s, r) => s + Math.round(r.total_amount || 0), 0)
     return { ok: true, total }
   }, [])
 
   const getCardDetail = useCallback(async (kind, from, to) => {
-    const toEnd = (to || from) + 'T23:59:59'
-    // Batas hari WIB untuk kolom timestamptz (paid_at).
-    const tzFrom = `${from}T00:00:00+07:00`
-    const tzTo = `${to || from}T23:59:59+07:00`
+    const { start: tzFrom, end: tzTo } = reportDayBounds(from, to || from)
     const rows = []
     try {
       const pushExpenses = async (filterCat) => {
-        let q = supabase.from('expenses').select('id,expense_date,category,amount,method,note').is('deleted_at', null).gte('expense_date', from).lte('expense_date', to)
-        const { data } = await q
+        const { data } = await readReportRows(() => supabase.from('expenses').select('id,expense_date,category,amount,method,note', { count: 'exact' }).is('deleted_at', null).gte('expense_date', from).lte('expense_date', to || from))
         ;(data || []).filter(x => !filterCat || filterCat(x.category)).forEach(x => rows.push({ id: x.id, kind: 'expense', date: x.expense_date, source: 'Pengeluaran', ref: '', party: x.category, method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
       const pushPurchases = async (onlyPaid) => {
-        const { data } = await supabase.from('purchases').select('id,purchase_date,item,supplier,amount,method,is_credit,note').is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to)
+        const { data } = await readReportRows(() => supabase.from('purchases').select('id,purchase_date,item,supplier,amount,method,is_credit,note', { count: 'exact' }).is('deleted_at', null).gte('purchase_date', from).lte('purchase_date', to || from))
         ;(data || []).filter(x => !onlyPaid || !x.is_credit).forEach(x => rows.push({ id: x.id, kind: 'purchase', date: x.purchase_date, source: 'Pembelian', ref: x.item, party: x.supplier, method: x.is_credit ? 'kredit' : x.method, amount: Math.round(x.amount || 0), status: x.is_credit ? 'kredit' : 'lunas', note: x.note }))
       }
       const pushSupPay = async () => {
-        const { data } = await supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
+        const { data } = await readReportRows(() => supabase.from('supplier_debt_payments').select('id,paid_at,amount,method,note,supplier_debt_id', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
         const ids = [...new Set((data || []).map(x => x.supplier_debt_id).filter(Boolean))]
         const dmap = {}
-        if (ids.length) { const { data: dd } = await supabase.from('supplier_debts').select('id,supplier,item').in('id', ids); (dd || []).forEach(d => { dmap[d.id] = d }) }
+        for (let offset = 0; offset < ids.length; offset += 100) {
+          const { data: dd } = await readReportRows(() => supabase.from('supplier_debts').select('id,supplier,item', { count: 'exact' }).in('id', ids.slice(offset, offset + 100)))
+          dd.forEach(d => { dmap[d.id] = d })
+        }
         ;(data || []).forEach(x => { const d = dmap[x.supplier_debt_id] || {}; rows.push({ id: x.id, kind: 'supplier_payment', date: x.paid_at, source: 'Pembayaran Hutang Supplier', ref: d.item || '', party: d.supplier || '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }) })
       }
       const pushBankPay = async () => {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
+        const { data } = await readReportRows(() => supabase.from('bank_loan_payments').select('id,paid_at,amount,method,note', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Cicilan Bank', ref: '', party: '', method: x.method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
       // BEBAN: hanya bagian BUNGA dari cicilan bank (pokok bukan beban).
       const pushBankBunga = async () => {
-        const { data } = await supabase.from('bank_loan_payments').select('id,paid_at,bunga,method,note').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
+        const { data } = await readReportRows(() => supabase.from('bank_loan_payments').select('id,paid_at,bunga,method,note', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
         ;(data || []).filter(x => Math.round(x.bunga || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'bank_payment', date: x.paid_at, source: 'Bunga Bank', ref: '', party: '', method: x.method, amount: Math.round(x.bunga || 0), status: 'valid', note: x.note }))
       }
       const pushTransactions = async () => {
-        const { data } = await supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,status').is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', from).lte('created_at', toEnd)
+        const { data } = await readReportRows(() => supabase.from('transactions').select('id,created_at,invoice_no,payment_method,total,status', { count: 'exact' }).is('deleted_at', null).neq('order_status', 'dibatalkan').gte('created_at', tzFrom).lt('created_at', tzTo))
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'transaction', date: x.created_at, source: 'Penjualan', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.total || 0), status: x.status, note: '' }))
       }
       const pushDebtPay = async () => {
-        const { data } = await supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,notes').is('deleted_at', null).gte('paid_at', tzFrom).lte('paid_at', tzTo)
+        const { data } = await readReportRows(() => supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,notes', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'debt_payment', date: x.paid_at, source: 'Cicilan Piutang', ref: x.invoice_no, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.notes }))
       }
       // MIGRASI DATA LAMA — pemasukan ('old_income') / pengeluaran ('old_expense')
       const pushMigration = async (t) => {
-        const { data } = await supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type').is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to)
+        const { data } = await readReportRows(() => supabase.from('migration_details').select('id,trx_date,name,customer,amount,method,notes,type', { count: 'exact' }).is('deleted_at', null).eq('type', t).gte('trx_date', from).lte('trx_date', to || from))
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'migration', date: x.trx_date, source: 'Migrasi Data', ref: x.name, party: x.customer || '', method: x.method, amount: Math.round(x.amount || 0), status: 'migrasi', note: x.notes }))
       }
       // CREDIBOOK — pemasukkan manual. omzetOnly=true → hanya jenis 'omzet'
       // (dipakai detail Omset). Tanpa filter → semua jenis (detail Uang Masuk/Arus Kas).
       const CB_LABEL = { omzet: 'Credibook · Omset', refund: 'Credibook · Refund', capital: 'Credibook · Modal Tambahan', other: 'Credibook · Lainnya' }
       const pushCredibook = async (omzetOnly = false) => {
-        let q = supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note,income_type').is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to)
-        if (omzetOnly) q = q.eq('income_type', 'omzet')
-        const { data, error } = await q
-        if (error) return // tabel/kolom belum ada → abaikan (defensif)
+        const { data } = await readReportRows(() => {
+          let q = supabase.from('credibook_income').select('id,transaction_date,name,amount,payment_method,note,income_type', { count: 'exact' }).is('deleted_at', null).gte('transaction_date', from).lte('transaction_date', to || from)
+          if (omzetOnly) q = q.eq('income_type', 'omzet')
+          return q
+        })
         ;(data || []).forEach(x => rows.push({ id: x.id, kind: 'credibook', date: x.transaction_date, source: CB_LABEL[x.income_type] || 'Credibook', ref: x.name, party: '', method: x.payment_method, amount: Math.round(x.amount || 0), status: 'valid', note: x.note }))
       }
 
@@ -868,19 +887,19 @@ export function useAccounting() {
       else if (kind === 'beban') { await pushExpenses(c => c !== 'Pembelian Bahan'); await pushBankBunga(); await pushMigration('old_expense') }
       else if (kind === 'pembelian_bahan' || kind === 'modal_barang' || kind === 'persediaan') { await pushPurchases(false); await pushExpenses(c => c === 'Pembelian Bahan') }
       else if (kind === 'sudah_bayar') {
-        const { data } = await supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid').is('deleted_at', null)
+        const { data } = await readReportRows(() => supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid', { count: 'exact' }).is('deleted_at', null))
         ;(data || []).filter(x => Math.round(x.paid || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'debt', date: x.created_at, source: 'Piutang', ref: x.invoice_no, party: '', method: '', amount: Math.round(x.paid || 0), status: 'dibayar', note: '' }))
       }
       else if (kind === 'piutang') {
-        const { data } = await supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid').is('deleted_at', null)
+        const { data } = await readReportRows(() => supabase.from('debts').select('id,created_at,invoice_no,total_debt,paid', { count: 'exact' }).is('deleted_at', null))
         ;(data || []).map(x => ({ ...x, sisa: Math.max(0, Math.round(x.total_debt || 0) - Math.round(x.paid || 0)) })).filter(x => x.sisa > 0).forEach(x => rows.push({ id: x.id, kind: 'debt', date: x.created_at, source: 'Piutang', ref: x.invoice_no, party: '', method: '', amount: x.sisa, status: 'aktif', note: '' }))
       }
       else if (kind === 'hutang_supplier') {
-        const { data } = await supabase.from('supplier_debts').select('id,created_at,item,supplier,total,paid,status,note').is('deleted_at', null).eq('status', 'aktif')
+        const { data } = await readReportRows(() => supabase.from('supplier_debts').select('id,created_at,item,supplier,total,paid,status,note', { count: 'exact' }).is('deleted_at', null).eq('status', 'aktif'))
         ;(data || []).map(x => ({ ...x, sisa: Math.max(0, Math.round(x.total || 0) - Math.round(x.paid || 0)) })).filter(x => x.sisa > 0).forEach(x => rows.push({ id: x.id, kind: 'supplier_debt', date: x.created_at, source: 'Hutang Supplier', ref: x.item, party: x.supplier, method: '', amount: x.sisa, status: 'aktif', note: x.note }))
       }
       else if (kind === 'hutang_bank') {
-        const { data } = await supabase.from('bank_loans').select('id,tanggal_mulai,jenis_pinjaman,nama_bank,sisa_pokok,status,keterangan').is('deleted_at', null).eq('status', 'aktif')
+        const { data } = await readReportRows(() => supabase.from('bank_loans').select('id,tanggal_mulai,jenis_pinjaman,nama_bank,sisa_pokok,status,keterangan', { count: 'exact' }).is('deleted_at', null).eq('status', 'aktif'))
         ;(data || []).filter(x => Math.round(x.sisa_pokok || 0) > 0).forEach(x => rows.push({ id: x.id, kind: 'bank_loan', date: x.tanggal_mulai, source: 'Hutang Bank', ref: x.jenis_pinjaman, party: x.nama_bank, method: '', amount: Math.round(x.sisa_pokok || 0), status: 'aktif', note: x.keterangan }))
       }
     } catch (e) { return { ok: false, error: e?.message || String(e), rows: [], total: 0 } }
@@ -924,14 +943,16 @@ export function useAccounting() {
 
   // ── ASET TETAP ──
   const listAssets = useCallback(async () => {
-    const { data, error } = await supabase.from('assets').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)
+    const { data, error } = await readCompleteRows(() => supabase.from('assets').select('*', { count: 'exact' }).is('deleted_at', null).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     const assets = data || []
     const ids = assets.map(a => a.id)
     let payments = []
-    if (ids.length) {
-      const paymentResult = await supabase.from('asset_purchase_payments').select('*').in('asset_id', ids).is('deleted_at', null).order('payment_date', { ascending: true })
-      if (!paymentResult.error) payments = paymentResult.data || []
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      const paymentResult = await readCompleteRows(() => supabase.from('asset_purchase_payments').select('*', { count: 'exact' })
+        .in('asset_id', ids.slice(offset, offset + 100)).is('deleted_at', null).order('payment_date', { ascending: true }))
+      if (paymentResult.error) return { ok: false, error: paymentResult.error.message, data: [] }
+      payments.push(...paymentResult.data)
     }
     return { ok: true, data: assets.map(asset => {
       const assetPayments = payments.filter(payment => payment.asset_id === asset.id)
@@ -992,7 +1013,7 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const listAssetPurchasePayments = useCallback(async (assetId) => {
-    const { data, error } = await supabase.from('asset_purchase_payments').select('*').eq('asset_id', assetId).is('deleted_at', null).order('payment_date', { ascending: true })
+    const { data, error } = await readCompleteRows(() => supabase.from('asset_purchase_payments').select('*', { count: 'exact' }).eq('asset_id', assetId).is('deleted_at', null).order('payment_date', { ascending: true }))
     return error ? { ok: false, error: error.message, data: [] } : { ok: true, data: data || [] }
   }, [])
   const payAssetPurchase = useCallback(async (asset, p, createdBy) => {
@@ -1013,7 +1034,7 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const getAssetPaymentTotals = useCallback(async (to = todayISO()) => {
-    const { data, error } = await supabase.from('asset_purchase_payments').select('amount,payment_method').is('deleted_at', null).lte('payment_date', to)
+    const { data, error } = await readCompleteRows(() => supabase.from('asset_purchase_payments').select('id,amount,payment_method', { count: 'exact' }).is('deleted_at', null).lte('payment_date', to))
     if (error) return { ok: false, error: error.message, total: 0, cash: 0, bank: 0 }
     const totals = (data || []).reduce((r, p) => {
       const amount = Math.round(p.amount || 0); r.total += amount
@@ -1045,9 +1066,11 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const listAssetSales = useCallback(async (assetId) => {
-    let q = supabase.from('asset_sales').select('*').is('deleted_at', null).order('sale_date', { ascending: false })
+    const { data, error } = await readCompleteRows(() => {
+    let q = supabase.from('asset_sales').select('*', { count: 'exact' }).is('deleted_at', null).order('sale_date', { ascending: false })
     if (assetId) q = q.eq('asset_id', assetId)
-    const { data, error } = await q.limit(500)
+    return q
+    })
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1097,12 +1120,12 @@ export function useAccounting() {
     if (rows.length) await supabase.from('prepaid_rent_schedules').insert(rows)
   }
   const listRents = useCallback(async () => {
-    const { data, error } = await supabase.from('prepaid_rents').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(300)
+    const { data, error } = await readCompleteRows(() => supabase.from('prepaid_rents').select('*', { count: 'exact' }).is('deleted_at', null).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
   const listRentSchedules = useCallback(async (rentId) => {
-    const { data, error } = await supabase.from('prepaid_rent_schedules').select('*').eq('prepaid_rent_id', rentId).is('deleted_at', null).order('period_month', { ascending: true })
+    const { data, error } = await readCompleteRows(() => supabase.from('prepaid_rent_schedules').select('*', { count: 'exact' }).eq('prepaid_rent_id', rentId).is('deleted_at', null).order('period_month', { ascending: true }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1146,11 +1169,13 @@ export function useAccounting() {
 
   // ── CREDIBOOK: Pemasukkan Manual (non-penjualan) ──
   const listCredibookIncome = useCallback(async ({ bookId, from, to } = {}) => {
-    let q = supabase.from('credibook_income').select('*').is('deleted_at', null)
+    const { data, error } = await readCompleteRows(() => {
+    let q = supabase.from('credibook_income').select('*', { count: 'exact' }).is('deleted_at', null)
     if (bookId) q = q.eq('book_id', bookId)
     if (from) q = q.gte('transaction_date', from)
     if (to) q = q.lte('transaction_date', to)
-    const { data, error } = await q.order('transaction_date', { ascending: false }).limit(1000)
+    return q.order('transaction_date', { ascending: false })
+    })
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1208,33 +1233,33 @@ export function useAccounting() {
 
   // Total piutang AKTIF (sisa) per Book — saldo berjalan, tidak ikut filter tanggal.
   const sumPiutangByBook = useCallback(async ({ bookId } = {}) => {
-    const run = async (withBook) => {
-      let q = supabase.from('debts').select('total_debt,paid').is('deleted_at', null)
-      if (withBook && bookId) q = q.eq('book_id', bookId)
-      return await q.limit(10000)
-    }
-    let { data, error } = await run(true)
-    if (error && /book_id/i.test(error.message || '')) ({ data, error } = await run(false))
-    if (error) return 0
+    const { data, error } = await readCompleteRows(() => {
+      let q = supabase.from('debts').select('id,total_debt,paid', { count: 'exact' }).is('deleted_at', null)
+      if (bookId) q = q.eq('book_id', bookId)
+      return q
+    })
+    if (error) return null
     return (data || []).reduce((s, d) => s + Math.max(0, Math.round(d.total_debt || 0) - Math.round(d.paid || 0)), 0)
   }, [])
 
   // Total pengeluaran (expenses) dalam rentang — untuk mini-dashboard Credibook.
   const sumExpensesRange = useCallback(async (from, to) => {
-    let q = supabase.from('expenses').select('amount').is('deleted_at', null)
+    const { data, error } = await readCompleteRows(() => {
+    let q = supabase.from('expenses').select('id,amount', { count: 'exact' }).is('deleted_at', null)
     if (from) q = q.gte('expense_date', from)
     if (to) q = q.lte('expense_date', to)
-    const { data, error } = await q.limit(5000)
-    if (error) return 0
+    return q
+    })
+    if (error) return null
     return (data || []).reduce((s, x) => s + Math.round(Number(x.amount) || 0), 0)
   }, [])
 
-  // Ambil semua jurnal dalam rentang (untuk export Excel) — dibatasi aman.
+  // Export uses every row in the period, not just the first API page.
   const fetchEntriesForExport = useCallback(async (from, to) => {
-    const { data, error } = await supabase.from('accounting_entries')
-      .select('entry_date, source_type, invoice_no, account_code, debit, credit, description')
+    const { data, error } = await readCompleteRows(() => supabase.from('accounting_entries')
+      .select('id, entry_date, source_type, invoice_no, account_code, debit, credit, description', { count: 'exact' })
       .gte('entry_date', from).lte('entry_date', to)
-      .order('entry_date', { ascending: true }).limit(5000)
+      .order('entry_date', { ascending: true }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1244,9 +1269,9 @@ export function useAccounting() {
   // diurus trigger DB (2026_06_employee_cash_advances.sql); paid parent
   // selalu di-recompute dari SUM pembayaran non-deleted.
   const listEmployeeAdvances = useCallback(async () => {
-    const { data, error } = await supabase.from('employee_cash_advances')
-      .select('*').is('deleted_at', null)
-      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }).limit(500)
+    const { data, error } = await readCompleteRows(() => supabase.from('employee_cash_advances')
+      .select('*', { count: 'exact' }).is('deleted_at', null)
+      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1255,10 +1280,9 @@ export function useAccounting() {
   // Kasbon. Data lama dapat memiliki pembayaran berlebih pada satu baris yang
   // secara bisnis dialokasikan ke kasbon berikutnya milik karyawan yang sama.
   const getEmployeeAdvanceBalance = useCallback(async () => {
-    const { data, error } = await supabase.from('employee_cash_advances')
-      .select('employee_id,employee_name,amount,paid')
-      .is('deleted_at', null)
-      .limit(5000)
+    const { data, error } = await readCompleteRows(() => supabase.from('employee_cash_advances')
+      .select('id,employee_id,employee_name,amount,paid', { count: 'exact' })
+      .is('deleted_at', null))
     if (error) return { ok: false, error: error.message, value: 0 }
 
     const groups = new Map()
@@ -1331,9 +1355,11 @@ export function useAccounting() {
 
   // ── MASTER KARYAWAN (employees) ──
   const listEmployees = useCallback(async (q = '') => {
-    let query = supabase.from('employees').select('*').is('deleted_at', null).order('name', { ascending: true }).limit(1000)
+    const { data, error } = await readCompleteRows(() => {
+    let query = supabase.from('employees').select('*', { count: 'exact' }).is('deleted_at', null).order('name', { ascending: true })
     if (q) query = query.ilike('name', `%${q}%`)
-    const { data, error } = await query
+    return query
+    })
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1393,14 +1419,16 @@ export function useAccounting() {
   // Daftar pembayaran gaji (expenses kategori gaji). filter periode opsional + nama opsional.
   // Nama difilter via "%- {nama}%" karena note kini diawali Jenis Payroll, bukan "Gaji".
   const listSalaryExpenses = useCallback(async ({ from, to, employeeName } = {}) => {
+    const { data, error } = await readCompleteRows(() => {
     let q = supabase.from('expenses')
-      .select('id,expense_date,created_at,category,amount,method,note,cashier_id')
+      .select('id,expense_date,created_at,category,amount,method,note,cashier_id', { count: 'exact' })
       .is('deleted_at', null).in('category', SALARY_CATEGORIES)
       .order('expense_date', { ascending: false }).order('created_at', { ascending: false })
     if (from) q = q.gte('expense_date', from)
     if (to) q = q.lte('expense_date', to)
     if (employeeName) q = q.ilike('note', `%- ${employeeName}%`)
-    const { data, error } = await q.limit(2000)
+    return q
+    })
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1410,9 +1438,9 @@ export function useAccounting() {
   // tidak memotong stok. Soft delete → tidak dihitung. acc_dashboard mengurus
   // efek ke Omset / Uang Masuk-Keluar / Arus Kas / Laba (lihat migrasi SQL).
   const listMigrationDetails = useCallback(async () => {
-    const { data, error } = await supabase.from('migration_details')
-      .select('*').is('deleted_at', null)
-      .order('trx_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000)
+    const { data, error } = await readCompleteRows(() => supabase.from('migration_details')
+      .select('*', { count: 'exact' }).is('deleted_at', null)
+      .order('trx_date', { ascending: false }).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1442,8 +1470,8 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const listCapitalEntries = useCallback(async () => {
-    const { data, error } = await supabase.from('migration_details').select('*').is('deleted_at', null)
-      .in('type', ['modal', 'loan_cash']).order('trx_date', { ascending: false }).order('created_at', { ascending: false }).limit(500)
+    const { data, error } = await readCompleteRows(() => supabase.from('migration_details').select('*', { count: 'exact' }).is('deleted_at', null)
+      .in('type', ['modal', 'loan_cash']).order('trx_date', { ascending: false }).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1527,9 +1555,9 @@ export function useAccounting() {
   }, [findOrCreateCustomer, syncCustomerDebt])
 
   const listOpeningReceivables = useCallback(async () => {
-    const { data, error } = await supabase.from('debts')
-      .select('*, customers(name)').eq('is_opening', true).is('deleted_at', null)
-      .order('created_at', { ascending: false }).limit(1000)
+    const { data, error } = await readCompleteRows(() => supabase.from('debts')
+      .select('*, customers(name)', { count: 'exact' }).eq('is_opening', true).is('deleted_at', null)
+      .order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: (data || []).map(d => ({ ...d, customer_name: d.customers?.name || '' })) }
   }, [])
@@ -1581,9 +1609,9 @@ export function useAccounting() {
     return error ? { ok: false, error: error.message } : { ok: true }
   }, [])
   const listOpeningKasbon = useCallback(async () => {
-    const { data, error } = await supabase.from('employee_cash_advances')
-      .select('*').eq('is_opening', true).is('deleted_at', null)
-      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000)
+    const { data, error } = await readCompleteRows(() => supabase.from('employee_cash_advances')
+      .select('*', { count: 'exact' }).eq('is_opening', true).is('deleted_at', null)
+      .order('advance_date', { ascending: false }).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])
@@ -1637,9 +1665,9 @@ export function useAccounting() {
   }, [])
 
   const listAdvancePayments = useCallback(async (advanceId) => {
-    const { data, error } = await supabase.from('employee_cash_advance_payments')
-      .select('*').eq('cash_advance_id', advanceId).is('deleted_at', null)
-      .order('payment_date', { ascending: false }).order('created_at', { ascending: false })
+    const { data, error } = await readCompleteRows(() => supabase.from('employee_cash_advance_payments')
+      .select('*', { count: 'exact' }).eq('cash_advance_id', advanceId).is('deleted_at', null)
+      .order('payment_date', { ascending: false }).order('created_at', { ascending: false }))
     if (error) return { ok: false, error: error.message, data: [] }
     return { ok: true, data: data || [] }
   }, [])

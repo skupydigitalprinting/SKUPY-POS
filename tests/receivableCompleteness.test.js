@@ -35,7 +35,7 @@ test('batch history loads legacy allocations through debt IDs and never returns 
     assert.equal(result.ok, true)
     assert.equal(result.data[0].amount, 170000000)
     assert.ok(db.requests[0].steps.some(s => s.method === 'in' && s.args[0] === 'debt_id' && s.args[1][0] === 'old-paid'))
-    db.script.push(ok(Array.from({ length: 500 }, (_, i) => ({ id: `p-${i}`, debt_id: 'old-paid' }))), { error: { message: 'offline' }, data: null })
+    db.script.push({ ...ok(Array.from({ length: 500 }, (_, i) => ({ id: `p-${i}`, debt_id: 'old-paid' }))), count: 501 }, { error: { message: 'offline' }, data: null })
     const failed = await store.getReceivablePayments(['old-paid'])
     assert.equal(failed.ok, false)
     assert.deepEqual(failed.data, [])

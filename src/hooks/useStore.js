@@ -1,4 +1,5 @@
 import { readReceivables, readReceivablePayments } from '../lib/receivableReads'
+import { readBookRows } from '../lib/completeReads'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { getDataClient, secureAuthEnabled, isSupabaseConfigured, uploadLogo, deleteLogo } from '../lib/supabase'
 import { ADMIN_PROFILE_COLUMNS, adminProfileFromDB as adminFromDB } from '../utils/adminProfile'
@@ -388,9 +389,7 @@ export function useStore(verifiedSession = null) {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   // ─── refreshAll: initial load + manual refresh ────────────────────
-  // Transaction items can contain large images; keep the dashboard bounded.
-  // Receivables are lightweight and must be complete for balances and history.
-  const TRX_LIMIT = 200
+  // Fetch filter sources completely in small pages before publishing totals.
   // Kolom produk ringan (TANPA `image`) untuk query cepat anti-timeout.
   // Tidak menyertakan is_favorite di sini supaya load awal TIDAK gagal bila
   // migrasi belum dijalankan. Favorit di-merge terpisah (resilient) setelahnya.
@@ -432,12 +431,12 @@ export function useStore(verifiedSession = null) {
         // bikin statement timeout saat boot. Kolom ringan dulu → app cepat
         // hidup, gambar di-hydrate di latar belakang (lihat bawah).
         supabase.from('products').select(PRODUCT_LIGHT_COLS).order('created_at', { ascending: false }).limit(500),
-        // Keep transaction payload bounded; paginate all book-scoped receivables.
-        applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(TRX_LIMIT)),
-        applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false })),
+        // Complete collections feed every date/PIC filter and export.
+        readBookRows(supabase, 'transactions', activeBookId),
+        readBookRows(supabase, 'customers', activeBookId),
         readReceivables(supabase, activeBookId),
         // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
-        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
+        readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at'),
       ])
       // Daftar book (defensif: jika tabel belum ada / migrasi belum jalan, abaikan).
       try {
@@ -466,11 +465,10 @@ export function useStore(verifiedSession = null) {
       } catch { /* tabel master data belum ada — fitur nonaktif sampai migrasi */ }
       // Pemasukkan Credibook (book-scoped) — masuk Omset di dashboard. Defensif.
       try {
-        const cb = await applyBook(supabase.from('credibook_income')
-          .select('id, name, transaction_date, amount, payment_method, note, income_type, book_id')
-          .is('deleted_at', null).order('transaction_date', { ascending: false }).limit(2000))
-        if (!cb.error && mounted.current) setCredibookIncome(cb.data || [])
-      } catch { /* tabel credibook_income belum ada — abaikan */ }
+        const cb = await readBookRows(supabase, 'credibook_income', activeBookId,
+          'id, name, transaction_date, amount, payment_method, note, income_type, book_id', 'transaction_date')
+        if (!cb.error && mounted.current && issued === financialReadEpoch.current) setCredibookIncome(cb.data || [])
+      } catch { /* optional table; do not block cashier login */ }
       for (const r of [s, a, p, t, c, d, ...(secureAuthEnabled ? [dp] : [])]) if (r.error) throw r.error
       if (secureAuthEnabled && [t, c, d, dp].some(r => !Array.isArray(r.data))) throw new Error('Data keuangan belum lengkap')
       const productRows = secureAuthEnabled
@@ -567,24 +565,17 @@ export function useStore(verifiedSession = null) {
   // (Rekening bank per admin dipindah ke bawah — setelah `wrap` dideklarasikan,
   //  agar tidak TDZ "Cannot access 'wrap' before initialization".)
 
-  // Refresher helpers — semua dibatasi LIMIT supaya tidak pernah timeout.
+  // Refresh complete collections in bounded pages, never replace them with a slice.
   const refreshCustomers = useCallback(async () => {
     const issued = financialReadEpoch.current
-    const { data, error: e } = await applyBook(supabase
-      .from('customers').select('*')
-      .order('created_at', { ascending: false })
-      .limit(1000))
+    const { data, error: e } = await readBookRows(supabase, 'customers', activeBookId)
     if (!e && mounted.current && issued === financialReadEpoch.current) setCustomers((data || []).map(customerFromDB).filter(x => !x.deletedAt))
   }, [activeBookId])
 
   const refreshDebtPayments = useCallback(async () => {
     const issued = financialReadEpoch.current
-    const { data, error: e } = await applyBook(supabase
-      .from('debt_payments')
-      .select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at')
-      .is('deleted_at', null)
-      .order('paid_at', { ascending: false })
-      .limit(2000))
+    const { data, error: e } = await readBookRows(supabase, 'debt_payments', activeBookId,
+      'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at')
     if (!e && mounted.current && issued === financialReadEpoch.current) setDebtPayments(data || [])
   }, [activeBookId])
 
@@ -596,11 +587,7 @@ export function useStore(verifiedSession = null) {
 
   const refreshTransactions = useCallback(async () => {
     const issued = financialReadEpoch.current
-    const { data, error: e } = await applyBook(supabase
-      .from('transactions').select('*')
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(500))
+    const { data, error: e } = await readBookRows(supabase, 'transactions', activeBookId)
     if (!e && mounted.current && issued === financialReadEpoch.current) setTransactions((data || []).map(trxFromDB))
   }, [activeBookId])
 
@@ -619,10 +606,10 @@ export function useStore(verifiedSession = null) {
       const issued = financialReadEpoch.current
       // Publish the related collections together, only after every read succeeds.
       const results = await Promise.all([
-        applyBook(supabase.from('transactions').select('*').is('deleted_at', null).order('created_at', { ascending: false }).limit(500)),
+        readBookRows(supabase, 'transactions', activeBookId),
         readReceivables(supabase, activeBookId),
-        applyBook(supabase.from('customers').select('*').order('created_at', { ascending: false }).limit(1000)),
-        applyBook(supabase.from('debt_payments').select('id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at').is('deleted_at', null).order('paid_at', { ascending: false }).limit(2000)),
+        readBookRows(supabase, 'customers', activeBookId),
+        readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at'),
       ])
       if (!invoiceSessionCurrent() || invoiceBook.current.generation !== bookGeneration || issued !== financialReadEpoch.current || results.some(result => result.error || !Array.isArray(result.data))) {
         if (invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration && issued === financialReadEpoch.current) setError('Perubahan invoice sudah tersimpan, tetapi data terbaru belum dapat dimuat. Muat ulang sebelum melanjutkan.')
@@ -713,14 +700,11 @@ export function useStore(verifiedSession = null) {
 
   // Pemasukkan Credibook — book-scoped. Defensif: jika tabel belum ada, kosongkan.
   const refreshCredibook = useCallback(async () => {
+    const issued = financialReadEpoch.current
     try {
-      const { data, error: e } = await applyBook(supabase
-        .from('credibook_income')
-        .select('id, name, transaction_date, amount, payment_method, note, income_type, book_id')
-        .is('deleted_at', null)
-        .order('transaction_date', { ascending: false })
-        .limit(2000))
-      if (!e && mounted.current) setCredibookIncome(data || [])
+      const { data, error: e } = await readBookRows(supabase, 'credibook_income', activeBookId,
+        'id, name, transaction_date, amount, payment_method, note, income_type, book_id', 'transaction_date')
+      if (!e && mounted.current && issued === financialReadEpoch.current) setCredibookIncome(data || [])
     } catch { /* tabel credibook_income belum ada — abaikan */ }
   }, [activeBookId])
 
