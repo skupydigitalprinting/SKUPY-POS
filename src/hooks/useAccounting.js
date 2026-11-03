@@ -666,8 +666,8 @@ export function useAccounting() {
       }
       // 2) Cicilan piutang
       {
-        const { data } = await readReportRows(() => supabase.from('debt_payments').select('id,paid_at,invoice_no,amount,payment_method,notes,cashier_id', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
-        data.forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.notes, invoiceNo: x.invoice_no, cashierId: x.cashier_id }))
+        const { data } = await readReportRows(() => supabase.from('debt_payments').select('id,paid_at,recorded_at,invoice_no,amount,payment_method,notes,cashier_id', { count: 'exact' }).is('deleted_at', null).gte('paid_at', tzFrom).lt('paid_at', tzTo))
+        data.forEach(x => masuk.push({ id: x.id, type: 'masuk', date: x.paid_at, createdAt: x.recorded_at || x.paid_at, source: 'Pembayaran Piutang', ref: x.invoice_no, category: 'Pembayaran Piutang', method: x.payment_method, status: 'valid', amount: Math.round(x.amount || 0), note: x.notes, invoiceNo: x.invoice_no, cashierId: x.cashier_id }))
       }
       // 3) Credibook (semua jenis = kas masuk)
       {

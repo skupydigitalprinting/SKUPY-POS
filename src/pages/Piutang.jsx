@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
 import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import PaymentDateInput, { getWIBDate, isValidPaymentDate } from '../components/PaymentDateInput'
 import InvoiceWorkflowDialog from '../components/InvoiceWorkflowDialog'
 import ReceivablePaymentHistory from '../components/ReceivablePaymentHistory'
 import CustomerReceivableDownload from '../components/CustomerReceivableDownload'
@@ -43,7 +44,7 @@ function allocateFIFO(invoicesAsc, amount) {
 
 export default function Piutang({
   debts, customers, transactions, admins = [], currentUser,
-  payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments, getReceivablePayments,
+  payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments, getReceivablePayments, editPaymentDate,
   reassignReceivableCustomer, getReceivableCustomerChanges,
   paymentWorkflow, pendingPayments = [], invoiceRevision,
   invoiceWorkflow, pendingInvoiceChanges = [], products = [],
@@ -116,6 +117,7 @@ export default function Piutang({
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('transfer')
+  const [payDate, setPayDate] = useState('')
   const [paying, setPaying] = useState(false)
   const paymentPending = useRef(false)
   const [paymentIssues, setPaymentIssues] = useState({})
@@ -128,6 +130,7 @@ export default function Piutang({
   const [delTarget, setDelTarget] = useState(null)        // single debt
   const [invoiceAction, setInvoiceAction] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null) // group
+  useEffect(() => { setHistoryTarget(null); setPayTarget(null) }, [scopeKey])
 
   // Riwayat perubahan customer (audit) untuk grup yang dibuka di modal Riwayat.
   useEffect(() => {
@@ -248,6 +251,7 @@ export default function Piutang({
   }, [scopedEnriched])
 
   const detailGroup = groups.find(g => g.key === detailTarget?.key)
+  const historyGroup = groups.find(g => g.key === historyTarget?.key)
 
   const filteredGroups = useMemo(() => {
     const q = search.toLowerCase()
@@ -269,10 +273,12 @@ export default function Piutang({
     setPayTarget(g)
     setPayAmount(paymentIssues[g.key]?.amount ?? String(g.totalRemaining))
     setPayMethod(paymentIssues[g.key]?.method ?? 'transfer')
+    setPayDate(getWIBDate())
   }
 
   const handlePayCombined = async () => {
     if (paying || paymentPending.current || !payTarget || paymentIssue?.needsReconciliation) return
+    if (!isValidPaymentDate(payDate)) return toast.error('Pilih tanggal pembayaran yang valid, maksimal hari ini WIB.')
     const g = liveGroup(payTarget)
     if (!payAmount || String(payAmount).trim() === '') return toast.error('Masukkan nominal pembayaran')
     let amount = parseCurrency(payAmount)
@@ -286,13 +292,13 @@ export default function Piutang({
     try {
       let res
       if (g.customerId && payCustomerDebtsFIFO) {
-        res = await payCustomerDebtsFIFO({ customerId: g.customerId, amount, paymentMethod: payMethod })
+        res = await payCustomerDebtsFIFO({ customerId: g.customerId, amount, paymentMethod: payMethod, paymentDate: payDate })
       } else {
         // Fallback (customerId kosong): loop payDebt sesuai alokasi FIFO
         const alloc = allocateFIFO(g.activeInvoices, amount).filter(a => a.pay > 0)
         res = { ok: true, paid: 0 }
         for (const a of alloc) {
-          const r = await payDebt(a.inv.id, a.pay, payMethod, 'Pembayaran gabungan (FIFO)')
+          const r = await payDebt(a.inv.id, a.pay, payMethod, 'Pembayaran gabungan (FIFO)', payDate)
           if (r?.ok !== true || r.needsReconciliation) {
             res = { ...r, ok: false, paid, needsReconciliation: paid > 0 || r?.ok !== false || !!r?.needsReconciliation }
             break
@@ -704,7 +710,8 @@ export default function Piutang({
                   style={{ color: detailTab === id ? 'var(--accent-light)' : 'var(--text-secondary)', borderBottom: `2px solid ${detailTab === id ? 'var(--accent-light)' : 'transparent'}` }}>{label}</button>)}
               </div>
               {detailTab === 'payments' ? <div role="tabpanel" id="receivable-payments" aria-labelledby="receivable-tab-payments">
-                <ReceivablePaymentHistory invoices={g.invoices} getDebtPayments={getDebtPayments} getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} />
+                <ReceivablePaymentHistory key={`${scopeKey}|${g.key}`} invoices={g.invoices} getDebtPayments={getDebtPayments}
+                  getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} onEditPaymentDate={editPaymentDate} revision={invoiceRevision} />
               </div> : <div role="tabpanel" id="receivable-invoices" aria-labelledby="receivable-tab-invoices" className="space-y-4">
               <div className="overflow-x-auto -mx-1">
                 <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
@@ -805,7 +812,7 @@ export default function Piutang({
           const totalPay = alloc.reduce((s, a) => s + a.pay, 0)
           const remainingAfter = Math.max(0, totalRemaining - totalPay)
           const formattedAmt = currentPayment > 0 ? new Intl.NumberFormat('id-ID').format(currentPayment) : ''
-          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !isEmpty
+          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !isEmpty && isValidPaymentDate(payDate)
 
           return (
             <div className="space-y-4">
@@ -908,6 +915,8 @@ export default function Piutang({
                 </div>
               </div>
 
+              <PaymentDateInput value={payDate} onChange={setPayDate} disabled={paying || !!paymentIssue?.needsReconciliation} />
+
               {/* Payment method */}
               <div>
                 <label className="block text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)', fontFamily: 'Syne' }}>
@@ -942,8 +951,8 @@ export default function Piutang({
       </Modal>
 
       {/* History modal — gabungan semua nota customer */}
-      <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)}
-        title="Riwayat Pembayaran" subtitle={historyTarget?.customer?.name} size="md">
+      <Modal open={!!historyGroup} onClose={() => setHistoryTarget(null)}
+        title="Riwayat Pembayaran" subtitle={historyGroup?.customer?.name} size="md">
         {recvChanges.length > 0 && (
           <div className="rounded-xl p-3 mb-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)', fontFamily: 'Syne' }}>Riwayat Perubahan Customer</div>
@@ -956,9 +965,9 @@ export default function Piutang({
             </div>
           </div>
         )}
-        {historyTarget && <ReceivablePaymentHistory key={historyTarget.key}
-          invoices={liveGroup(historyTarget).invoices} getDebtPayments={getDebtPayments}
-          getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} />}
+        {historyGroup && <ReceivablePaymentHistory key={`${scopeKey}|${historyGroup.key}`}
+          invoices={historyGroup.invoices} getDebtPayments={getDebtPayments}
+          getReceivablePayments={getReceivablePayments} openInvoice={openInvoice} onEditPaymentDate={editPaymentDate} revision={invoiceRevision} />}
 
       </Modal>
 

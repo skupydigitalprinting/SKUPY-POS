@@ -259,9 +259,18 @@ test('cashflow uses only exported debt payment columns and preserves notes', asy
   assert.equal(cf.masuk[0].note, 'Receipt note')
   const manifest = JSON.parse(await readFile(new URL('../tools/security-lab/business-manifest.json', import.meta.url)))
   const known = new Set(manifest.tables.find(t => t.name === 'debt_payments').columns.map(c => c.name))
+  known.add('recorded_at') // Added by security-stage2/016_payment_dates.sql.
   for (const call of ctx.calls.filter(c => c.table === 'debt_payments')) for (const step of call.steps.filter(s => s[0] === 'select')) {
     assert.deepEqual(step[1].split(',').map(s => s.trim()).filter(c => !known.has(c)), [])
   }
+})
+
+test('corrected receipt uses effective day for cashflow and original timestamp for input date', async () => {
+  reset({ debt_payments: [payment({ paid_at: `${day}T00:00:00+07:00`, recorded_at: '2026-09-12T10:30:00+07:00' })] })
+  const cf = await invoke(useAccounting).getCashflowDetail(day, day)
+  assert.equal(cf.totalMasuk, 300)
+  assert.equal(cf.masuk[0].createdAt, '2026-09-12T10:30:00+07:00')
+  assert.equal((await invoke(useAccounting).getCashflowDetail('2026-09-12', '2026-09-12')).totalMasuk, 0)
 })
 for (const source of ['transactions', 'debt_payments', 'credibook_income', 'migration_details', 'employee_cash_advance_payments', 'asset_sales', 'expenses', 'purchases', 'supplier_debt_payments', 'bank_loan_payments', 'employee_cash_advances', 'prepaid_rents', 'asset_purchase_payments']) {
   test(`cashflow fails closed when ${source} is unavailable`, async () => {
@@ -328,6 +337,7 @@ test('all cashflow source columns match exported schema and retain employee/rent
   const manifest = JSON.parse(await readFile(new URL('../tools/security-lab/business-manifest.json', import.meta.url)))
   for (const call of ctx.calls) {
     const known = new Set(manifest.tables.find(t => t.name === call.table).columns.map(c => c.name))
+    if (call.table === 'debt_payments') known.add('recorded_at')
     for (const step of call.steps.filter(s => s[0] === 'select')) {
       assert.deepEqual(step[1].split(',').map(s => s.trim()).filter(c => !known.has(c)), [], call.table)
     }

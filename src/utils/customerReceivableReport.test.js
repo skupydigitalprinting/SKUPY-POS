@@ -48,3 +48,18 @@ test('customer PDF includes totals, invoices, payment dates, amounts and history
   for (const expected of ['Ningrum', '3.000.000', '2.500.000', '500.000', 'INV-A', 'INV-B', 'RIWAYAT PEMBAYARAN', '2 Oktober 2026', '1.500.000', 'Selisih']) assert(pdf.includes(expected), expected)
   assert(doc.getNumberOfPages() >= 3)
 })
+
+test('corrected payment day drives PDF totals while original entry timestamp stays separate', async () => {
+  const { buildCustomerReceivableReport } = await import('./customerReceivableReport.js')
+  const { createReceivablePDF } = await import('./receivablePdf.js')
+  const report = await buildCustomerReceivableReport({ invoices, customer,
+    getReceivablePayments: async () => ({ ok: true, data: [{ ...payments[0],
+      paid_at: '2026-10-18T17:00:00Z', recorded_at: '2026-10-20T02:15:00Z' }] }) })
+  assert.equal(report.paymentHistory.days[0].key, '2026-10-19')
+  assert.equal(report.paymentHistory.total, 500000)
+  const pdf = createReceivablePDF(report).output()
+  assert(pdf.includes('19 Oktober 2026'))
+  assert(pdf.includes('Dicatat: 20 Okt 2026'))
+  assert(pdf.includes('09.15 WIB'))
+  assert.equal(report.totals.remaining, 500000)
+})

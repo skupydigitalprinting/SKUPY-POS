@@ -1,3 +1,5 @@
+import { validPaymentDay } from '../utils/paymentDates.js'
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const rollback = new Set(['22023', '23514', '42501', '40001', '25000'])
 const uncertain = operationId => ({ ok: false, needsReconciliation: true, operationId,
@@ -7,7 +9,9 @@ function normalized(value) {
   if (!value || typeof value.invoiceNo !== 'string' || !value.invoiceNo.trim() || value.invoiceNo.trim().length > 256
     || !Number.isSafeInteger(value.amount) || value.amount <= 0 || !['cash', 'transfer', 'qris'].includes(value.method)
     || typeof value.notes !== 'string' || value.notes.length > 4000) throw new Error('Data pembayaran tidak valid.')
-  return { invoiceNo: value.invoiceNo.trim(), amount: value.amount, method: value.method, notes: value.notes }
+  if ('paymentDate' in value && !validPaymentDay(value.paymentDate)) throw new Error('Tanggal pembayaran tidak valid.')
+  return { invoiceNo: value.invoiceNo.trim(), amount: value.amount, method: value.method, notes: value.notes,
+    ...('paymentDate' in value ? { paymentDate: value.paymentDate } : {}) }
 }
 
 export function createPaymentClient({ client, scope, actorId, isCurrent, storage = globalThis.localStorage,
@@ -82,8 +86,9 @@ export function createPaymentClient({ client, scope, actorId, isCurrent, storage
     track(intent)
     if (storage.getItem(key) !== JSON.stringify(intent)) return uncertain(intent.operationId)
     current()
-    const response = await client.rpc('pos_submit_payment', { p_operation_id: intent.operationId,
-      p_invoice_no: request.invoiceNo, p_amount: request.amount, p_method: request.method, p_notes: request.notes })
+    const response = await client.rpc(request.paymentDate ? 'pos_submit_payment_dated' : 'pos_submit_payment', { p_operation_id: intent.operationId,
+      p_invoice_no: request.invoiceNo, p_amount: request.amount, p_method: request.method, p_notes: request.notes,
+      ...(request.paymentDate ? { p_payment_date: request.paymentDate } : {}) })
     current()
     if (response?.error) {
       if (!existing && rollback.has(response.error.code)) {

@@ -363,6 +363,7 @@ function AppShell({ verifiedSession = null }) {
       admins={store.admins}
       currentUser={store.currentUser}
       payDebt={store.payDebt}
+      editPaymentDate={store.editPaymentDate}
       payCustomerDebtsFIFO={store.payCustomerDebtsFIFO}
       deleteDebt={store.deleteDebt}
       getDebtPayments={store.getDebtPayments}

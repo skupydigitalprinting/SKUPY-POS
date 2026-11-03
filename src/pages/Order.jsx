@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react'
 import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
+import PaymentDateInput, { getWIBDate, isValidPaymentDate } from '../components/PaymentDateInput'
 import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Eye, Printer, Trash2, ChevronDown, Wallet, CheckCircle2,
@@ -251,6 +252,7 @@ export default function Order({
   const [payTrx, setPayTrx] = useState(null)
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('cash')
+  const [payDate, setPayDate] = useState('')
   const [paying, setPaying] = useState(false)
   const paymentPending = useRef(false)
   const [paymentIssues, setPaymentIssues] = useState({})
@@ -436,6 +438,7 @@ export default function Order({
     const derivedRemaining = Math.max(0, toMoney(t.total) - toMoney(t.paid))
     setPayAmount(paymentIssues[t.id]?.amount ?? String(derivedRemaining))
     setPayMethod(paymentIssues[t.id]?.method ?? 'cash')
+    setPayDate(getWIBDate())
     setPaying(false)
   }
 
@@ -448,6 +451,7 @@ export default function Order({
   // Jika newRemaining  > 0 → status_bayar = 'pending', remaining = newRemaining
   const handlePay = async () => {
     if (!payTrx || paying || paymentPending.current || paymentIssue?.needsReconciliation) return
+    if (!isValidPaymentDate(payDate)) return
     // Parse → integer rupiah (input pakai formatted "1.000.000")
     let amount = parseCurrency(payAmount)
     if (!amount || amount <= 0) return
@@ -458,7 +462,7 @@ export default function Order({
     paymentPending.current = true
     setPaying(true)
     try {
-      const result = await updateTransactionPayment(payTrx.id, amount, payMethod)
+      const result = await updateTransactionPayment(payTrx.id, amount, payMethod, payDate)
       if (result?.ok === true && !result.needsReconciliation) {
         setPaymentIssues(prev => { const next = { ...prev }; delete next[payTrx.id]; return next })
         setPayTrx(null)
@@ -1192,7 +1196,7 @@ export default function Order({
                           : isZero  ? 'Nominal pembayaran harus lebih dari 0'
                           : ''
           // Konfirmasi enabled hanya saat valid
-          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !exceeds
+          const canSubmit = !paying && !paymentIssue?.needsReconciliation && currentPayment > 0 && !exceeds && isValidPaymentDate(payDate)
 
           // Enter handler — sama dengan klik tombol Konfirmasi
           const onKeyDown = (e) => {
@@ -1241,6 +1245,7 @@ export default function Order({
                 </div>
               </div>
 
+              <PaymentDateInput value={payDate} onChange={setPayDate} disabled={paying || !!paymentIssue?.needsReconciliation} />
               <div>
                 <div className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>Metode Pembayaran</div>
                 <div className="flex gap-2" role="group" aria-label="Metode Pembayaran">

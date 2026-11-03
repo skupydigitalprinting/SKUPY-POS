@@ -111,13 +111,13 @@ export function createReceivablePDF(report, { storeName = 'SKUPY', bookName = 'S
       doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
       doc.text('Pembayaran gabungan ditampilkan per alokasi nota, bukan transfer terpisah.', margin, 35)
       const methods = { cash: 'Tunai', transfer: 'Transfer', qris: 'QRIS', debit: 'Debit', credit: 'Kartu Kredit' }
-      const timeFormat = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' })
+      const recordedFormat = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
       autoTable(doc, { ...base, startY: 41,
-        head: [['Tanggal / Jam (WIB)', 'Metode', 'Nominal', 'Invoice', 'Petugas / Catatan']],
+        head: [['Tanggal Bayar (WIB)', 'Metode', 'Nominal', 'Invoice', 'Petugas / Waktu Input / Catatan']],
         body: history.days.flatMap(day => day.payments.map(p => {
-          const stamp = p.paid_at ? new Date(p.paid_at) : null
-          const time = stamp && Number.isFinite(stamp.getTime()) ? timeFormat.format(stamp) : '-'
-          return [`${day.label}\n${time}`, methods[p.payment_method] || text(p.payment_method) || '-', rp(p.amount), text(p._invoiceNo) || '-', `${text(p.cashier) || '-'}\n${text(p.notes)}`]
+          const stamp = p.recorded_at || p.paid_at ? new Date(p.recorded_at || p.paid_at) : null
+          const recorded = stamp && Number.isFinite(stamp.getTime()) ? `${recordedFormat.format(stamp)} WIB` : '-'
+          return [day.label, methods[p.payment_method] || text(p.payment_method) || '-', rp(p.amount), text(p._invoiceNo) || '-', `${text(p.cashier) || '-'}\nDicatat: ${recorded}\n${text(p.notes)}`]
         })),
         foot: [['TOTAL RIWAYAT', '', rp(history.total), '', '']],
         columnStyles: { 0: { cellWidth: 40 }, 1: { cellWidth: 26 }, 2: { cellWidth: 40, halign: 'right' }, 3: { cellWidth: 65 } },

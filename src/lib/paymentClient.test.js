@@ -35,6 +35,28 @@ test('payment submits only a bound RPC and returns verified money values', async
   assert.equal(f.draftStorage.length, 0)
 })
 
+test('dated payment includes selected day in request, RPC and recovery evidence', async () => {
+  const f = fixture(), dated = { ...request, paymentDate: '2026-10-19' }
+  f.script.push(() => { throw new Error('Lost') })
+  const lost = await f.make().submit(dated)
+  assert.equal(f.calls[0].name, 'pos_submit_payment_dated')
+  assert.equal(f.calls[0].args.p_payment_date, dated.paymentDate)
+  assert.equal((await f.make().submit({ ...dated, paymentDate: '2026-10-20' })).needsReconciliation, true)
+  assert.equal(f.calls.length, 1)
+  f.script.push(() => ({ data: { state: 'unknown' } }), (_, args) => envelope(args.p_operation_id, dated))
+  assert.equal((await f.make().resume('INV-TEST')).ok, true)
+  assert.equal(f.calls[2].args.p_operation_id, lost.operationId)
+  assert.deepEqual(f.calls[2].args, f.calls[0].args)
+})
+
+test('invalid calendar payment dates cannot dispatch', async () => {
+  const f = fixture()
+  for (const paymentDate of ['', '2026-02-29', '2026-11-31', '19/10/2026', null, '2026-10-19T00:00:00Z']) {
+    assert.equal((await f.make().submit({ ...request, paymentDate })).ok, false)
+  }
+  assert.equal(f.calls.length, 0)
+})
+
 test('lost response survives reload and status settles once without another payment write', async () => {
   const f = fixture()
   f.script.push(() => { throw new Error('Lost response') })

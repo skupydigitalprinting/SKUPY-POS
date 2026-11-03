@@ -7,6 +7,8 @@ import { PRODUCT_PUBLIC_COLUMNS, attachProductCosts, saveSecureProduct } from '.
 import { createInvoiceChangeClient } from '../lib/invoiceChangeClient'
 import { createInvoiceWorkflow } from '../lib/invoiceWorkflow'
 import { createPaymentClient } from '../lib/paymentClient'
+import { createPaymentDateClient } from '../lib/paymentDateClient'
+import { paymentDay, validPaymentDay } from '../utils/paymentDates'
 import { createCheckoutClient } from '../lib/checkoutClient'
 
 // Session persistence — "Ingat saya / Tetap login".
@@ -371,6 +373,11 @@ export function useStore(verifiedSession = null) {
     setPaymentRefreshPending(false)
     if (paymentClient && paymentClient.pending().length === 0) secureFifoBlocks.current.clear()
   }
+  const paymentDateClient = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createPaymentDateClient({
+    client: supabase,
+    scope: `${import.meta.env.VITE_SUPABASE_URL}:${verifiedSession.user.authUserId}:${activeBookId || 'all'}`,
+    isCurrent: () => invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration,
+  }) : null, [bookGeneration])
   useEffect(() => { refreshPaymentIntents() }, [paymentClient, invoiceRevision])
   const invoiceOperations = useMemo(() => secureAuthEnabled && verifiedSession?.user?.authUserId ? createInvoiceChangeClient({
     client: supabase, scope: import.meta.env.VITE_SUPABASE_URL || '',
@@ -436,7 +443,7 @@ export function useStore(verifiedSession = null) {
         readBookRows(supabase, 'customers', activeBookId),
         readReceivables(supabase, activeBookId),
         // Uang masuk (cicilan) — untuk dashboard owner "Total Uang Masuk".
-        readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at'),
+      readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, recorded_at, cashier_id, deleted_at', 'paid_at'),
       ])
       // Daftar book (defensif: jika tabel belum ada / migrasi belum jalan, abaikan).
       try {
@@ -575,7 +582,7 @@ export function useStore(verifiedSession = null) {
   const refreshDebtPayments = useCallback(async () => {
     const issued = financialReadEpoch.current
     const { data, error: e } = await readBookRows(supabase, 'debt_payments', activeBookId,
-      'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at')
+      'id, debt_id, invoice_no, amount, payment_method, paid_at, recorded_at, cashier_id, deleted_at', 'paid_at')
     if (!e && mounted.current && issued === financialReadEpoch.current) setDebtPayments(data || [])
   }, [activeBookId])
 
@@ -609,7 +616,7 @@ export function useStore(verifiedSession = null) {
         readBookRows(supabase, 'transactions', activeBookId),
         readReceivables(supabase, activeBookId),
         readBookRows(supabase, 'customers', activeBookId),
-        readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, cashier_id, deleted_at', 'paid_at'),
+        readBookRows(supabase, 'debt_payments', activeBookId, 'id, debt_id, invoice_no, amount, payment_method, paid_at, recorded_at, cashier_id, deleted_at', 'paid_at'),
       ])
       if (!invoiceSessionCurrent() || invoiceBook.current.generation !== bookGeneration || issued !== financialReadEpoch.current || results.some(result => result.error || !Array.isArray(result.data))) {
         if (invoiceSessionCurrent() && invoiceBook.current.generation === bookGeneration && issued === financialReadEpoch.current) setError('Perubahan invoice sudah tersimpan, tetapi data terbaru belum dapat dimuat. Muat ulang sebelum melanjutkan.')
@@ -1949,10 +1956,14 @@ export function useStore(verifiedSession = null) {
   // Verified sessions use one atomic server operation. Legacy sessions retain
   // their guarded sequential path until the coordinated production cutover.
   const processDebtPayment = useCallback(async ({
-    invoice_no, paymentAmount, paymentMethod = 'cash', notes = '', skipRefresh = false,
+    invoice_no, paymentAmount, paymentMethod = 'cash', notes = '', skipRefresh = false, paymentDate,
   }) => {
+    if (paymentDate !== undefined && (!validPaymentDay(paymentDate) || paymentDate > paymentDay())) {
+      return { ok: false, error: 'Tanggal pembayaran tidak valid atau melebihi hari ini.' }
+    }
     if (secureAuthEnabled) return wrap(async () => ({ ...await paymentWorkflow.submit({ invoiceNo: invoice_no,
-      amount: paymentAmount, method: paymentMethod, notes }), invoiceNo: invoice_no }))
+      amount: paymentAmount, method: paymentMethod, notes, ...(paymentDate ? { paymentDate } : {}) }), invoiceNo: invoice_no }))
+    if (paymentDate && paymentDate !== paymentDay()) return { ok: false, error: 'Koreksi tanggal pembayaran memerlukan sesi login terverifikasi.' }
     return wrap(() => containPayment([invoice_no && `invoice:${invoice_no}`], async ({ guard, write }) => {
     const amount = paymentMoney(paymentAmount)
     if (amount <= 0) {
@@ -2029,7 +2040,7 @@ export function useStore(verifiedSession = null) {
   // updateTransactionPayment (Order) — DELEGATE ke processDebtPayment.
   // Tidak ada wrap() outer karena processDebtPayment sudah pakai wrap sendiri.
   // Signature lama dipertahankan untuk backward compat: (id, addPayment).
-  const updateTransactionPayment = useCallback(async (id, addPayment, paymentMethod = 'cash') => {
+  const updateTransactionPayment = useCallback(async (id, addPayment, paymentMethod = 'cash', paymentDate) => {
     const current = transactions.find(t => t.id === id)
     if (!current) return { ok: false, error: 'Transaksi tidak ditemukan' }
     if (!current.invoiceNo) return { ok: false, error: 'invoice_no kosong' }
@@ -2038,6 +2049,7 @@ export function useStore(verifiedSession = null) {
       paymentAmount: addPayment,
       paymentMethod,
       notes: 'Pembayaran dari halaman Order',
+      paymentDate,
     })
   }, [transactions, processDebtPayment])
 
@@ -2130,7 +2142,7 @@ export function useStore(verifiedSession = null) {
 
   // ---------- DEBTS ----------
   // Legacy signatures delegate to the same non-atomic, guarded payment callback.
-  const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '') => {
+  const payDebt = useCallback(async (debtId, amount, paymentMethod = 'cash', notes = '', paymentDate) => {
     try {
       const amt = paymentMoney(amount)
       if (amt <= 0) return { ok: false, error: 'Nominal pembayaran harus lebih dari 0' }
@@ -2144,7 +2156,7 @@ export function useStore(verifiedSession = null) {
         invoiceNo = trx?.invoice_no
       }
       if (!invoiceNo) return { ok: false, error: 'invoice_no kosong di debt + transaction' }
-      return await processDebtPayment({ invoice_no: invoiceNo, paymentAmount: amt, paymentMethod, notes })
+      return await processDebtPayment({ invoice_no: invoiceNo, paymentAmount: amt, paymentMethod, notes, paymentDate })
     } catch (error) {
       return { ok: false, needsReconciliation: false, error: error.message || 'Data piutang belum dapat diperiksa' }
     }
@@ -2160,7 +2172,7 @@ export function useStore(verifiedSession = null) {
   //   • Clamp: kalau nominal > total sisa hutang customer, dipotong ke total.
   // ═══════════════════════════════════════════════════════════════════
   const payCustomerDebtsFIFO = useCallback(async ({
-    customerId, amount, paymentMethod = 'cash', notes = '',
+    customerId, amount, paymentMethod = 'cash', notes = '', paymentDate,
   }) => wrap(async () => {
     const results = []
     let paid = 0
@@ -2204,7 +2216,7 @@ export function useStore(verifiedSession = null) {
         }
         const result = await processDebtPayment({
           invoice_no: inv, paymentAmount: alloc, paymentMethod,
-          notes: notes || 'Pembayaran gabungan (FIFO)', skipRefresh: true,
+          notes: notes || 'Pembayaran gabungan (FIFO)', skipRefresh: true, paymentDate,
         })
         results.push({ ...result, debtId: debt.id, invoiceNo: inv, alloc })
         if (!result?.ok) return stop(result || incompleteTransactionSync())
@@ -2248,6 +2260,16 @@ export function useStore(verifiedSession = null) {
   }), [debts, activeBookId, wrap, containPayment, destructivePaymentCheck, recalculateCustomerSummary, refreshDebts, refreshDebtPayments, refreshCustomers])
 
   const getReceivablePayments = useCallback(debtIds => readReceivablePayments(supabase, debtIds), [])
+
+  const editPaymentDate = useCallback(async (payment, fields) => {
+    if (!paymentDateClient) return { ok: false, error: 'Koreksi tanggal memerlukan sesi terverifikasi.' }
+    const result = await paymentDateClient.edit(payment, fields)
+    if (!result.ok) return result
+    financialReadEpoch.current++
+    setInvoiceRevision(value => value + 1)
+    const refreshed = await invoiceWorkflow.refresh()
+    return refreshed.ok ? result : { ...result, committed: true, needsRefresh: true }
+  }, [paymentDateClient, invoiceWorkflow])
 
   const getDebtPayments = useCallback(async (debtId) => {
     const rows = []
@@ -2491,6 +2513,6 @@ export function useStore(verifiedSession = null) {
     reassignReceivableCustomer, reassignOrderCustomer,
     getOrderCustomerChanges, getReceivableCustomerChanges,
     payDebt, payCustomerDebtsFIFO, deleteDebt, getDebtPayments, getReceivablePayments,
-    editDebtPayment, deleteDebtPayment,
+    editDebtPayment, deleteDebtPayment, editPaymentDate,
   }
 }
