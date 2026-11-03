@@ -34,3 +34,9 @@ export function groupPaymentDays(payments) {
   }
   return [...days.values()]
 }
+
+export function groupTransferDays(payments) {
+  const transfers = payments.filter(payment => !payment.deleted_at
+    && String(payment.payment_method || '').trim().toLowerCase() === 'transfer')
+  return groupPaymentDays(transfers).map(({ key, label, total }) => ({ key, label, total }))
+}
