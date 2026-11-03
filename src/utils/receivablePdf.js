@@ -39,7 +39,7 @@ export function createReceivablePDF(report, { storeName = 'SKUPY', bookName = 'S
   doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(25, 29, 38)
   doc.text('LAPORAN PIUTANG', margin, 22)
   doc.setFont(bodyFont, 'normal'); doc.setFontSize(10); doc.setTextColor(75, 82, 94)
-  const metadata = doc.splitTextToSize(`${text(storeName)} | ${text(bookName)} | ${text(accountScope)}`, contentWidth)
+  const metadata = doc.splitTextToSize(`${report.customerName ? `${text(report.customerName)} | ` : ''}${text(storeName)} | ${text(bookName)} | ${text(accountScope)}`, contentWidth)
   if (metadata.length > 3) { metadata.length = 3; metadata[2] = metadata[2].slice(0, -3) + '...' }
   doc.text(metadata, margin, 30)
   let y = 30 + metadata.length * 5
@@ -87,6 +87,43 @@ export function createReceivablePDF(report, { storeName = 'SKUPY', bookName = 'S
       columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 57 }, 2: { cellWidth: 29 }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right', fontStyle: 'bold' }, 6: { cellWidth: 18 } },
     })
   }
+  if (report.paymentHistory) {
+    const history = report.paymentHistory
+    doc.addPage()
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(25, 29, 38)
+    doc.text('RIWAYAT PEMBAYARAN', margin, 28)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
+    doc.text(`Total riwayat tercatat: ${rp(history.total)} | Selisih dengan sudah dibayar pada nota: ${rp(history.difference)}`, margin, 36)
+    doc.setFontSize(8); doc.setTextColor(75, 82, 94)
+    doc.text('DP lama dapat belum memiliki catatan terpisah. Riwayat ini tidak ditambahkan lagi ke total sudah dibayar.', margin, 42)
+    if (!history.days.length) {
+      doc.text('Belum ada riwayat pembayaran terpisah yang tercatat.', margin, 54)
+    } else {
+      autoTable(doc, { ...base, startY: 49,
+        head: [['Tanggal pembayaran (WIB)', 'Total harian - semua metode']],
+        body: history.days.map(day => [day.label, rp(day.total)]),
+        foot: [['TOTAL RIWAYAT', rp(history.total)]],
+        columnStyles: { 1: { halign: 'right' } },
+      })
+      doc.addPage()
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(25, 29, 38)
+      doc.text('RINCIAN PEMBAYARAN', margin, 28)
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+      doc.text('Pembayaran gabungan ditampilkan per alokasi nota, bukan transfer terpisah.', margin, 35)
+      const methods = { cash: 'Tunai', transfer: 'Transfer', qris: 'QRIS', debit: 'Debit', credit: 'Kartu Kredit' }
+      const timeFormat = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' })
+      autoTable(doc, { ...base, startY: 41,
+        head: [['Tanggal / Jam (WIB)', 'Metode', 'Nominal', 'Invoice', 'Petugas / Catatan']],
+        body: history.days.flatMap(day => day.payments.map(p => {
+          const stamp = p.paid_at ? new Date(p.paid_at) : null
+          const time = stamp && Number.isFinite(stamp.getTime()) ? timeFormat.format(stamp) : '-'
+          return [`${day.label}\n${time}`, methods[p.payment_method] || text(p.payment_method) || '-', rp(p.amount), text(p._invoiceNo) || '-', `${text(p.cashier) || '-'}\n${text(p.notes)}`]
+        })),
+        foot: [['TOTAL RIWAYAT', '', rp(history.total), '', '']],
+        columnStyles: { 0: { cellWidth: 40 }, 1: { cellWidth: 26 }, 2: { cellWidth: 40, halign: 'right' }, 3: { cellWidth: 65 } },
+      })
+    }
+  }
   const pages = doc.getNumberOfPages()
   for (let page = 1; page <= pages; page++) {
     doc.setPage(page); doc.setFont(bodyFont, 'normal'); doc.setFontSize(8); doc.setTextColor(100, 108, 118)
@@ -105,6 +142,6 @@ export function createReceivablePDF(report, { storeName = 'SKUPY', bookName = 'S
 export function downloadReceivablePDF(report, options = {}) {
   const generatedAt = options.generatedAt || new Date()
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(generatedAt)
-  const name = text(options.bookName || 'Semua-Book').replace(/[^\w-]+/g, '-').slice(0, 60)
+  const name = text(report.customerName || options.bookName || 'Semua-Book').replace(/[^\p{L}\p{N}-]+/gu, '-').slice(0, 60)
   createReceivablePDF(report, { ...options, generatedAt }).save(`Piutang-${name}-${day}.pdf`)
 }

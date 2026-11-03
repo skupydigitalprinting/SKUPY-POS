@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from 'react'
 import PaymentRecoveryPanel from '../components/PaymentRecoveryPanel'
 import InvoiceWorkflowDialog from '../components/InvoiceWorkflowDialog'
 import ReceivablePaymentHistory from '../components/ReceivablePaymentHistory'
+import CustomerReceivableDownload from '../components/CustomerReceivableDownload'
 import { retainUnresolvedPaymentIssues } from '../lib/paymentIssues'
 import {
   Search, Wallet, Trash2, AlertTriangle, CalendarDays, Crown,
@@ -109,6 +110,7 @@ export default function Piutang({
   }
   const [selectedPicKey, setSelectedPicKey] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null)  // group
+  useEffect(() => { setDetailTarget(null) }, [scopeKey])
   const [detailTab, setDetailTab] = useState('invoices')
   useEffect(() => { setDetailTab('invoices') }, [detailTarget])
   const [payTarget, setPayTarget] = useState(null)        // group (Bayar Gabungan)
@@ -244,6 +246,8 @@ export default function Piutang({
       }
     }).sort((a, b) => b.totalRemaining - a.totalRemaining || b.totalDebt - a.totalDebt)
   }, [scopedEnriched])
+
+  const detailGroup = groups.find(g => g.key === detailTarget?.key)
 
   const filteredGroups = useMemo(() => {
     const q = search.toLowerCase()
@@ -680,13 +684,19 @@ export default function Piutang({
       </div>
 
       {/* ─── DETAIL MODAL — daftar invoice hutang customer ─── */}
-      <Modal open={!!detailTarget} onClose={() => setDetailTarget(null)}
-        title={detailTarget?.customer?.name || 'Rincian Hutang'}
-        subtitle={detailTarget ? `${detailTarget.count} nota hutang` : ''} size="lg">
-        {detailTarget && (() => {
-          const g = liveGroup(detailTarget)
+      <Modal open={!!detailGroup} onClose={() => setDetailTarget(null)}
+        title={detailGroup?.customer?.name || 'Rincian Hutang'}
+        subtitle={detailGroup ? `${detailGroup.count} nota hutang` : ''} size="lg">
+        {detailGroup && (() => {
+          const g = detailGroup
           return (
             <div className="space-y-4">
+              <div className="flex justify-end">
+                <CustomerReceivableDownload key={`${scopeKey}|${g.key}`} invoices={g.invoices} customer={g.customer}
+                  admins={admins} getDebtPayments={getDebtPayments} getReceivablePayments={getReceivablePayments}
+                  storeInfo={storeInfo} bookName={bookName}
+                  accountScope={canSeeAllPics ? 'Semua PIC' : `PIC: ${currentUser?.name || currentUser?.username || 'Saya'}`} />
+              </div>
               <div role="tablist" aria-label="Detail piutang" className="flex gap-4" style={{ borderBottom: '1px solid var(--border)' }}>
                 {[['invoices', 'Daftar Nota'], ['payments', 'Riwayat Pembayaran']].map(([id, label]) => <button
                   key={id} role="tab" aria-selected={detailTab === id} aria-controls={`receivable-${id}`} id={`receivable-tab-${id}`}
@@ -751,7 +761,7 @@ export default function Piutang({
               </div>
 
               {/* Footer totals */}
-              <div className="rounded-xl p-4 grid grid-cols-3 gap-3"
+              <div className="rounded-xl p-4 grid grid-cols-1 sm:grid-cols-3 gap-3"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <div>
                   <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Total Hutang</p>
